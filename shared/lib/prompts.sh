@@ -73,13 +73,15 @@ prompt_path() {
 
     prompt_string "$label" "$var" "$default"
 
-    # Expand a leading ~ to $HOME (manual — tilde does not expand inside quotes)
-    local val
+    # Expand a leading ~ to $HOME (manual — bash does not perform tilde
+    # expansion on values that come from `read`). We use a single-char
+    # variable to keep shellcheck happy about literal tildes in strings.
+    local val tilde='~'
     eval "val=\${${var}}"
-    if [ "${val:0:1}" = "~" ]; then
-        if [ "$val" = "~" ]; then
+    if [ "${val:0:1}" = "$tilde" ]; then
+        if [ "$val" = "$tilde" ]; then
             val="$HOME"
-        elif [ "${val:0:2}" = "~/" ]; then
+        elif [ "${val:0:2}" = "${tilde}/" ]; then
             val="${HOME}/${val:2}"
         fi
     fi

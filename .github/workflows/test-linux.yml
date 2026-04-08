@@ -36,7 +36,17 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Run installer in a clean Ubuntu container
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
+          # The falconpulsar/* images on Docker Hub are private during the
+          # pre-release period, so the installer can't pull them
+          # anonymously. We pass DOCKERHUB_USERNAME / DOCKERHUB_TOKEN (org
+          # secrets) into the container and `docker login` before the
+          # installer runs. End users hit this same problem until the
+          # repos are made public — see README for the workaround.
+          #
           # We pre-install Docker + start dockerd in the background because
           # the test container has no systemd (PID 1 is bash). The installer
           # itself will see Docker present and skip the install_docker_linux
@@ -45,9 +55,11 @@ jobs:
           # --privileged is required because the test runs docker-in-docker.
           docker run --rm \
             -v "$PWD":/installer:ro \
+            -e DOCKERHUB_USERNAME \
+            -e DOCKERHUB_TOKEN \
             --privileged \
             ubuntu:24.04 \
-            bash -c "
+            bash -c '
               set -e
               export DEBIAN_FRONTEND=noninteractive
               apt-get update
@@ -58,7 +70,7 @@ jobs:
               curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
                 | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
               chmod a+r /etc/apt/keyrings/docker.gpg
-              echo 'deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu noble stable' \
+              echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu noble stable" \
                 > /etc/apt/sources.list.d/docker.list
               apt-get update
               apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
@@ -69,13 +81,32 @@ jobs:
                 if docker info >/dev/null 2>&1; then break; fi
                 sleep 1
               done
-              docker info >/dev/null || { echo '=== dockerd log ==='; cat /var/log/dockerd.log; exit 1; }
+              docker info >/dev/null || { echo "=== dockerd log ==="; cat /var/log/dockerd.log; exit 1; }
+
+              # Authenticate to Docker Hub so the falconpulsar/* private
+              # images are pullable. The credentials are inherited from
+              # the host environment via `docker run -e`.
+              if [ -z "${DOCKERHUB_USERNAME:-}" ] || [ -z "${DOCKERHUB_TOKEN:-}" ]; then
+                echo "ERROR: DOCKERHUB_USERNAME / DOCKERHUB_TOKEN not set" >&2
+                echo "These are required because falconpulsar/* images are private." >&2
+                exit 1
+              fi
+              echo "$DOCKERHUB_TOKEN" | docker login --username "$DOCKERHUB_USERNAME" --password-stdin
+
+              # The installer runs `docker compose pull` as the
+              # falconpulsar user via `sg docker -c ...`. That subshell
+              # gets a fresh HOME (/home/falconpulsar) so it will not see
+              # /root/.docker/config.json. Copy the auth config into the
+              # falconpulsar home before running the installer.
+              useradd --system --create-home --home-dir /home/falconpulsar --shell /bin/bash falconpulsar 2>/dev/null || true
+              install -d -m 0700 -o falconpulsar -g falconpulsar /home/falconpulsar/.docker
+              install -m 0600 -o falconpulsar -g falconpulsar /root/.docker/config.json /home/falconpulsar/.docker/config.json
 
               # Now run the installer — it will detect docker is present
               # and skip the install step
               FP_ASSUME_YES=1 \
-              FP_ADMIN_PASS='ci-test-password-123' \
+              FP_ADMIN_PASS="ci-test-password-123" \
               bash /installer/linux/install.sh --mode docker --yes
-            "
+            '
         # The installer's own healthcheck loop fails the job if the stack
         # doesn't come up, which is the assertion.
