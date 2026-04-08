@@ -1,0 +1,90 @@
+# =============================================================================
+# build-windows — compile the Inno Setup installer on a Windows runner.
+#
+# Runs on every push that touches windows/, linux/, or shared/, plus on
+# every v* tag. Uploads the resulting .exe as a workflow artifact. The
+# release.yml workflow can pull this artifact and attach it to a GitHub
+# Release.
+#
+# CI does NOT install WSL or run the .exe end-to-end — GitHub Actions
+# Windows runners do not allow nested virtualization, so WSL2 cannot
+# actually start inside them. The job's contract is "the .iss script
+# compiles cleanly and produces a non-empty .exe". Real end-to-end testing
+# happens on a Windows VM before each release.
+# =============================================================================
+
+name: build-windows
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+    paths:
+      - 'windows/**'
+      - 'linux/**'
+      - 'shared/**'
+      - '.github/workflows/build-windows.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'windows/**'
+      - 'linux/**'
+      - 'shared/**'
+      - '.github/workflows/build-windows.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: compile installer.iss
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Inno Setup 6
+        shell: powershell
+        run: |
+          choco install innosetup --no-progress -y
+          # Verify the compiler is on PATH
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            Write-Error "ISCC.exe not found at $iscc after choco install"
+            exit 1
+          }
+          Write-Host "ISCC.exe present at $iscc"
+
+      - name: Compile installer.iss
+        shell: powershell
+        run: |
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          # Pin the version to whatever is in installer.iss; we don't
+          # override it from CI for v0.1.
+          & $iscc "windows\installer.iss"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "ISCC failed with exit code $LASTEXITCODE"
+            exit $LASTEXITCODE
+          }
+
+      - name: Verify the .exe was produced
+        shell: powershell
+        run: |
+          $exe = Get-ChildItem -Path "windows\Output" -Filter "*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $exe) {
+            Write-Error "No .exe found in windows\Output\"
+            exit 1
+          }
+          $sizeMB = [math]::Round($exe.Length / 1MB, 2)
+          Write-Host "Built: $($exe.Name) (${sizeMB} MB)"
+          if ($exe.Length -lt 100KB) {
+            Write-Error "Built .exe is suspiciously small (< 100 KB) — bundle is probably broken"
+            exit 1
+          }
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FalconPulsar-Setup-windows
+          path: windows/Output/*.exe
+          retention-days: 30
+          if-no-files-found: error
