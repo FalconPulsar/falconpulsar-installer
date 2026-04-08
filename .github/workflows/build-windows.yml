@@ -77,7 +77,7 @@ jobs:
           $sizeMB = [math]::Round($exe.Length / 1MB, 2)
           Write-Host "Built: $($exe.Name) (${sizeMB} MB)"
           if ($exe.Length -lt 100KB) {
-            Write-Error "Built .exe is suspiciously small (< 100 KB) — bundle is probably broken"
+            Write-Error "Built .exe is suspiciously small (less than 100 KB) - bundle is probably broken"
             exit 1
           }
 
