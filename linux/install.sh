@@ -142,6 +142,12 @@ if ! check_docker_daemon; then
     systemctl enable --now docker || die "failed to start Docker daemon"
 fi
 
+# Pre-release: images are private. Check that root has Docker Hub credentials
+# (and that we can copy them into the falconpulsar user's home in step 6).
+# We check root's config here because that's who installs run as. The
+# credentials are copied into ${FP_HOME}/.docker in step 6 below.
+check_dockerhub_login
+
 # ── Step 3: Create the falconpulsar user ────────────────────────────────────
 log_step "step 3/8 — system user '${FP_USER}'"
 if id "$FP_USER" >/dev/null 2>&1; then
@@ -208,6 +214,17 @@ install -m 0644 -o "$FP_USER" -g "$FP_USER" \
     "${FP_HOME}/compose.yml"
 
 install -d -m 0750 -o "$FP_USER" -g "$FP_USER" "$FP_DATA_DIR"
+
+# Copy root's Docker Hub credentials into the falconpulsar user's home so
+# `sg docker -c 'docker compose pull'` (which runs as falconpulsar) can pull
+# the private images. Pre-release only — once images are public this can go.
+ROOT_DOCKER_CFG="${DOCKER_CONFIG:-/root/.docker}/config.json"
+if [ -f "$ROOT_DOCKER_CFG" ]; then
+    install -d -m 0700 -o "$FP_USER" -g "$FP_USER" "${FP_HOME}/.docker"
+    install -m 0600 -o "$FP_USER" -g "$FP_USER" \
+        "$ROOT_DOCKER_CFG" "${FP_HOME}/.docker/config.json"
+    log_success "Docker Hub credentials propagated to ${FP_HOME}/.docker"
+fi
 
 # .env — note 0600 perms because it contains the admin password
 umask 077

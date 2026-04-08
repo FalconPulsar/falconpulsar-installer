@@ -165,6 +165,10 @@ fi
 
 check_compose_v2 || die "docker compose v2 plugin not available — your runtime is too old or misconfigured"
 
+# Pre-release: images are private. Verify Docker Hub login before we go any
+# further so the user doesn't get a "pull access denied" failure at step 5.
+check_dockerhub_login
+
 # ── Step 3: Stack directory ─────────────────────────────────────────────────
 log_step "step 3/6 — stack directory"
 mkdir -p "$FP_HOME" "$FP_DATA_DIR"

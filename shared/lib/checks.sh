@@ -185,9 +185,20 @@ check_disk() {
     [ -d "$path" ] || path="$(dirname "$path")"
     [ -d "$path" ] || path="/"
 
-    local free_gb
-    free_gb=$(df -BG "$path" 2>/dev/null | awk 'NR==2 {gsub("G",""); print $4}')
-    [ -z "$free_gb" ] && free_gb=$(df -g "$path" 2>/dev/null | awk 'NR==2 {print $4}')
+    log_info "checking free disk on ${path}..."
+
+    local free_gb=""
+
+    # Try GNU df first (Linux), then BSD df (macOS). Strip anything that
+    # isn't a digit so we get a clean integer regardless of suffix ("G",
+    # "Gi", etc.) and don't fall over on whitespace or APFS quirks.
+    if free_gb=$(df -BG "$path" 2>/dev/null | awk 'NR==2 {print $4}' | tr -cd '0-9') && [ -n "$free_gb" ]; then
+        :
+    elif free_gb=$(df -g "$path" 2>/dev/null | awk 'NR==2 {print $4}' | tr -cd '0-9') && [ -n "$free_gb" ]; then
+        :
+    else
+        free_gb=""
+    fi
 
     if [ -z "$free_gb" ]; then
         log_warn "could not determine free disk on ${path} — skipping check"
@@ -216,18 +227,34 @@ port_in_use() {
     fi
 }
 
+# port_holder <port>  — print the process holding a port (best-effort)
+port_holder() {
+    local port="$1"
+    if command -v lsof >/dev/null 2>&1; then
+        lsof -nP -iTCP:"${port}" -sTCP:LISTEN 2>/dev/null | awk 'NR>1 {print "    " $1 " (pid " $2 ", user " $3 ")"}'
+    elif command -v ss >/dev/null 2>&1; then
+        ss -ltnp "sport = :${port}" 2>/dev/null | awk 'NR>1 {print "    " $0}'
+    fi
+}
+
 # check_ports [port...]  (defaults to FP_DEFAULT_PORTS)
 check_ports() {
     local ports="${*:-$FP_DEFAULT_PORTS}"
     local port conflicts=""
+    log_info "checking required TCP ports: ${ports}"
     for port in $ports; do
         if port_in_use "$port"; then
+            log_error "port ${port} is already in use:"
+            port_holder "$port" >&2 || true
             conflicts="${conflicts}${port} "
         fi
     done
     if [ -n "$conflicts" ]; then
-        log_error "the following ports are already in use: ${conflicts}"
-        log_error "either stop the conflicting services or set FP_*_PORT in .env to remap them"
+        log_error ""
+        log_error "Conflicting ports: ${conflicts}"
+        log_error "Either stop the offending process(es) or remap the FalconPulsar"
+        log_error "ports by re-running with --ui-port / --rest-port, e.g.:"
+        log_error "    bash $0 --ui-port 18080"
         die "port conflict"
     fi
     log_success "all required ports are free: ${ports}"
@@ -247,6 +274,32 @@ check_docker_daemon() {
         return 1
     fi
     return 0
+}
+
+# check_dockerhub_login — verifies the user is logged into Docker Hub.
+# Required during the pre-release period because the falconpulsar/* images
+# are private. Reads the standard ~/.docker/config.json. We do NOT call
+# `docker login` ourselves — credentials should never be passed on the
+# command line or sit in environment variables.
+check_dockerhub_login() {
+    log_info "checking Docker Hub authentication..."
+    local cfg="${DOCKER_CONFIG:-${HOME}/.docker}/config.json"
+    if [ ! -f "$cfg" ]; then
+        log_error "no Docker config found at ${cfg}"
+        log_error ""
+        log_error "FalconPulsar images are private during the pre-release period."
+        log_error "Log in to Docker Hub with an authorized account first:"
+        log_error "    docker login"
+        log_error "then re-run this installer."
+        die "docker hub login required"
+    fi
+    if ! grep -q '"https://index.docker.io/v1/"' "$cfg" 2>/dev/null && \
+       ! grep -q '"docker.io"' "$cfg" 2>/dev/null; then
+        log_error "Docker config exists but has no Docker Hub credentials."
+        log_error "Run: docker login    (then re-run this installer)"
+        die "docker hub login required"
+    fi
+    log_success "Docker Hub credentials present in ${cfg}"
 }
 
 # Linux-only: install Docker Engine via the official get.docker.com script.
