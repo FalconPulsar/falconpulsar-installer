@@ -59,7 +59,11 @@ log_warn()    { printf '%s[warn]%s %s\n'    "${FP_C_YELLOW}" "${FP_C_RESET}" "$*
 log_error()   { printf '%s[error]%s %s\n'   "${FP_C_RED}"    "${FP_C_RESET}" "$*" >&2; }
 log_success() { printf '%s[ok]%s %s\n'      "${FP_C_GREEN}"  "${FP_C_RESET}" "$*" >&2; }
 log_step()    { printf '\n%s==>%s %s%s%s\n' "${FP_C_CYAN}"   "${FP_C_RESET}" "${FP_C_BOLD}" "$*" "${FP_C_RESET}" >&2; }
-log_debug()   { [ "${FP_DEBUG:-0}" = "1" ] && printf '%s[debug]%s %s\n' "${FP_C_DIM}" "${FP_C_RESET}" "$*" >&2 || true; }
+log_debug() {
+    if [ "${FP_DEBUG:-0}" = "1" ]; then
+        printf '%s[debug]%s %s\n' "${FP_C_DIM}" "${FP_C_RESET}" "$*" >&2
+    fi
+}
 
 # ── Error handling ───────────────────────────────────────────────────────────
 die() {
@@ -93,7 +97,9 @@ require_root() {
 }
 
 require_not_root() {
-    is_root && die "do not run this as root — the installer will use sudo where needed" || true
+    if is_root; then
+        die "do not run this as root — the installer will use sudo where needed"
+    fi
 }
 
 # ── User interaction ─────────────────────────────────────────────────────────

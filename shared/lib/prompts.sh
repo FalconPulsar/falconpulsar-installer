@@ -73,11 +73,12 @@ prompt_path() {
 
     prompt_string "$label" "$var" "$default"
 
-    # Expand ~
+    # Expand a leading ~ to $HOME (manual — tilde does not expand inside quotes)
     local val
     eval "val=\${${var}}"
     case "$val" in
-        '~'|'~/'*) val="${HOME}${val#\~}" ;;
+        '~')    val="$HOME" ;;
+        '~/'*)  val="${HOME}/${val:2}" ;;
     esac
     eval "${var}=\"\$val\""
 }
