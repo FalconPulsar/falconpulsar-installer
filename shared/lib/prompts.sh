@@ -76,10 +76,13 @@ prompt_path() {
     # Expand a leading ~ to $HOME (manual — tilde does not expand inside quotes)
     local val
     eval "val=\${${var}}"
-    case "$val" in
-        '~')    val="$HOME" ;;
-        '~/'*)  val="${HOME}/${val:2}" ;;
-    esac
+    if [ "${val:0:1}" = "~" ]; then
+        if [ "$val" = "~" ]; then
+            val="$HOME"
+        elif [ "${val:0:2}" = "~/" ]; then
+            val="${HOME}/${val:2}"
+        fi
+    fi
     eval "${var}=\"\$val\""
 }
 
