@@ -1,0 +1,59 @@
+# =============================================================================
+# test-linux — smoke-test the Linux installer in a clean container.
+#
+# We can't realistically test systemd-mode in a container without a lot of
+# privileged-mode hackery, so this job tests `--mode docker` only. The
+# systemd path is exercised manually before each release.
+#
+# Runs on every push and pull request that touches the linux/ or shared/
+# directories.
+# =============================================================================
+
+name: test-linux
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'linux/**'
+      - 'shared/**'
+      - '.github/workflows/test-linux.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'linux/**'
+      - 'shared/**'
+      - '.github/workflows/test-linux.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  smoke-ubuntu-2404:
+    name: smoke (ubuntu 24.04, mode=docker)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run installer in a clean Ubuntu container
+        run: |
+          # We mount the repo at /installer:ro and let the script create the
+          # falconpulsar user inside the container. --privileged is required
+          # because the installer creates a user, manages groups, and runs
+          # docker-in-docker.
+          docker run --rm \
+            -v "$PWD":/installer:ro \
+            --privileged \
+            ubuntu:24.04 \
+            bash -c "
+              set -e
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update
+              apt-get install -y curl ca-certificates sudo iproute2 procps
+              FP_ASSUME_YES=1 \
+              FP_ADMIN_PASS='ci-test-password-123' \
+              bash /installer/linux/install.sh --mode docker --yes
+            "
+        # We're not asserting on the running stack here because dind in GHA
+        # has flaky networking — the script's own healthcheck loop will fail
+        # the job if the stack doesn't come up, and that's the assertion.

@@ -1,0 +1,44 @@
+{
+  "admin_user": "admin",
+  "admin_password": "your-secure-password",
+
+  "normal_user": "operator",
+  "normal_password": "operator-password",
+  "generate_token": true,
+
+  "network": {
+    "bind": "0.0.0.0",
+    "rest_port": 7433,
+    "ws_port": 7434,
+    "metrics_port": 7435
+  },
+
+  "auth": {
+    "enabled": true,
+    "method": "apikey"
+  },
+
+  "telemetry": {
+    "enabled": true,
+    "interval_sec": 60,
+    "raw_retention_days": 7,
+    "hourly_retention_days": 90,
+    "max_tracked_users": 100
+  },
+
+  "memory": {
+    "budget_percent": 30,
+    "budget_max_mb": 1024,
+    "budget_min_mb": 64,
+    "min_points_per_series": 1000,
+    "drop_percent": 20,
+    "tier_demote_warm_minutes": 30,
+    "tier_demote_cold_minutes": 120,
+    "tier_sweep_interval": 5,
+    "series_cache_size": 0
+  },
+
+  "storage": {
+    "flush_interval_ms": 30000
+  }
+}

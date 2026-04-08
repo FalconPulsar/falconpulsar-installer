@@ -1,0 +1,48 @@
+# =============================================================================
+# FalconPulsar — systemd user unit (template)
+# =============================================================================
+#
+# Installed by linux/install.sh into:
+#   /home/falconpulsar/.config/systemd/user/falconpulsar.service
+#
+# The installer substitutes @@FP_HOME@@ with the actual home directory before
+# writing the file. Loginctl linger is enabled so the unit starts at boot
+# without requiring an active login session.
+#
+# Manage with (as root or as the falconpulsar user with the right
+# XDG_RUNTIME_DIR):
+#
+#   systemctl --user start    falconpulsar
+#   systemctl --user stop     falconpulsar
+#   systemctl --user restart  falconpulsar
+#   systemctl --user status   falconpulsar
+#   journalctl --user -u falconpulsar -f
+# =============================================================================
+
+[Unit]
+Description=FalconPulsar time-series database stack
+Documentation=https://github.com/FalconPulsar/falconpulsar-installer
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=@@FP_HOME@@
+
+# `docker compose up -d` returns immediately once containers are started.
+# RemainAfterExit=yes keeps the unit "active" so stop/restart work cleanly.
+ExecStart=/usr/bin/docker compose up -d --remove-orphans
+ExecStop=/usr/bin/docker compose down --remove-orphans
+
+# Auto-pull-and-restart on `systemctl --user restart`. The pull is best-effort
+# so an offline restart still works against locally-cached images.
+ExecReload=/bin/sh -c '/usr/bin/docker compose pull || true; /usr/bin/docker compose up -d --remove-orphans'
+
+TimeoutStartSec=300
+TimeoutStopSec=120
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target

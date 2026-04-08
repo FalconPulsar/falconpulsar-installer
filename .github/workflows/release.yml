@@ -1,0 +1,55 @@
+# =============================================================================
+# release — bundle the Linux and macOS installers into a single self-contained
+# script per platform and publish them as a GitHub Release on every v* tag.
+#
+# We bundle so that `curl -fsSL .../install-linux.sh | bash` works without
+# requiring the user to clone the repo. The bundle inlines shared/lib/*.sh
+# and shared/compose.yml into the install.sh so it can run standalone.
+#
+# Triggered by pushing a tag like v0.1.0.
+# =============================================================================
+
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write   # needed to create the release
+
+jobs:
+  bundle:
+    name: bundle installers
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Bundle Linux installer
+        run: |
+          mkdir -p dist
+          ./.github/scripts/bundle.sh linux > "dist/install-linux-${GITHUB_REF_NAME}.sh"
+          chmod +x "dist/install-linux-${GITHUB_REF_NAME}.sh"
+
+      - name: Bundle macOS installer
+        run: |
+          ./.github/scripts/bundle.sh macos > "dist/install-macos-${GITHUB_REF_NAME}.sh"
+          chmod +x "dist/install-macos-${GITHUB_REF_NAME}.sh"
+
+      - name: Copy reference files
+        run: |
+          cp shared/init.example.json dist/
+          cp shared/compose.yml dist/
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "FalconPulsar Installer ${GITHUB_REF_NAME}" \
+            --notes "See REQUIREMENTS.md for supported platforms. Run with: \`curl -fsSL <url> | bash\`" \
+            dist/install-linux-${GITHUB_REF_NAME}.sh \
+            dist/install-macos-${GITHUB_REF_NAME}.sh \
+            dist/init.example.json \
+            dist/compose.yml

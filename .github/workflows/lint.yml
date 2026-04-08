@@ -1,0 +1,63 @@
+# =============================================================================
+# Lint — shellcheck on every bash script in the installer.
+#
+# Runs on every push and pull request. Fails the build if shellcheck finds
+# anything in the linux/, macos/, or shared/lib/ scripts.
+# =============================================================================
+
+name: lint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  shellcheck:
+    name: shellcheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+
+      - name: Run shellcheck
+        run: |
+          set -e
+          # -x: follow source statements
+          # -P: search path for sourced files
+          # -e SC1091: don't fail on "can't follow non-constant source"
+          shellcheck \
+            -x \
+            -P shared/lib \
+            -e SC1091 \
+            linux/install.sh \
+            linux/uninstall.sh \
+            macos/install.sh \
+            macos/uninstall.sh \
+            shared/lib/common.sh \
+            shared/lib/checks.sh \
+            shared/lib/prompts.sh
+
+  validate-compose:
+    name: validate compose.yml
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate shared/compose.yml
+        # Use docker compose config which fully parses + validates
+        # interpolation. We pass dummy values for the required env vars so
+        # the file actually parses; this is a syntax check, not a runtime test.
+        run: |
+          cd shared
+          FP_ADMIN_PASS=ci-validation \
+          FP_DATA_DIR=/tmp/fp-ci \
+          FP_UID=1000 \
+          FP_GID=1000 \
+          docker compose config >/dev/null

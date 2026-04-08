@@ -1,0 +1,40 @@
+# Local-only environment files (the installer GENERATES these on the
+# user's host; they should never be checked in to source control)
+.env
+.env.local
+.env.*
+
+# Inno Setup compiled output (built by CI on Windows runners)
+windows/Output/
+*.exe
+
+# Local test artifacts
+*.log
+test-output/
+.cache/
+
+# OS noise
+.DS_Store
+Thumbs.db
+
+# Editor / IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+*.bak
+
+# AI-assistant context (always local-only — see CLAUDE.md convention)
+.claude/
+CLAUDE.md
+**/CLAUDE.md
+
+# Python (in case anyone adds helper scripts)
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Internal dev-only tools
+internal/
