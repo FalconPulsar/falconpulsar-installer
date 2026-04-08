@@ -117,31 +117,55 @@ log_step "step 2/6 — container runtime"
 
 detect_mac_runtime() {
     # Echo the runtime name and return 0 if found, else return 1.
-    if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
-        # docker info works — figure out which engine is behind it
-        local ctx
-        ctx="$(docker context show 2>/dev/null || echo default)"
-        case "$ctx" in
-            colima*)        echo "Colima";          return 0 ;;
-            desktop-linux)  echo "Docker Desktop";  return 0 ;;
-            rancher-desktop) echo "Rancher Desktop"; return 0 ;;
-            orbstack)       echo "OrbStack";        return 0 ;;
-            *)              echo "Docker (${ctx})"; return 0 ;;
-        esac
+
+    if ! command -v docker >/dev/null 2>&1; then
+        log_info "docker CLI not found in PATH" >&2
+        # Skip the daemon probe entirely — fall through to the
+        # what-is-installed report below.
+        :
+    else
+        log_info "probing docker daemon (docker info, may take a few seconds)..." >&2
+
+        # `docker info` will hang for ~30s talking to /var/run/docker.sock
+        # if no daemon is listening. Wrap it in a 5s timeout when GNU
+        # `timeout` (or BSD `gtimeout` from coreutils) is available so a
+        # dead socket doesn't stall the installer. If neither is present,
+        # fall back to the unbounded call.
+        local docker_ok=1
+        if command -v timeout >/dev/null 2>&1; then
+            timeout 5 docker info >/dev/null 2>&1 || docker_ok=0
+        elif command -v gtimeout >/dev/null 2>&1; then
+            gtimeout 5 docker info >/dev/null 2>&1 || docker_ok=0
+        else
+            docker info >/dev/null 2>&1 || docker_ok=0
+        fi
+
+        if [ "$docker_ok" = "1" ]; then
+            local ctx
+            ctx="$(docker context show 2>/dev/null || echo default)"
+            case "$ctx" in
+                colima*)         echo "Colima";          return 0 ;;
+                desktop-linux)   echo "Docker Desktop";  return 0 ;;
+                rancher-desktop) echo "Rancher Desktop"; return 0 ;;
+                orbstack)        echo "OrbStack";        return 0 ;;
+                *)               echo "Docker (${ctx})"; return 0 ;;
+            esac
+        fi
     fi
 
-    # Daemon not running — try to identify what's installed even so
+    # Daemon not reachable — try to identify what's installed even so, so
+    # the user gets a "start X" message instead of a generic "install one".
+    if [ -d "/Applications/OrbStack.app" ]; then
+        echo "OrbStack (not running)"; return 1
+    fi
     if [ -d "/Applications/Docker.app" ]; then
         echo "Docker Desktop (not running)"; return 1
-    fi
-    if command -v colima >/dev/null 2>&1; then
-        echo "Colima (not running)"; return 1
     fi
     if [ -d "/Applications/Rancher Desktop.app" ]; then
         echo "Rancher Desktop (not running)"; return 1
     fi
-    if [ -d "/Applications/OrbStack.app" ]; then
-        echo "OrbStack (not running)"; return 1
+    if command -v colima >/dev/null 2>&1; then
+        echo "Colima (not running)"; return 1
     fi
     return 2
 }
