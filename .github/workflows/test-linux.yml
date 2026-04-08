@@ -75,8 +75,12 @@ jobs:
               apt-get update
               apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
 
-              # Start dockerd in background (no systemd in this container)
-              nohup dockerd > /var/log/dockerd.log 2>&1 &
+              # Start dockerd in background (no systemd in this container).
+              # The vfs storage driver is the only one that reliably works
+              # in nested docker-in-docker on the GHA runner — overlay2
+              # fails with "failed to convert whiteout" on certain layers
+              # because the runner already uses overlay as its top fs.
+              nohup dockerd --storage-driver=vfs > /var/log/dockerd.log 2>&1 &
               for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
                 if docker info >/dev/null 2>&1; then break; fi
                 sleep 1
