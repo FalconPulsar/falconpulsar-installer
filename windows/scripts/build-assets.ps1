@@ -131,3 +131,8 @@ Get-ChildItem -Path $assetsDir -Filter '*.bmp' | ForEach-Object {
     $sizeKB = [math]::Round($_.Length / 1KB, 1)
     Write-Host "  $($_.Name) ($sizeKB KB)"
 }
+
+# Explicit exit 0 — calling code uses $LASTEXITCODE, which is only set by
+# native exes, not by .ps1 dot-source / & invocations. Without this, the
+# CI step's `if ($LASTEXITCODE -ne 0)` check sees stale state.
+exit 0
