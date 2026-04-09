@@ -294,31 +294,33 @@ begin
   WizardForm.NextButton.Enabled := LegalCheckBox.Checked;
 end;
 
+// ── Helper: add a single legal-document link to the legal page ───────────
+// Hoisted out of CreateLegalPage because Inno Setup's Pascal Script does
+// not support nested procedures.
+procedure AddLegalLink(Caption, Url: String; var Y: Integer);
+var
+  Link: TNewStaticText;
+begin
+  Link := TNewStaticText.Create(LegalPage);
+  Link.Parent     := LegalPage.Surface;
+  Link.Left       := ScaleX(20);
+  Link.Top        := Y;
+  Link.Width      := LegalPage.SurfaceWidth - ScaleX(40);
+  Link.Caption    := '• ' + Caption + '   (' + Url + ')';
+  Link.Hint       := Url;
+  Link.ShowHint   := False;
+  Link.Cursor     := crHand;
+  Link.Font.Color := clBlue;
+  Link.Font.Style := [fsUnderline];
+  Link.OnClick    := @OpenLegalUrl;
+  Y := Y + ScaleY(22);
+end;
+
 // ── Build the custom legal acknowledgement page ──────────────────────────
 procedure CreateLegalPage();
 var
   IntroLabel: TNewStaticText;
   Y: Integer;
-
-  procedure AddLink(Caption, Url: String);
-  var
-    Link: TNewStaticText;
-  begin
-    Link := TNewStaticText.Create(LegalPage);
-    Link.Parent     := LegalPage.Surface;
-    Link.Left       := ScaleX(20);
-    Link.Top        := Y;
-    Link.Width      := LegalPage.SurfaceWidth - ScaleX(40);
-    Link.Caption    := '• ' + Caption + '   (' + Url + ')';
-    Link.Hint       := Url;
-    Link.ShowHint   := False;
-    Link.Cursor     := crHand;
-    Link.Font.Color := clBlue;
-    Link.Font.Style := [fsUnderline];
-    Link.OnClick    := @OpenLegalUrl;
-    Y := Y + ScaleY(22);
-  end;
-
 begin
   LegalPage := CreateCustomPage(
     wpWelcome,
@@ -339,10 +341,10 @@ begin
     'browser. You must check the box at the bottom to continue.';
 
   Y := ScaleY(80);
-  AddLink('Terms of Service',      'https://falconpulsar.com/terms/');
-  AddLink('Privacy Policy',        'https://falconpulsar.com/privacy/');
-  AddLink('Acceptable Use Policy', 'https://falconpulsar.com/aup/');
-  AddLink('Security Policy',       'https://falconpulsar.com/security/');
+  AddLegalLink('Terms of Service',      'https://falconpulsar.com/terms/',   Y);
+  AddLegalLink('Privacy Policy',        'https://falconpulsar.com/privacy/', Y);
+  AddLegalLink('Acceptable Use Policy', 'https://falconpulsar.com/aup/',     Y);
+  AddLegalLink('Security Policy',       'https://falconpulsar.com/security/', Y);
 
   LegalCheckBox := TNewCheckBox.Create(LegalPage);
   LegalCheckBox.Parent   := LegalPage.Surface;
