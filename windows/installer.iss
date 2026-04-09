@@ -91,6 +91,7 @@ Source: "..\shared\init.example.json";                      DestDir: "{app}\shar
 Source: "..\shared\lib\common.sh";                          DestDir: "{app}\shared\lib";     Flags: ignoreversion
 Source: "..\shared\lib\checks.sh";                          DestDir: "{app}\shared\lib";     Flags: ignoreversion
 Source: "..\shared\lib\prompts.sh";                         DestDir: "{app}\shared\lib";     Flags: ignoreversion
+Source: "..\shared\lib\bootstrap.sh";                       DestDir: "{app}\shared\lib";     Flags: ignoreversion
 
 ; ── PowerShell helpers ──────────────────────────────────────────────────────
 Source: "helpers\lib.ps1";                                  DestDir: "{app}\helpers";        Flags: ignoreversion

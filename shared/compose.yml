@@ -7,7 +7,6 @@
 # at least the following variables:
 #
 #   FP_ADMIN_USER       admin username (default: admin)
-#   FP_ADMIN_PASS       admin password (REQUIRED — no default, install fails if missing)
 #   FP_DATA_DIR         absolute host path for the database directory
 #   FP_UID              numeric host UID for the falconpulsar user (Linux/WSL only;
 #                       on macOS this is the current user's UID)
@@ -15,6 +14,17 @@
 #
 # Optional environment variables (with defaults):
 #
+#   FP_ADMIN_PASS       admin password — only set during the first install,
+#                       passed via the parent shell environment, NEVER stored
+#                       in .env. Required only on first run when the core's
+#                       data directory is empty. After first-run init, core
+#                       reads its hashed password from the database and never
+#                       needs the plaintext again.
+#   FP_API_KEY          AI gateway service token, written to .env by the
+#                       installer after first-run init via REST API
+#                       /api/v1/tokens. Used by the ai-gateway container as
+#                       its Bearer auth header. Limited permission set —
+#                       see shared/lib/bootstrap.sh.
 #   FP_REST_PORT        REST API port (default 7433)
 #   FP_WS_PORT          WebSocket port (default 7434)
 #   FP_PUBSUB_PORT      Pub/Sub WebSocket port (default 7435)
@@ -57,8 +67,12 @@ services:
       FP_PUBSUB_PORT: "7435"
       FP_LOG_LEVEL: ${FP_LOG_LEVEL:-info}
       FP_ADMIN_USER: ${FP_ADMIN_USER:-admin}
-      # Required. Compose fails to start if FP_ADMIN_PASS is empty or unset.
-      FP_ADMIN_PASS: ${FP_ADMIN_PASS:?FP_ADMIN_PASS is required — set it in .env}
+      # Optional after first-run init. The installer passes this via the
+      # parent shell on the very first `docker compose up -d core`, so the
+      # core entrypoint can do --init-auto. After that the value stays empty
+      # forever and the entrypoint skips re-init because the config file
+      # already exists.
+      FP_ADMIN_PASS: ${FP_ADMIN_PASS:-}
     healthcheck:
       # Bash /dev/tcp port-open check. The core process binds the REST port
       # only after init-auto completes, so this is effectively a readiness
@@ -96,8 +110,11 @@ services:
         condition: service_healthy
     environment:
       FALCONPULSAR_URL: http://core:7433
-      FP_USERNAME: ${FP_ADMIN_USER:-admin}
-      FP_PASSWORD: ${FP_ADMIN_PASS}
+      # Bearer service token written to .env by the installer after
+      # first-run init. The gateway authenticates as itself using this
+      # token instead of the admin username/password. The token has a
+      # limited permission set — see shared/lib/bootstrap.sh.
+      FP_API_KEY: ${FP_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       XAI_API_KEY: ${XAI_API_KEY:-}
     networks:
