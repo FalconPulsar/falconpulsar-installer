@@ -26,7 +26,7 @@ jobs:
     outputs:
       tag: ${{ github.ref_name }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Bundle Linux installer
         run: |
@@ -45,7 +45,7 @@ jobs:
           cp shared/compose.yml dist/
 
       - name: Upload bundles
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: bundles-shell
           path: dist/
@@ -54,7 +54,7 @@ jobs:
     name: build windows installer .exe
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install Inno Setup 6
         shell: powershell
@@ -67,7 +67,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Upload .exe
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: bundles-windows
           path: windows/Output/*.exe
@@ -80,13 +80,13 @@ jobs:
       contents: write
     steps:
       - name: Download shell bundles
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: bundles-shell
           path: dist/
 
       - name: Download windows .exe
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: bundles-windows
           path: dist/

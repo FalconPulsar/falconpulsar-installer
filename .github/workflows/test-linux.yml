@@ -33,7 +33,7 @@ jobs:
     name: smoke (ubuntu 24.04, mode=docker)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Run installer in a clean Ubuntu container
         env:

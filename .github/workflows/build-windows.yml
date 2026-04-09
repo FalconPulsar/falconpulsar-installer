@@ -40,7 +40,7 @@ jobs:
     name: compile installer.iss
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install Inno Setup 6
         shell: powershell
@@ -82,7 +82,7 @@ jobs:
           }
 
       - name: Upload installer artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: FalconPulsar-Setup-windows
           path: windows/Output/*.exe
