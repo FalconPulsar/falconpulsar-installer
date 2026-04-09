@@ -118,6 +118,9 @@ EOF
 
 require_root
 
+# ── Legal acknowledgement (must come before any system change) ──────────────
+prompt_legal_acknowledgement
+
 # ── Step 1: Pre-flight checks ───────────────────────────────────────────────
 log_step "step 1/8 — pre-flight checks"
 check_supported_os

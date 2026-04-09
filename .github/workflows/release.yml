@@ -60,6 +60,12 @@ jobs:
         shell: powershell
         run: choco install innosetup --no-progress -y
 
+      - name: Generate wizard images from logo
+        shell: powershell
+        run: |
+          & ".\windows\scripts\build-assets.ps1"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Compile installer.iss
         shell: powershell
         run: |

@@ -28,6 +28,50 @@ fi
 # Minimum admin password length. Industrial-friendly but not insulting.
 FP_MIN_PASSWORD_LEN=10
 
+# ── Legal acknowledgement ───────────────────────────────────────────────────
+# Shows the four legal documents (Terms, Privacy, AUP, Security) as
+# clickable URLs and asks the user to confirm they have read and agree.
+# Refusing exits the installer with a non-zero status. Honours
+# FP_ASSUME_YES=1 (CI / unattended) and FP_LEGAL_ACCEPTED=1 (already
+# accepted via env var, e.g. when re-launched by a parent installer).
+prompt_legal_acknowledgement() {
+    if [ "${FP_LEGAL_ACCEPTED:-0}" = "1" ]; then
+        log_debug "FP_LEGAL_ACCEPTED=1 — skipping legal prompt"
+        return 0
+    fi
+
+    if [ "${FP_ASSUME_YES:-0}" = "1" ]; then
+        log_warn "FP_ASSUME_YES=1 — accepting FalconPulsar legal terms on your behalf"
+        log_warn "By continuing, you confirm you have read and agree to:"
+        log_warn "  https://falconpulsar.com/terms/"
+        log_warn "  https://falconpulsar.com/privacy/"
+        log_warn "  https://falconpulsar.com/aup/"
+        log_warn "  https://falconpulsar.com/security/"
+        export FP_LEGAL_ACCEPTED=1
+        return 0
+    fi
+
+    cat >&2 <<EOF
+
+${FP_C_BOLD}Before you install${FP_C_RESET}
+
+By installing FalconPulsar you agree to the following documents.
+Please open each link in a browser and read it before continuing:
+
+  ${FP_C_CYAN}1. Terms of Service${FP_C_RESET}      https://falconpulsar.com/terms/
+  ${FP_C_CYAN}2. Privacy Policy${FP_C_RESET}        https://falconpulsar.com/privacy/
+  ${FP_C_CYAN}3. Acceptable Use Policy${FP_C_RESET} https://falconpulsar.com/aup/
+  ${FP_C_CYAN}4. Security Policy${FP_C_RESET}       https://falconpulsar.com/security/
+
+EOF
+
+    if ! confirm "I have read and agree to all four documents" default-no; then
+        die "Installation cancelled — you must accept the legal terms to continue."
+    fi
+
+    export FP_LEGAL_ACCEPTED=1
+}
+
 # ── Generic string prompt ────────────────────────────────────────────────────
 # prompt_string "label" var_name [default]
 prompt_string() {

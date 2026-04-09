@@ -62,6 +62,10 @@ OutputBaseFilename=FalconPulsar-Setup-{#MyAppVersion}
 ; icon will land before v1.0.
 WizardStyle=modern
 WizardSizePercent=120
+WizardImageFile=assets\welcome.bmp
+WizardSmallImageFile=assets\header.bmp
+WizardImageStretch=no
+WizardImageAlphaFormat=defined
 Compression=lzma2/max
 SolidCompression=yes
 LicenseFile=assets\license.rtf
@@ -77,6 +81,16 @@ UninstallDisplayName={#MyAppName} {#MyAppVersion}
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
+
+[Messages]
+; Custom welcome page text. WelcomeLabel1 is the bold heading; WelcomeLabel2
+; is the body paragraph beneath it. Inno Setup wraps the body to the panel
+; width automatically — keep paragraphs short.
+WelcomeLabel1=Welcome to the FalconPulsar Setup Wizard
+WelcomeLabel2=FalconPulsar is a high-performance time-series database for industrial IoT and SCADA applications.%n%nThis installer will set up the entire FalconPulsar stack on your computer:%n%n  • Core — the time-series database (REST API + WebSocket)%n  • Web UI — for visualizing data, building dashboards, configuring datasources%n  • AI Gateway — natural-language interface to your data%n%nThe stack runs inside WSL2 (Windows Subsystem for Linux). The installer will set up WSL2 and install Ubuntu 24.04 if they are not already present.%n%nClick Next to continue.
+
+; Finish page — point the user at the Web UI
+FinishedLabel=FalconPulsar is now installed and running on your computer.%n%nOpen %1 in any web browser to log in to the Web UI with the admin credentials you set during this install. The admin password is NOT stored on disk anywhere — make sure you saved it.%n%nClick Finish to exit Setup.
 
 [Files]
 ; ── Bash installer + shared libs ────────────────────────────────────────────
@@ -130,6 +144,8 @@ Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Fil
 
 var
   CredentialsPage: TInputQueryWizardPage;
+  LegalPage: TWizardPage;
+  LegalCheckBox: TNewCheckBox;
   FpLogFile: String;
 
 // ── Helper: locate the install log file ────────────────────────────────────
@@ -260,11 +276,101 @@ begin
   end;
 end;
 
+// ── Helper: open a URL in the user's default browser ─────────────────────
+procedure OpenLegalUrl(Sender: TObject);
+var
+  Link: TNewStaticText;
+  Url: String;
+  ResultCode: Integer;
+begin
+  Link := Sender as TNewStaticText;
+  Url := Link.Hint;   // we stash the URL in the Hint property below
+  ShellExec('open', Url, '', '', SW_SHOWNORMAL, ewNoWait, ResultCode);
+end;
+
+// ── Helper: re-evaluate the legal page Next button based on checkbox ─────
+procedure LegalCheckClick(Sender: TObject);
+begin
+  WizardForm.NextButton.Enabled := LegalCheckBox.Checked;
+end;
+
+// ── Build the custom legal acknowledgement page ──────────────────────────
+procedure CreateLegalPage();
+var
+  IntroLabel: TNewStaticText;
+  Y: Integer;
+
+  procedure AddLink(Caption, Url: String);
+  var
+    Link: TNewStaticText;
+  begin
+    Link := TNewStaticText.Create(LegalPage);
+    Link.Parent     := LegalPage.Surface;
+    Link.Left       := ScaleX(20);
+    Link.Top        := Y;
+    Link.Width      := LegalPage.SurfaceWidth - ScaleX(40);
+    Link.Caption    := '• ' + Caption + '   (' + Url + ')';
+    Link.Hint       := Url;
+    Link.ShowHint   := False;
+    Link.Cursor     := crHand;
+    Link.Font.Color := clBlue;
+    Link.Font.Style := [fsUnderline];
+    Link.OnClick    := @OpenLegalUrl;
+    Y := Y + ScaleY(22);
+  end;
+
+begin
+  LegalPage := CreateCustomPage(
+    wpWelcome,
+    'Before you install',
+    'Please review and accept the FalconPulsar legal terms');
+
+  IntroLabel := TNewStaticText.Create(LegalPage);
+  IntroLabel.Parent  := LegalPage.Surface;
+  IntroLabel.Left    := ScaleX(20);
+  IntroLabel.Top     := ScaleY(8);
+  IntroLabel.Width   := LegalPage.SurfaceWidth - ScaleX(40);
+  IntroLabel.AutoSize := False;
+  IntroLabel.Height  := ScaleY(60);
+  IntroLabel.WordWrap := True;
+  IntroLabel.Caption :=
+    'By installing FalconPulsar, you confirm you have read and agree to ' +
+    'all four documents below. Click each link to open it in your default ' +
+    'browser. You must check the box at the bottom to continue.';
+
+  Y := ScaleY(80);
+  AddLink('Terms of Service',      'https://falconpulsar.com/terms/');
+  AddLink('Privacy Policy',        'https://falconpulsar.com/privacy/');
+  AddLink('Acceptable Use Policy', 'https://falconpulsar.com/aup/');
+  AddLink('Security Policy',       'https://falconpulsar.com/security/');
+
+  LegalCheckBox := TNewCheckBox.Create(LegalPage);
+  LegalCheckBox.Parent   := LegalPage.Surface;
+  LegalCheckBox.Left     := ScaleX(20);
+  LegalCheckBox.Top      := Y + ScaleY(20);
+  LegalCheckBox.Width    := LegalPage.SurfaceWidth - ScaleX(40);
+  LegalCheckBox.Height   := ScaleY(24);
+  LegalCheckBox.Caption  := 'I have read and agree to all four documents';
+  LegalCheckBox.Checked  := False;
+  LegalCheckBox.OnClick  := @LegalCheckClick;
+end;
+
+// Called by Inno Setup whenever the wizard switches to a new page. We use
+// this to gate the Next button on the legal page based on the checkbox
+// state.
+procedure CurPageChanged(CurPageID: Integer);
+begin
+  if (LegalPage <> nil) and (CurPageID = LegalPage.ID) then
+    WizardForm.NextButton.Enabled := LegalCheckBox.Checked;
+end;
+
 // Custom page: admin username + password (double-entry).
 procedure InitializeWizard;
 begin
+  CreateLegalPage();
+
   CredentialsPage := CreateInputQueryPage(
-    wpWelcome,
+    LegalPage.ID,
     'FalconPulsar Admin Credentials',
     'Set the administrator account for the FalconPulsar database',
     'These credentials will be used to log in to the FalconPulsar Web UI ' +
@@ -286,10 +392,23 @@ begin
   WizardForm.BringToFront();
 end;
 
-// Validate the credentials page when the user clicks Next.
+// Validate the legal and credentials pages when the user clicks Next.
 function NextButtonClick(CurPageID: Integer): Boolean;
 begin
   Result := True;
+
+  // Legal page: must have the checkbox ticked
+  if (LegalPage <> nil) and (CurPageID = LegalPage.ID) then
+  begin
+    if not LegalCheckBox.Checked then
+    begin
+      MsgBox('You must accept the FalconPulsar legal terms to continue.',
+             mbError, MB_OK);
+      Result := False;
+      Exit;
+    end;
+  end;
+
   if CurPageID = CredentialsPage.ID then
   begin
     if Length(CredentialsPage.Values[0]) < 1 then

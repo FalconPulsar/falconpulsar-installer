@@ -48,7 +48,22 @@ choco install innosetup
 This installs `iscc.exe` (the command-line compiler) at
 `C:\Program Files (x86)\Inno Setup 6\ISCC.exe`.
 
-### 2. Compile
+### 2. Generate wizard images
+
+The Inno Setup script references two BMP files (`windows/assets/header.bmp`
+and `windows/assets/welcome.bmp`) that are **gitignored** because they're
+generated from `windows/assets/falcon-logo.png` on every build. Run the
+generator first:
+
+```powershell
+& windows\scripts\build-assets.ps1
+```
+
+This produces both BMPs from the source PNG using `System.Drawing` — no
+ImageMagick or other external dependency. Re-run it any time you change
+the logo source file.
+
+### 3. Compile
 
 From a PowerShell prompt at the **repo root** (not inside `windows/`):
 

@@ -106,6 +106,9 @@ ${FP_C_BOLD}${FP_C_CYAN}
 ${FP_C_RESET}
 EOF
 
+# ── Legal acknowledgement (must come before any system change) ──────────────
+prompt_legal_acknowledgement
+
 # ── Step 1: Pre-flight ──────────────────────────────────────────────────────
 log_step "step 1/6 — pre-flight checks"
 check_supported_os

@@ -54,6 +54,18 @@ jobs:
           }
           Write-Host "ISCC.exe present at $iscc"
 
+      - name: Generate wizard images from logo
+        shell: powershell
+        run: |
+          # Produces windows/assets/header.bmp + welcome.bmp from
+          # falcon-logo.png. Both are referenced from installer.iss
+          # and would otherwise be missing at compile time (gitignored).
+          & ".\windows\scripts\build-assets.ps1"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "build-assets.ps1 failed with exit code $LASTEXITCODE"
+            exit $LASTEXITCODE
+          }
+
       - name: Compile installer.iss
         shell: powershell
         run: |

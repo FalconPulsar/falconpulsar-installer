@@ -8,6 +8,11 @@
 windows/Output/
 *.exe
 
+# Generated wizard images (built from windows/assets/falcon-logo.png by
+# windows/scripts/build-assets.ps1 — see windows/README-windows-build.md)
+windows/assets/header.bmp
+windows/assets/welcome.bmp
+
 # Local test artifacts
 *.log
 test-output/
