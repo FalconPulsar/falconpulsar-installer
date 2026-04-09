@@ -14,16 +14,18 @@ name: test-linux
 on:
   push:
     branches: [main]
-    paths:
-      - 'linux/**'
-      - 'shared/**'
-      - '.github/workflows/test-linux.yml'
+    paths-ignore:
+      - '**/*.md'
+      - 'LICENSE'
+      - '.gitignore'
+      - '.editorconfig'
   pull_request:
     branches: [main]
-    paths:
-      - 'linux/**'
-      - 'shared/**'
-      - '.github/workflows/test-linux.yml'
+    paths-ignore:
+      - '**/*.md'
+      - 'LICENSE'
+      - '.gitignore'
+      - '.editorconfig'
 
 permissions:
   contents: read

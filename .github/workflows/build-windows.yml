@@ -19,18 +19,18 @@ on:
   push:
     branches: [main]
     tags: ['v*']
-    paths:
-      - 'windows/**'
-      - 'linux/**'
-      - 'shared/**'
-      - '.github/workflows/build-windows.yml'
+    paths-ignore:
+      - '**/*.md'
+      - 'LICENSE'
+      - '.gitignore'
+      - '.editorconfig'
   pull_request:
     branches: [main]
-    paths:
-      - 'windows/**'
-      - 'linux/**'
-      - 'shared/**'
-      - '.github/workflows/build-windows.yml'
+    paths-ignore:
+      - '**/*.md'
+      - 'LICENSE'
+      - '.gitignore'
+      - '.editorconfig'
 
 permissions:
   contents: read
