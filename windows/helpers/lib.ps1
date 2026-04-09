@@ -24,21 +24,64 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+# ── Log file ─────────────────────────────────────────────────────────────────
+# Every helper appends to a single log file at %TEMP%\falconpulsar-install.log.
+# The Inno Setup orchestrator reads this file when a helper fails so the user
+# sees what went wrong instead of a silent abort. The path is hard-coded so
+# the orchestrator and the helpers agree without having to pass it as a
+# parameter to every script.
+
+$Script:FpLogPath = Join-Path $env:TEMP 'falconpulsar-install.log'
+
+function Write-FpLogLine {
+    param([Parameter(Mandatory)] [string] $Line)
+    try {
+        # UTF-8 with no BOM. Append. Best-effort — never throw because the
+        # log file is for diagnostics, not control flow.
+        Add-Content -Path $Script:FpLogPath -Value $Line -Encoding UTF8 -ErrorAction SilentlyContinue
+    } catch {
+        # ignore
+    }
+}
+
 function Write-Step {
     param([Parameter(Mandatory)] [string] $Message)
     Write-Output ''
     Write-Output "==> $Message"
+    Write-FpLogLine ''
+    Write-FpLogLine "==> $Message"
 }
 
-function Write-Info  { param([Parameter(Mandatory)] [string] $Message) Write-Output "[info] $Message" }
-function Write-Warn  { param([Parameter(Mandatory)] [string] $Message) Write-Output "[warn] $Message" }
-function Write-Err   { param([Parameter(Mandatory)] [string] $Message) [Console]::Error.WriteLine("[error] $Message") }
+function Write-Info {
+    param([Parameter(Mandatory)] [string] $Message)
+    $line = "[info] $Message"
+    Write-Output $line
+    Write-FpLogLine $line
+}
+
+function Write-Warn {
+    param([Parameter(Mandatory)] [string] $Message)
+    $line = "[warn] $Message"
+    Write-Output $line
+    Write-FpLogLine $line
+}
+
+function Write-Err {
+    param([Parameter(Mandatory)] [string] $Message)
+    $line = "[error] $Message"
+    [Console]::Error.WriteLine($line)
+    Write-FpLogLine $line
+}
 
 function Stop-WithError {
     param([Parameter(Mandatory)] [string] $Message)
     Write-Err $Message
     exit 1
 }
+
+# Note: the log file is truncated by the Inno Setup orchestrator at the
+# start of each install run (in CurStepChanged(ssInstall)). Each helper
+# always appends — never overwrites.
 
 # ── Windows feature / WSL probes ────────────────────────────────────────────
 

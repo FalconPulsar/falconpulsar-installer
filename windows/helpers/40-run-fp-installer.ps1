@@ -71,14 +71,55 @@ if ($rc -ne 0) {
     Stop-WithError "Failed to stage installer files (exit $rc)"
 }
 
-# ── 3. Docker Hub credentials check ─────────────────────────────────────────
-# The bash installer's check_dockerhub_login will catch missing credentials,
-# but we want a clearer Windows-flavoured message. The user needs to have
-# already done `wsl -d Ubuntu-24.04 -- docker login` *or* there needs to
-# be a config.json at /root/.docker/config.json. For first-time users this
-# will fail — and that's fine, the bash installer's error message tells
-# them what to do.
-#
+# ── 3. Docker Desktop detection ─────────────────────────────────────────────
+# If Docker Desktop is running on the host, the bash installer expects
+# `docker` to be available inside our Ubuntu-24.04 distro. Docker Desktop
+# provides this via "WSL Integration" in its settings — but only for the
+# distros the user has explicitly enabled. If integration is disabled for
+# our distro, `docker` will not be in PATH inside it and the bash
+# installer's get.docker.com fallback will conflict with Docker Desktop's
+# own daemon. Detect this up front and give the user a clear "go enable
+# WSL Integration" message instead of failing silently inside bash.
+$dockerDesktopRunning = $false
+if (Get-Process -Name 'Docker Desktop' -ErrorAction SilentlyContinue) {
+    $dockerDesktopRunning = $true
+    Write-Info 'Docker Desktop detected on host'
+}
+
+# Quick probe: does `docker` exist inside our distro?
+$dockerInDistro = & wsl.exe -d $Distro -u root -- bash -c 'command -v docker >/dev/null 2>&1 && echo yes || echo no' 2>$null
+$dockerAvailable = $false
+if ($dockerInDistro) {
+    $dockerAvailable = ($dockerInDistro.Trim() -eq 'yes')
+}
+
+if ($dockerDesktopRunning -and -not $dockerAvailable) {
+    Stop-WithError @"
+Docker Desktop is running on your Windows host, but its WSL Integration is
+NOT enabled for the $Distro distro. The bash installer needs `docker`
+to be available inside the distro.
+
+To fix this:
+  1. Open Docker Desktop
+  2. Go to Settings -> Resources -> WSL Integration
+  3. Toggle ON the integration for "$Distro"
+  4. Click "Apply & Restart"
+  5. Re-run FalconPulsar-Setup.exe
+
+Alternatively, quit Docker Desktop entirely — the FalconPulsar installer
+will then install Docker Engine directly inside the distro via the
+official get.docker.com script.
+"@
+}
+
+if ($dockerAvailable) {
+    Write-Info "docker is already available inside $Distro (skipping bash installer's docker install)"
+} else {
+    Write-Info 'docker not present in distro yet — bash installer will install via get.docker.com'
+}
+
+# ── 4. Docker Hub credentials check ─────────────────────────────────────────
+# The bash installer's check_dockerhub_login will catch missing credentials.
 # We do NOT prompt for Docker Hub credentials in the GUI for v0.1 — that's
 # a security/UX rabbit hole (storing creds, MFA, sso). Documented in
 # README-windows-build.md.
