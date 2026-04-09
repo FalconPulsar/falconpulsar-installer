@@ -1,5 +1,15 @@
 # FalconPulsar Installer
 
+[![lint](https://github.com/FalconPulsar/falconpulsar-installer/actions/workflows/lint.yml/badge.svg?branch=main)](https://github.com/FalconPulsar/falconpulsar-installer/actions/workflows/lint.yml)
+[![test-linux](https://github.com/FalconPulsar/falconpulsar-installer/actions/workflows/test-linux.yml/badge.svg?branch=main)](https://github.com/FalconPulsar/falconpulsar-installer/actions/workflows/test-linux.yml)
+[![build-windows](https://github.com/FalconPulsar/falconpulsar-installer/actions/workflows/build-windows.yml/badge.svg?branch=main)](https://github.com/FalconPulsar/falconpulsar-installer/actions/workflows/build-windows.yml)
+
+![Linux](https://img.shields.io/badge/Linux-supported-success?logo=linux&logoColor=white)
+![macOS](https://img.shields.io/badge/macOS-supported-success?logo=apple&logoColor=white)
+![Windows](https://img.shields.io/badge/Windows-supported-success?logo=windows&logoColor=white)
+![arch](https://img.shields.io/badge/arch-x64%20%7C%20arm64-informational)
+![status](https://img.shields.io/badge/status-pre--release-orange)
+
 Source code for the FalconPulsar installers — the things that take a fresh machine
 from "no Docker, no FalconPulsar" to "FalconPulsar is running and ready to use".
 
