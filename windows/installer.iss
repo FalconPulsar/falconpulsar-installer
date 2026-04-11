@@ -65,7 +65,6 @@ WizardSizePercent=120
 WizardImageFile=assets\welcome.bmp
 WizardSmallImageFile=assets\header.bmp
 WizardImageStretch=no
-WizardImageAlphaFormat=defined
 Compression=lzma2/max
 SolidCompression=yes
 LicenseFile=assets\license.rtf
@@ -210,7 +209,10 @@ begin
   // Append a marker line to the log so the user can see step boundaries
   SaveStringToFile(FpLogFile, #13#10 + '################ ' + ScriptName + ' ################' + #13#10, True);
 
-  if not Exec('powershell.exe', FullArgs, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+  // SW_SHOWNORMAL makes the PowerShell window visible so the user can
+  // see errors in real time. Change to SW_HIDE for a cleaner UX once
+  // the install flow is verified working.
+  if not Exec('powershell.exe', FullArgs, ExpandConstant('{app}\helpers'), SW_SHOWNORMAL, ewWaitUntilTerminated, ResultCode) then
   begin
     ShowStepError(StatusMsg, -1);
     Result := False;
