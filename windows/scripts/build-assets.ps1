@@ -105,15 +105,8 @@ try {
             $titleFont.Dispose()
             $titleBrush.Dispose()
 
-            # Tag line below the wordmark
-            $tagFont  = New-Object System.Drawing.Font('Segoe UI', 8, [System.Drawing.FontStyle]::Regular)
-            $tagBrush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(255, 180, 200, 230))
-            $tagRect  = New-Object System.Drawing.RectangleF 8, 268, 176, 50
-            $g.DrawString(
-                "Industrial time-series database`r`nfor IoT and SCADA",
-                $tagFont, $tagBrush, $tagRect, $fmt)
-            $tagFont.Dispose()
-            $tagBrush.Dispose()
+            # Tag line removed per user request — FalconPulsar is broader
+            # than time-series. The wordmark alone is sufficient.
         } finally {
             $g.Dispose()
         }

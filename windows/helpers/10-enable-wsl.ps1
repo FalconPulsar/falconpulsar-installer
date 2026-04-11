@@ -1,5 +1,5 @@
 # =============================================================================
-# 10-enable-wsl.ps1 — Enable the WSL2 Windows feature.
+# 10-enable-wsl.ps1 -- Enable the WSL2 Windows feature.
 #
 # Idempotent: if WSL is already enabled and `wsl --status` works, the script
 # is a fast no-op. Otherwise it enables both required features:
@@ -12,7 +12,7 @@
 # If a reboot is required to finish enabling the features, the script writes
 # a clear message to the install log and exits with code 2 to signal "reboot
 # and re-run the installer". Inno Setup's installer needs to be re-launched
-# manually after the reboot — there's no native re-launch hook.
+# manually after the reboot -- there's no native re-launch hook.
 # =============================================================================
 
 $ErrorActionPreference = 'Stop'
@@ -25,7 +25,7 @@ if (Test-WslWorking) {
     Write-Info 'Updating WSL kernel + components (best-effort)...'
     & wsl.exe --update 2>&1 | ForEach-Object { Write-Info $_ }
     if ($LASTEXITCODE -ne 0) {
-        Write-Warn "wsl --update returned exit code $LASTEXITCODE — continuing anyway"
+        Write-Warn "wsl --update returned exit code $LASTEXITCODE -- continuing anyway"
     }
     Write-Output '[ok] WSL is ready'
     exit 0
@@ -44,10 +44,10 @@ if (-not (Test-Wsl2Enabled)) {
         Write-Warn ''
         Write-Warn ' 1. Click Finish to close this installer'
         Write-Warn ' 2. Reboot Windows'
-        Write-Warn ' 3. Re-run FalconPulsar-Setup.exe — it will pick up where it'
+        Write-Warn ' 3. Re-run FalconPulsar-Setup.exe -- it will pick up where it'
         Write-Warn '    left off and skip the steps that are already done.'
         Write-Warn '================================================================'
-        Stop-WithError 'Reboot required — re-run the installer after restarting Windows.'
+        Stop-WithError 'Reboot required -- re-run the installer after restarting Windows.'
     }
 }
 
@@ -59,7 +59,7 @@ Write-Info 'Setting WSL default version to 2'
 Write-Info 'Updating WSL kernel + components'
 & wsl.exe --update 2>&1 | ForEach-Object { Write-Info $_ }
 if ($LASTEXITCODE -ne 0) {
-    Write-Warn "wsl --update returned exit code $LASTEXITCODE — continuing"
+    Write-Warn "wsl --update returned exit code $LASTEXITCODE -- continuing"
 }
 
 if (-not (Test-WslWorking)) {

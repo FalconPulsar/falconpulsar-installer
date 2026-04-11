@@ -1,5 +1,5 @@
 # =============================================================================
-# uninstall.ps1 — Called by Inno Setup's [UninstallRun] section.
+# uninstall.ps1 -- Called by Inno Setup's [UninstallRun] section.
 #
 # Removes the WSL-side install:
 #
@@ -11,7 +11,7 @@
 #
 #   - Remove the WSL distro itself (it may be hosting other things)
 #   - Disable the WSL Windows feature
-#   - Delete the user's data directory by default — they have to opt in
+#   - Delete the user's data directory by default -- they have to opt in
 #     via the Inno Setup uninstall confirmation dialog (which is shown by
 #     Inno Setup itself, not us)
 #
@@ -36,7 +36,7 @@ if (Test-Path $sentinel) {
 }
 
 if (-not (Test-WslDistroPresent -Name $Distro)) {
-    Write-Warn "Distro $Distro is not registered — nothing to uninstall on the WSL side"
+    Write-Warn "Distro $Distro is not registered -- nothing to uninstall on the WSL side"
     exit 0
 }
 
@@ -57,7 +57,7 @@ echo "[info] WSL-side uninstall complete (data preserved at /home/falconpulsar)"
 
 $rc = Invoke-WslBash -Distro $Distro -Script $uninstallScript -User root
 if ($rc -ne 0) {
-    Write-Warn "Bash uninstaller returned non-zero ($rc) — Windows-side files will still be removed"
+    Write-Warn "Bash uninstaller returned non-zero ($rc) -- Windows-side files will still be removed"
 }
 
 # Clean up the Start Menu shortcuts (Inno Setup [Files] only deletes files

@@ -86,7 +86,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 ; is the body paragraph beneath it. Inno Setup wraps the body to the panel
 ; width automatically — keep paragraphs short.
 WelcomeLabel1=Welcome to the FalconPulsar Setup Wizard
-WelcomeLabel2=FalconPulsar is a high-performance time-series database for industrial IoT and SCADA applications.%n%nThis installer will set up the entire FalconPulsar stack on your computer:%n%n  • Core — the time-series database (REST API + WebSocket)%n  • Web UI — for visualizing data, building dashboards, configuring datasources%n  • AI Gateway — natural-language interface to your data%n%nThe stack runs inside WSL2 (Windows Subsystem for Linux). The installer will set up WSL2 and install Ubuntu 24.04 if they are not already present.%n%nClick Next to continue.
+WelcomeLabel2=FalconPulsar is an AI-native industrial technology platform.%n%nThis installer will set up the entire FalconPulsar stack on your computer:%n%n  - Core engine (REST API + WebSocket)%n  - Web UI for dashboards, configuration and operations%n  - AI Gateway for natural-language interaction with your data%n%nThe stack runs inside WSL2 (Windows Subsystem for Linux). The installer will set up WSL2 and install Ubuntu 24.04 if they are not already present.%n%nClick Next to continue.
 
 ; Finish page — point the user at the Web UI
 FinishedLabel=FalconPulsar is now installed and running on your computer.%n%nOpen %1 in any web browser to log in to the Web UI with the admin credentials you set during this install. The admin password is NOT stored on disk anywhere — make sure you saved it.%n%nClick Finish to exit Setup.

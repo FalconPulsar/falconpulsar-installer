@@ -1,5 +1,5 @@
 # =============================================================================
-# lib.ps1 — shared helpers for the FalconPulsar Windows installer scripts.
+# lib.ps1 -- shared helpers for the FalconPulsar Windows installer scripts.
 #
 # Dot-sourced by every helper. Provides:
 #
@@ -14,7 +14,7 @@
 #   Invoke-WslBash              run a bash command inside a distro safely
 #   ConvertTo-WslPath           translate C:\foo\bar to /mnt/c/foo/bar
 #
-# All output goes to stdout/stderr — Inno Setup captures it into the install
+# All output goes to stdout/stderr -- Inno Setup captures it into the install
 # log file at %TEMP%\Setup Log YYYY-MM-DD #NNN.txt which the user can attach
 # to a bug report. We deliberately do NOT use Write-Host with -ForegroundColor
 # because Inno Setup runs PowerShell hidden and the colour escapes end up
@@ -24,7 +24,7 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-# ── Log file ─────────────────────────────────────────────────────────────────
+# -- Log file -----------------------------------------------------------------
 # Every helper appends to a single log file at %TEMP%\falconpulsar-install.log.
 # The Inno Setup orchestrator reads this file when a helper fails so the user
 # sees what went wrong instead of a silent abort. The path is hard-coded so
@@ -34,10 +34,8 @@ $ErrorActionPreference = 'Stop'
 $Script:FpLogPath = Join-Path $env:TEMP 'falconpulsar-install.log'
 
 function Write-FpLogLine {
-    param([Parameter(Mandatory)] [string] $Line)
+    param([AllowEmptyString()] [string] $Line = '')
     try {
-        # UTF-8 with no BOM. Append. Best-effort — never throw because the
-        # log file is for diagnostics, not control flow.
         Add-Content -Path $Script:FpLogPath -Value $Line -Encoding UTF8 -ErrorAction SilentlyContinue
     } catch {
         # ignore
@@ -45,7 +43,7 @@ function Write-FpLogLine {
 }
 
 function Write-Step {
-    param([Parameter(Mandatory)] [string] $Message)
+    param([AllowEmptyString()] [string] $Message = '')
     Write-Output ''
     Write-Output "==> $Message"
     Write-FpLogLine ''
@@ -81,9 +79,9 @@ function Stop-WithError {
 
 # Note: the log file is truncated by the Inno Setup orchestrator at the
 # start of each install run (in CurStepChanged(ssInstall)). Each helper
-# always appends — never overwrites.
+# always appends -- never overwrites.
 
-# ── Windows feature / WSL probes ────────────────────────────────────────────
+# -- Windows feature / WSL probes --------------------------------------------
 
 # Returns $true if both required Windows features are enabled. We check
 # Microsoft-Windows-Subsystem-Linux (the WSL feature itself) and
@@ -108,7 +106,7 @@ function Test-WslWorking {
     }
 }
 
-# ── Distro helpers ──────────────────────────────────────────────────────────
+# -- Distro helpers ----------------------------------------------------------
 
 # `wsl --list --quiet` outputs UTF-16 by default. Decode + trim each line.
 function Get-WslDistros {
@@ -119,7 +117,7 @@ function Get-WslDistros {
     if ($LASTEXITCODE -ne 0) { return @() }
 
     return $output | ForEach-Object {
-        # Strip null bytes that the UTF-16 → ASCII reinterpretation can leave.
+        # Strip null bytes that the UTF-16 -> ASCII reinterpretation can leave.
         ($_ -replace "`0", '').Trim()
     } | Where-Object { $_ -ne '' }
 }
@@ -146,7 +144,7 @@ function Get-WslDistroVersion {
     return $null
 }
 
-# ── Bash invocation ─────────────────────────────────────────────────────────
+# -- Bash invocation ---------------------------------------------------------
 
 # Invoke-WslBash <distro> <bash-script-string>
 #
@@ -168,13 +166,13 @@ function Invoke-WslBash {
 }
 
 # Translate a Windows path to its WSL mount path.
-# C:\Program Files\FalconPulsar  →  /mnt/c/Program Files/FalconPulsar
+# C:\Program Files\FalconPulsar  ->  /mnt/c/Program Files/FalconPulsar
 function ConvertTo-WslPath {
     param([Parameter(Mandatory)] [string] $WindowsPath)
 
     $abs = (Resolve-Path -LiteralPath $WindowsPath -ErrorAction SilentlyContinue)
     if ($null -eq $abs) {
-        # Path may not exist yet — best-effort literal conversion.
+        # Path may not exist yet -- best-effort literal conversion.
         $abs = $WindowsPath
     } else {
         $abs = $abs.Path

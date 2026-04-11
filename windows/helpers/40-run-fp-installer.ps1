@@ -1,10 +1,10 @@
 # =============================================================================
-# 40-run-fp-installer.ps1 — Run the bundled bash installer inside WSL.
+# 40-run-fp-installer.ps1 -- Run the bundled bash installer inside WSL.
 #
 # This is where Windows hands off to the Linux installer. We:
 #
 #   1. Resolve the WSL mount path of the install dir (C:\Program Files\
-#      FalconPulsar → /mnt/c/Program Files/FalconPulsar)
+#      FalconPulsar -> /mnt/c/Program Files/FalconPulsar)
 #   2. Copy the linux/ + shared/ trees from the Windows-side install dir
 #      into /opt/falconpulsar-installer inside the distro (the live /mnt/c
 #      mount has 9p performance issues and the bash installer creates
@@ -14,7 +14,7 @@
 #      to fail fast with a clearer error if not)
 #   4. Invoke /opt/falconpulsar-installer/linux/install.sh with --mode
 #      docker --yes, passing the admin credentials via a temp env file
-#      (NOT the command line — argv is visible in /proc/<pid>/cmdline to
+#      (NOT the command line -- argv is visible in /proc/<pid>/cmdline to
 #      anyone on the machine)
 # =============================================================================
 
@@ -45,13 +45,13 @@ if ($AdminPass.Length -lt 10) {
     Stop-WithError 'Admin password is shorter than 10 characters (the credentials page should have caught this)'
 }
 
-# ── 1. Translate the Windows install dir to a /mnt/c/... path ───────────────
+# -- 1. Translate the Windows install dir to a /mnt/c/... path ---------------
 $wslInstallDir = ConvertTo-WslPath -WindowsPath $InstallDir
 Write-Info "Windows install dir: $InstallDir"
 Write-Info "WSL mount path:      $wslInstallDir"
 
-# ── 2. Stage installer files into /opt/falconpulsar-installer ───────────────
-# Quoting the path for bash — this is the only injection vector here, and
+# -- 2. Stage installer files into /opt/falconpulsar-installer ---------------
+# Quoting the path for bash -- this is the only injection vector here, and
 # the install dir is always under %PROGRAMFILES% which we control.
 $wslInstallDirEscaped = $wslInstallDir -replace "'", "'\''"
 
@@ -71,10 +71,10 @@ if ($rc -ne 0) {
     Stop-WithError "Failed to stage installer files (exit $rc)"
 }
 
-# ── 3. Docker Desktop detection ─────────────────────────────────────────────
+# -- 3. Docker Desktop detection ---------------------------------------------
 # If Docker Desktop is running on the host, the bash installer expects
 # `docker` to be available inside our Ubuntu-24.04 distro. Docker Desktop
-# provides this via "WSL Integration" in its settings — but only for the
+# provides this via "WSL Integration" in its settings -- but only for the
 # distros the user has explicitly enabled. If integration is disabled for
 # our distro, `docker` will not be in PATH inside it and the bash
 # installer's get.docker.com fallback will conflict with Docker Desktop's
@@ -106,7 +106,7 @@ To fix this:
   4. Click "Apply & Restart"
   5. Re-run FalconPulsar-Setup.exe
 
-Alternatively, quit Docker Desktop entirely — the FalconPulsar installer
+Alternatively, quit Docker Desktop entirely -- the FalconPulsar installer
 will then install Docker Engine directly inside the distro via the
 official get.docker.com script.
 "@
@@ -115,17 +115,17 @@ official get.docker.com script.
 if ($dockerAvailable) {
     Write-Info "docker is already available inside $Distro (skipping bash installer's docker install)"
 } else {
-    Write-Info 'docker not present in distro yet — bash installer will install via get.docker.com'
+    Write-Info 'docker not present in distro yet -- bash installer will install via get.docker.com'
 }
 
-# ── 4. Docker Hub credentials check ─────────────────────────────────────────
+# -- 4. Docker Hub credentials check -----------------------------------------
 # The bash installer's check_dockerhub_login will catch missing credentials.
-# We do NOT prompt for Docker Hub credentials in the GUI for v0.1 — that's
+# We do NOT prompt for Docker Hub credentials in the GUI for v0.1 -- that's
 # a security/UX rabbit hole (storing creds, MFA, sso). Documented in
 # README-windows-build.md.
 Write-Info '(Docker Hub login will be verified by the bash installer)'
 
-# ── 4. Generate a one-shot env file with the admin password and source it ──
+# -- 4. Generate a one-shot env file with the admin password and source it --
 # We never put the password on the command line. Instead we write a 0600
 # file to /root/falconpulsar-install.env, source it, run install.sh, and
 # delete the file in the same `bash -c` invocation. The file lives only in

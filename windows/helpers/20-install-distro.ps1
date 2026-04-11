@@ -1,10 +1,10 @@
 # =============================================================================
-# 20-install-distro.ps1 — Ensure a compatible Linux distro is installed
+# 20-install-distro.ps1 -- Ensure a compatible Linux distro is installed
 #                        inside WSL2.
 #
 # If the named distro (default Ubuntu-24.04) is already registered, this is
 # a fast no-op. If a *different* compatible distro is already present
-# (Ubuntu 22.04+, Debian 12+) we'll use that instead — no need to install
+# (Ubuntu 22.04+, Debian 12+) we'll use that instead -- no need to install
 # a second one.
 #
 # Otherwise: `wsl --install -d Ubuntu-24.04 --no-launch` downloads and
@@ -25,7 +25,7 @@ $ErrorActionPreference = 'Stop'
 
 Write-Step "Ensuring WSL distro: $Distro"
 
-# Anything in this list will satisfy the requirement — they're all
+# Anything in this list will satisfy the requirement -- they're all
 # supported per REQUIREMENTS.md and the bash installer will work fine
 # inside any of them.
 $compatibleDistros = @(
@@ -67,9 +67,9 @@ foreach ($candidate in $compatibleDistros) {
     }
 }
 
-# Nothing compatible — install the requested one.
+# Nothing compatible -- install the requested one.
 Write-Info "Installing $Distro via 'wsl --install'..."
-Write-Info '(this can take 5–15 minutes the first time — downloading ~500 MB)'
+Write-Info '(this can take 5-15 minutes the first time -- downloading ~500 MB)'
 
 # --no-launch keeps the install non-interactive (no UNIX user prompt).
 & wsl.exe --install -d $Distro --no-launch 2>&1 | ForEach-Object { Write-Info $_ }
@@ -77,7 +77,7 @@ if ($LASTEXITCODE -ne 0) {
     Stop-WithError "wsl --install -d $Distro failed (exit $LASTEXITCODE). Re-run after rebooting if you just enabled WSL."
 }
 
-# wsl --install can complete asynchronously on some Windows builds — poll
+# wsl --install can complete asynchronously on some Windows builds -- poll
 # for the distro to actually appear. Cap at 5 minutes.
 $deadline = (Get-Date).AddMinutes(5)
 while ((Get-Date) -lt $deadline) {

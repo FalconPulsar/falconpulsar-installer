@@ -1,16 +1,16 @@
 # =============================================================================
-# 50-register-shortcuts.ps1 — Create Start Menu shortcuts.
+# 50-register-shortcuts.ps1 -- Create Start Menu shortcuts.
 #
 # Adds a "FalconPulsar" group under the All Users Start Menu with:
 #
-#   - Open FalconPulsar Web UI       — http://localhost:8080
-#   - Start FalconPulsar             — wsl docker compose up -d
-#   - Stop FalconPulsar              — wsl docker compose down
-#   - Restart FalconPulsar           — wsl docker compose restart
-#   - Show Status                    — wsl docker compose ps
-#   - Tail Logs                      — wsl docker compose logs -f
-#   - Open Stack Folder              — explorer \\wsl.localhost\<distro>\home\falconpulsar
-#   - Uninstall FalconPulsar         — handled by Inno Setup's normal uninstall
+#   - Open FalconPulsar Web UI       -- http://localhost:8080
+#   - Start FalconPulsar             -- wsl docker compose up -d
+#   - Stop FalconPulsar              -- wsl docker compose down
+#   - Restart FalconPulsar           -- wsl docker compose restart
+#   - Show Status                    -- wsl docker compose ps
+#   - Tail Logs                      -- wsl docker compose logs -f
+#   - Open Stack Folder              -- explorer \\wsl.localhost\<distro>\home\falconpulsar
+#   - Uninstall FalconPulsar         -- handled by Inno Setup's normal uninstall
 #
 # All shortcuts are .lnk files written via WScript.Shell COM. They invoke
 # wsl.exe directly so they work even when the user has no Linux terminal
@@ -42,7 +42,7 @@ if (-not (Test-Path $groupDir)) {
 
 $shell = New-Object -ComObject WScript.Shell
 
-# v0.1 has no custom .ico — Windows uses the default Inno Setup icon for
+# v0.1 has no custom .ico -- Windows uses the default Inno Setup icon for
 # the .lnk and a generic browser icon for the .url. A real icon lands
 # before v1.0.
 

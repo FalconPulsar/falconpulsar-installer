@@ -1,5 +1,5 @@
 # =============================================================================
-# 30-configure-distro.ps1 — Configure systemd inside the WSL distro.
+# 30-configure-distro.ps1 -- Configure systemd inside the WSL distro.
 #
 # Required because the bash installer enables a systemd user unit (in
 # --mode systemd) and because Docker's official install script (which the
@@ -31,7 +31,7 @@ if (Test-Path $sentinel) {
 }
 
 if (-not (Test-WslDistroPresent -Name $Distro)) {
-    Stop-WithError "Distro $Distro is not registered — 20-install-distro should have run first"
+    Stop-WithError "Distro $Distro is not registered -- 20-install-distro should have run first"
 }
 
 # Quick probe: is systemd already PID 1?
