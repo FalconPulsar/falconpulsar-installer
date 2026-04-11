@@ -159,6 +159,11 @@ function Invoke-WslBash {
         [string] $User = 'root'
     )
 
+    # Strip Windows CRLF line endings -- PowerShell heredocs use \r\n but
+    # bash inside WSL treats \r as a literal character, corrupting paths
+    # and commands (e.g. '/opt/dir'$'\r' instead of '/opt/dir').
+    $Script = $Script -replace "`r", ''
+
     # `-u root` keeps us privileged for system-level operations even after
     # the falconpulsar user is created.
     & wsl.exe -d $Distro -u $User -- bash -c $Script
