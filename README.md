@@ -15,9 +15,9 @@
 **Self-host FalconPulsar in 3 minutes. One command, your infrastructure,
 no cloud account, no credit card, no telemetry.**
 
-FalconPulsar is a high-performance time-series database for industrial IoT
-and SCADA. This repository contains the source code for the three official
-installers that take a fresh machine from zero to a running FalconPulsar stack.
+FalconPulsar is a high-performance time-series database. This repository
+contains the source code for the three official installers that take a fresh
+machine from zero to a running FalconPulsar stack.
 
 Learn more at **[falconpulsar.com](https://falconpulsar.com)** •
 Full install guide at **[falconpulsar.com/install](https://falconpulsar.com/install)**
