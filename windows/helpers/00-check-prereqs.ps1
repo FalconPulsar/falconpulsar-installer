@@ -20,6 +20,17 @@ $ErrorActionPreference = 'Stop'
 
 Write-Step 'Checking Windows prerequisites'
 
+# -- Administrator privileges ------------------------------------------------
+# The installer needs admin to enable WSL features, install distros, create
+# Start Menu shortcuts, etc. Inno Setup requests UAC elevation, but if UAC
+# is disabled or the user denies the prompt, we get here without admin.
+$identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+$principal = [Security.Principal.WindowsPrincipal]$identity
+if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    Stop-WithError 'This installer must run as Administrator. Right-click the .exe and select "Run as administrator".'
+}
+Write-Info 'Running as Administrator'
+
 # -- Windows version ---------------------------------------------------------
 $os = Get-CimInstance Win32_OperatingSystem
 $build = [int] (($os.BuildNumber) -as [int])

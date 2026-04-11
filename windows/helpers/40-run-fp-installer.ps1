@@ -31,15 +31,43 @@ $ErrorActionPreference = 'Stop'
 
 Write-Step 'Running the FalconPulsar bash installer inside WSL'
 
-# Honour the sentinel from 20-install-distro.ps1.
+# -- Sentinel: pick the right distro name -----------------------------------
 $sentinel = Join-Path $env:TEMP 'falconpulsar-distro.txt'
 if (Test-Path $sentinel) {
     $Distro = (Get-Content $sentinel -Raw).Trim()
+    Write-Info "Using distro from sentinel: $Distro"
+} else {
+    # No sentinel -- query WSL for a compatible distro
+    Write-Info "No sentinel file -- checking for compatible WSL distros"
+    $compatibleDistros = @('Ubuntu-24.04', 'Ubuntu-22.04', 'Ubuntu', 'Debian')
+    $found = $false
+    foreach ($candidate in $compatibleDistros) {
+        if (Test-WslDistroPresent -Name $candidate) {
+            $Distro = $candidate
+            $found = $true
+            Write-Info "Found compatible distro: $Distro"
+            break
+        }
+    }
+    if (-not $found) {
+        Stop-WithError "No compatible WSL distro found and no sentinel file. Run the installer from the beginning."
+    }
 }
 
 if (-not (Test-WslDistroPresent -Name $Distro)) {
     Stop-WithError "Distro $Distro is not registered"
 }
+
+# -- WSL root access check --------------------------------------------------
+# Verify we can run commands as root inside the distro. If the distro's
+# default user is non-root and something overrides -u root, the bash
+# installer will fail deep inside with confusing permission errors.
+Write-Info "Verifying root access inside $Distro..."
+$whoami = & wsl.exe -d $Distro -u root -- whoami 2>&1
+if ($LASTEXITCODE -ne 0 -or "$whoami".Trim() -ne 'root') {
+    Stop-WithError "Cannot run as root inside $Distro (got: $whoami). The distro may be corrupted -- try: wsl --unregister $Distro and re-run the installer."
+}
+Write-Info "Root access verified"
 
 if ($AdminPass.Length -lt 10) {
     Stop-WithError 'Admin password is shorter than 10 characters (the credentials page should have caught this)'
@@ -51,8 +79,6 @@ Write-Info "Windows install dir: $InstallDir"
 Write-Info "WSL mount path:      $wslInstallDir"
 
 # -- 2. Stage installer files into /opt/falconpulsar-installer ---------------
-# Quoting the path for bash -- this is the only injection vector here, and
-# the install dir is always under %PROGRAMFILES% which we control.
 $wslInstallDirEscaped = $wslInstallDir -replace "'", "'\''"
 
 $stageScript = @"
@@ -71,22 +97,45 @@ if ($rc -ne 0) {
     Stop-WithError "Failed to stage installer files (exit $rc)"
 }
 
-# -- 3. Docker Desktop detection ---------------------------------------------
-# If Docker Desktop is running on the host, the bash installer expects
-# `docker` to be available inside our Ubuntu-24.04 distro. Docker Desktop
-# provides this via "WSL Integration" in its settings -- but only for the
-# distros the user has explicitly enabled. If integration is disabled for
-# our distro, `docker` will not be in PATH inside it and the bash
-# installer's get.docker.com fallback will conflict with Docker Desktop's
-# own daemon. Detect this up front and give the user a clear "go enable
-# WSL Integration" message instead of failing silently inside bash.
+# -- 3. Check for existing FalconPulsar installation -------------------------
+# If the data directory already has a config file, this is a re-install /
+# upgrade. Skip the admin password prompt and just bring the stack up.
+$existingInstall = & wsl.exe -d $Distro -u root -- bash -c 'test -f /home/falconpulsar/data/falconpulsar.toml && echo yes || echo no' 2>$null
+$isReinstall = ($existingInstall -and $existingInstall.Trim() -eq 'yes')
+
+if ($isReinstall) {
+    Write-Info 'Existing FalconPulsar installation detected -- upgrading in place'
+    Write-Info 'Skipping admin user creation (already exists in database)'
+    Write-Info 'Pulling latest images and restarting the stack...'
+
+    $upgradeScript = @"
+set -e
+export FP_ASSUME_YES=1
+export FP_LEGAL_ACCEPTED=1
+cd /home/falconpulsar 2>/dev/null || cd /opt/falconpulsar-installer
+if [ -f /home/falconpulsar/compose.yml ]; then
+    sudo -u falconpulsar -H sg docker -c 'cd /home/falconpulsar && docker compose pull && docker compose up -d'
+    echo '[ok] Stack upgraded and restarted'
+else
+    echo '[info] No existing compose.yml found -- running full installer'
+    bash /opt/falconpulsar-installer/linux/install.sh --mode docker --yes
+fi
+"@
+    $rc = Invoke-WslBash -Distro $Distro -Script $upgradeScript -User root
+    if ($rc -ne 0) {
+        Stop-WithError "Upgrade failed inside WSL with exit code $rc."
+    }
+    Write-Output '[ok] FalconPulsar upgraded inside WSL'
+    exit 0
+}
+
+# -- 4. Docker Desktop detection ---------------------------------------------
 $dockerDesktopRunning = $false
 if (Get-Process -Name 'Docker Desktop' -ErrorAction SilentlyContinue) {
     $dockerDesktopRunning = $true
     Write-Info 'Docker Desktop detected on host'
 }
 
-# Quick probe: does `docker` exist inside our distro?
 $dockerInDistro = & wsl.exe -d $Distro -u root -- bash -c 'command -v docker >/dev/null 2>&1 && echo yes || echo no' 2>$null
 $dockerAvailable = $false
 if ($dockerInDistro) {
@@ -96,7 +145,7 @@ if ($dockerInDistro) {
 if ($dockerDesktopRunning -and -not $dockerAvailable) {
     Stop-WithError @"
 Docker Desktop is running on your Windows host, but its WSL Integration is
-NOT enabled for the $Distro distro. The bash installer needs `docker`
+NOT enabled for the $Distro distro. The bash installer needs docker
 to be available inside the distro.
 
 To fix this:
@@ -112,27 +161,36 @@ official get.docker.com script.
 "@
 }
 
+# -- 5. Docker daemon verification -------------------------------------------
+# If docker is installed but the daemon is not running (e.g. systemd just
+# started), try to start it before handing off to the bash installer.
 if ($dockerAvailable) {
-    Write-Info "docker is already available inside $Distro (skipping bash installer's docker install)"
+    Write-Info "Checking if Docker daemon is responsive inside $Distro..."
+    $dockerInfo = & wsl.exe -d $Distro -u root -- bash -c 'docker info >/dev/null 2>&1 && echo ok || echo fail' 2>$null
+    if ($dockerInfo -and $dockerInfo.Trim() -eq 'fail') {
+        Write-Info 'Docker is installed but daemon is not running -- starting it...'
+        & wsl.exe -d $Distro -u root -- bash -c 'sudo systemctl start docker 2>/dev/null || sudo service docker start 2>/dev/null || true' 2>$null
+        Start-Sleep -Seconds 3
+        $dockerInfo2 = & wsl.exe -d $Distro -u root -- bash -c 'docker info >/dev/null 2>&1 && echo ok || echo fail' 2>$null
+        if ($dockerInfo2 -and $dockerInfo2.Trim() -eq 'ok') {
+            Write-Info 'Docker daemon started successfully'
+        } else {
+            Write-Warn 'Could not start Docker daemon -- the bash installer will try again'
+        }
+    } else {
+        Write-Info 'Docker daemon is responsive'
+    }
 } else {
-    Write-Info 'docker not present in distro yet -- bash installer will install via get.docker.com'
+    Write-Info 'Docker not present in distro yet -- bash installer will install via get.docker.com'
 }
 
-# -- 4. Docker Hub credentials check -----------------------------------------
-# The bash installer's check_dockerhub_login will catch missing credentials.
-# We do NOT prompt for Docker Hub credentials in the GUI for v0.1 -- that's
-# a security/UX rabbit hole (storing creds, MFA, sso). Documented in
-# README-windows-build.md.
+# -- 6. Docker Hub credentials check -----------------------------------------
 Write-Info '(Docker Hub login will be verified by the bash installer)'
 
-# -- 4. Generate a one-shot env file with the admin password and source it --
-# We never put the password on the command line. Instead we write a 0600
-# file to /root/falconpulsar-install.env, source it, run install.sh, and
-# delete the file in the same `bash -c` invocation. The file lives only in
-# the distro's tmpfs-mounted /root for a few seconds during install.
-#
-# Single-quote escaping: bash single-quoted strings can't contain '. We
-# replace each ' in the password with '\'' (close, escape, reopen).
+# -- 7. Run the bash installer -----------------------------------------------
+# Generate a one-shot env file with the admin password inside the distro.
+# The password never appears on the command line (argv is visible in
+# /proc/<pid>/cmdline). The file is deleted in the same bash invocation.
 $pwEscaped   = $AdminPass -replace "'", "'\''"
 $userEscaped = $AdminUser -replace "'", "'\''"
 
@@ -145,6 +203,7 @@ cat > "`$ENVFILE" <<'__FP_ENV_EOF__'
 export FP_ADMIN_USER='$userEscaped'
 export FP_ADMIN_PASS='$pwEscaped'
 export FP_ASSUME_YES=1
+export FP_LEGAL_ACCEPTED=1
 __FP_ENV_EOF__
 . "`$ENVFILE"
 rm -f "`$ENVFILE"

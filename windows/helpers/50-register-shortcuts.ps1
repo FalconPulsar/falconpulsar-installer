@@ -28,11 +28,24 @@ $ErrorActionPreference = 'Stop'
 
 Write-Step 'Registering Start Menu shortcuts'
 
-# Honour the sentinel.
+# Honour the sentinel, with fallback to WSL query
 $sentinel = Join-Path $env:TEMP 'falconpulsar-distro.txt'
 if (Test-Path $sentinel) {
     $Distro = (Get-Content $sentinel -Raw).Trim()
+} else {
+    # No sentinel -- try to find a compatible distro
+    $compatibleDistros = @('Ubuntu-24.04', 'Ubuntu-22.04', 'Ubuntu', 'Debian')
+    foreach ($candidate in $compatibleDistros) {
+        if (Test-WslDistroPresent -Name $candidate) {
+            $Distro = $candidate
+            break
+        }
+    }
 }
+
+# Shortcuts are cosmetic -- wrap everything in try/catch so a permission
+# error or COM failure doesn't abort the entire install.
+try {
 
 $startMenu = [Environment]::GetFolderPath('CommonPrograms')
 $groupDir  = Join-Path $startMenu 'FalconPulsar'
@@ -99,4 +112,9 @@ $sc.Save()
 Write-Info 'Created shortcut: Open Stack Folder'
 
 Write-Output "[ok] Start Menu shortcuts created in $groupDir"
+
+} catch {
+    Write-Warn "Could not create all Start Menu shortcuts: $($_.Exception.Message)"
+    Write-Warn 'The install succeeded -- shortcuts are cosmetic. You can access FalconPulsar at http://localhost:8080'
+}
 exit 0

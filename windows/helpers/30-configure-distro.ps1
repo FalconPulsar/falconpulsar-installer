@@ -22,12 +22,21 @@ $ErrorActionPreference = 'Stop'
 
 Write-Step "Configuring systemd inside $Distro"
 
-# Honour the sentinel from 20-install-distro.ps1 (in case the user already
-# had a different compatible distro).
+# Honour the sentinel from 20-install-distro.ps1, with fallback
 $sentinel = Join-Path $env:TEMP 'falconpulsar-distro.txt'
 if (Test-Path $sentinel) {
     $Distro = (Get-Content $sentinel -Raw).Trim()
     Write-Info "Using distro from sentinel: $Distro"
+} else {
+    # No sentinel -- find a compatible distro
+    $compatibleDistros = @('Ubuntu-24.04', 'Ubuntu-22.04', 'Ubuntu', 'Debian')
+    foreach ($candidate in $compatibleDistros) {
+        if (Test-WslDistroPresent -Name $candidate) {
+            $Distro = $candidate
+            Write-Info "No sentinel -- found compatible distro: $Distro"
+            break
+        }
+    }
 }
 
 if (-not (Test-WslDistroPresent -Name $Distro)) {

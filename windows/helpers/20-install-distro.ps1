@@ -89,5 +89,22 @@ if (-not (Test-WslDistroPresent -Name $Distro)) {
     Stop-WithError "Timed out waiting for $Distro to register. Try running 'wsl --install -d $Distro' manually and re-run the installer."
 }
 
+# -- Distro health check ----------------------------------------------------
+# Verify the distro actually starts and can execute a command. A corrupted
+# distro (partial install, power loss during setup) will be registered but
+# fail to launch.
+Write-Info "Verifying $Distro can start..."
+$healthCheck = & wsl.exe -d $Distro -u root -- echo ok 2>&1
+if ($LASTEXITCODE -ne 0 -or "$healthCheck" -notmatch 'ok') {
+    Write-Err "$Distro is registered but failed to start."
+    Write-Err "Output: $healthCheck"
+    Write-Err ""
+    Write-Err "The distro may be corrupted. To fix:"
+    Write-Err "  1. Run: wsl --unregister $Distro"
+    Write-Err "  2. Re-run FalconPulsar-Setup.exe (it will install a fresh distro)"
+    Stop-WithError "Distro $Distro failed health check"
+}
+Write-Info "$Distro is healthy"
+
 Write-Output "[ok] WSL distro $Distro installed"
 exit 0
