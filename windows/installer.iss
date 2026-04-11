@@ -145,6 +145,7 @@ var
   CredentialsPage: TInputQueryWizardPage;
   LegalPage: TWizardPage;
   LegalCheckBox: TNewCheckBox;
+  IsUpgrade: Boolean;
   FpLogFile: String;
 
 // ── Helper: locate the install log file ────────────────────────────────────
@@ -253,9 +254,19 @@ begin
       GetDateTimeString('yyyy/mm/dd hh:nn:ss', '-', ':') + ' ===' + #13#10,
       False);
 
-    AdminUserArg := '-AdminUser "' + CredentialsPage.Values[0] + '"';
-    AdminPassArg := '-AdminPass "' + CredentialsPage.Values[1] + '"';
-    AppDirArg    := '-InstallDir "' + ExpandConstant('{app}') + '"';
+    AppDirArg := '-InstallDir "' + ExpandConstant('{app}') + '"';
+
+    // On upgrade, use placeholder credentials -- 40-run-fp-installer.ps1
+    // detects the existing data directory and skips the password/init flow.
+    if IsUpgrade then
+    begin
+      AdminUserArg := '-AdminUser "admin"';
+      AdminPassArg := '-AdminPass "upgrade-placeholder"';
+    end else
+    begin
+      AdminUserArg := '-AdminUser "' + CredentialsPage.Values[0] + '"';
+      AdminPassArg := '-AdminPass "' + CredentialsPage.Values[1] + '"';
+    end;
 
     if not RunHelper('00-check-prereqs.ps1', '',
         'Checking system prerequisites...') then Abort;
@@ -457,6 +468,7 @@ var
   WinVer: TWindowsVersion;
 begin
   Result := True;
+  IsUpgrade := False;
 
   GetWindowsVersionEx(WinVer);
 
@@ -478,5 +490,31 @@ begin
            mbError, MB_OK);
     Result := False;
     Exit;
+  end;
+
+  // Detect existing installation. If the helpers are already on disk from
+  // a previous install, this is an upgrade. We skip the credentials and
+  // legal pages and go straight to the install/upgrade flow.
+  if FileExists(ExpandConstant('{autopf}\FalconPulsar\helpers\lib.ps1')) then
+  begin
+    IsUpgrade := True;
+    MsgBox('FalconPulsar is already installed on this computer.' + #13#10 + #13#10 +
+           'Click OK to upgrade to the latest version. Your existing data ' +
+           'and configuration will be preserved.',
+           mbInformation, MB_OK);
+  end;
+end;
+
+// Skip the legal and credentials pages on upgrade -- the user already
+// accepted the terms and the admin account already exists in the database.
+function ShouldSkipPage(PageID: Integer): Boolean;
+begin
+  Result := False;
+  if IsUpgrade then
+  begin
+    if (LegalPage <> nil) and (PageID = LegalPage.ID) then
+      Result := True;
+    if (CredentialsPage <> nil) and (PageID = CredentialsPage.ID) then
+      Result := True;
   end;
 end;
