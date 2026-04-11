@@ -209,10 +209,12 @@ begin
   // Append a marker line to the log so the user can see step boundaries
   SaveStringToFile(FpLogFile, #13#10 + '################ ' + ScriptName + ' ################' + #13#10, True);
 
-  // SW_SHOWNORMAL makes the PowerShell window visible so the user can
-  // see errors in real time. Change to SW_HIDE for a cleaner UX once
-  // the install flow is verified working.
-  if not Exec('powershell.exe', FullArgs, ExpandConstant('{app}\helpers'), SW_SHOWNORMAL, ewWaitUntilTerminated, ResultCode) then
+  // DEBUG: wrap in cmd /c with a pause on failure so the user can read
+  // the error before the window closes. Remove this wrapper once the
+  // install flow is verified working.
+  if not Exec('cmd.exe',
+    '/c powershell.exe ' + FullArgs + ' & if errorlevel 1 (echo. & echo === FAILED === Press any key to close... & pause >nul)',
+    ExpandConstant('{app}\helpers'), SW_SHOWNORMAL, ewWaitUntilTerminated, ResultCode) then
   begin
     ShowStepError(StatusMsg, -1);
     Result := False;
