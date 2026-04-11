@@ -33,11 +33,14 @@ jobs:
           mkdir -p dist
           ./.github/scripts/bundle.sh linux > "dist/install-linux-${GITHUB_REF_NAME}.sh"
           chmod +x "dist/install-linux-${GITHUB_REF_NAME}.sh"
+          # Unversioned alias for stable redirect URLs (get.falconpulsar.com/linux)
+          cp "dist/install-linux-${GITHUB_REF_NAME}.sh" dist/install-linux.sh
 
       - name: Bundle macOS installer
         run: |
           ./.github/scripts/bundle.sh macos > "dist/install-macos-${GITHUB_REF_NAME}.sh"
           chmod +x "dist/install-macos-${GITHUB_REF_NAME}.sh"
+          cp "dist/install-macos-${GITHUB_REF_NAME}.sh" dist/install-macos.sh
 
       - name: Copy reference files
         run: |
@@ -96,6 +99,15 @@ jobs:
         with:
           name: bundles-windows
           path: dist/
+
+      - name: Create unversioned Windows alias
+        run: |
+          # The Inno Setup output is FalconPulsar-Setup-X.Y.Z.exe
+          # Create an unversioned copy for the stable redirect URL
+          EXE=$(ls dist/FalconPulsar-Setup-*.exe 2>/dev/null | head -1)
+          if [ -n "$EXE" ]; then
+            cp "$EXE" dist/FalconPulsar-Setup.exe
+          fi
 
       - name: List release assets
         run: ls -lh dist/
