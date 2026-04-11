@@ -52,22 +52,37 @@ Write-Info "Architecture: $arch"
 # -- Hardware virtualization ------------------------------------------------
 # Win32_Processor exposes VirtualizationFirmwareEnabled (BIOS-level) and
 # SecondLevelAddressTranslationExtensions. WSL2 needs both.
+#
+# HOWEVER: inside a VM (nested virtualization, Azure, Hyper-V guest),
+# VirtualizationFirmwareEnabled can report $false even when WSL2 works
+# perfectly. So we check if WSL is already working first -- if it is,
+# VT-x is clearly available regardless of what Win32_Processor reports.
+$wslAlreadyWorking = $false
 try {
-    $cpu = Get-CimInstance Win32_Processor | Select-Object -First 1
-    if (-not $cpu.VirtualizationFirmwareEnabled) {
-        Stop-WithError @'
+    $null = & wsl.exe --status 2>$null
+    if ($LASTEXITCODE -eq 0) { $wslAlreadyWorking = $true }
+} catch {}
+
+if ($wslAlreadyWorking) {
+    Write-Info 'Hardware virtualization: OK (WSL2 is already running)'
+} else {
+    try {
+        $cpu = Get-CimInstance Win32_Processor | Select-Object -First 1
+        if (-not $cpu.VirtualizationFirmwareEnabled) {
+            Stop-WithError @'
 Hardware virtualization (VT-x / AMD-V) is disabled in your BIOS/UEFI.
 WSL2 requires it. Reboot, enter BIOS setup, enable Intel VT-x or AMD-V
 (sometimes labelled "SVM" on AMD), save, and re-run this installer.
 '@
+        }
+        if (-not $cpu.SecondLevelAddressTranslationExtensions) {
+            Stop-WithError 'Your CPU does not support SLAT (Second Level Address Translation), which WSL2 requires.'
+        }
+        Write-Info "CPU virtualization: enabled ($($cpu.Name))"
+    } catch {
+        Write-Warn "Could not query CPU virtualization status: $($_.Exception.Message)"
+        Write-Warn 'Continuing -- WSL2 enable will fail later if virt is not actually enabled.'
     }
-    if (-not $cpu.SecondLevelAddressTranslationExtensions) {
-        Stop-WithError 'Your CPU does not support SLAT (Second Level Address Translation), which WSL2 requires.'
-    }
-    Write-Info "CPU virtualization: enabled ($($cpu.Name))"
-} catch {
-    Write-Warn "Could not query CPU virtualization status: $($_.Exception.Message)"
-    Write-Warn 'Continuing -- WSL2 enable will fail later if virt is not actually enabled.'
 }
 
 # -- Disk space --------------------------------------------------------------

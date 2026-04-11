@@ -23,7 +23,11 @@ Write-Step 'Enabling WSL2'
 if (Test-WslWorking) {
     Write-Info 'WSL is already installed and working'
     Write-Info 'Updating WSL kernel + components (best-effort)...'
-    & wsl.exe --update 2>&1 | ForEach-Object { Write-Info $_ }
+    try {
+        & wsl.exe --update 2>&1 | ForEach-Object { Write-Info $_ }
+    } catch {
+        # wsl --update can throw on some Windows builds -- ignore
+    }
     if ($LASTEXITCODE -ne 0) {
         Write-Warn "wsl --update returned exit code $LASTEXITCODE -- continuing anyway"
     }
@@ -54,10 +58,10 @@ if (-not (Test-Wsl2Enabled)) {
 # Features were already enabled (or just enabled and no reboot needed).
 # Set WSL2 as the default version, then update the kernel.
 Write-Info 'Setting WSL default version to 2'
-& wsl.exe --set-default-version 2 2>&1 | ForEach-Object { Write-Info $_ }
+try { & wsl.exe --set-default-version 2 2>&1 | ForEach-Object { Write-Info $_ } } catch {}
 
 Write-Info 'Updating WSL kernel + components'
-& wsl.exe --update 2>&1 | ForEach-Object { Write-Info $_ }
+try { & wsl.exe --update 2>&1 | ForEach-Object { Write-Info $_ } } catch {}
 if ($LASTEXITCODE -ne 0) {
     Write-Warn "wsl --update returned exit code $LASTEXITCODE -- continuing"
 }
