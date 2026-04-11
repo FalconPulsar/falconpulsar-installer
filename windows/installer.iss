@@ -228,18 +228,17 @@ begin
 end;
 
 // ── Install orchestrator ───────────────────────────────────────────────────
-// Called by Inno Setup at each install step transition. We hook ssInstall
-// (right after files are copied, before any [Run] entries) and run the six
-// PowerShell helpers in order. If any helper fails, ShowStepError pops up a
-// dialog with the log tail and we Abort, which cleanly stops the install
-// at the current page so the user can click Cancel.
+// Called by Inno Setup at each install step transition. We hook
+// ssPostInstall (after all [Files] are copied to {app}) and run the
+// six PowerShell helpers in order. ssInstall fires BEFORE files are
+// copied, so the helper scripts would not exist yet on disk.
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   AdminUserArg: String;
   AdminPassArg: String;
   AppDirArg: String;
 begin
-  if CurStep = ssInstall then
+  if CurStep = ssPostInstall then
   begin
     FpLogFile := GetInstallLogPath();
 
