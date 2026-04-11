@@ -492,10 +492,12 @@ begin
     Exit;
   end;
 
-  // Detect existing installation. If the helpers are already on disk from
-  // a previous install, this is an upgrade. We skip the credentials and
-  // legal pages and go straight to the install/upgrade flow.
-  if FileExists(ExpandConstant('{autopf}\FalconPulsar\helpers\lib.ps1')) then
+  // Detect existing installation via the Inno Setup uninstall registry key.
+  // This key only exists after a COMPLETED previous install -- partial or
+  // failed installs (e.g. test runs that left files behind) don't have it.
+  // The AppId from [Setup] with '_is1' suffix is the standard Inno key name.
+  if RegKeyExists(HKLM, 'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{#SetupSetting("AppId")}_is1') or
+     RegKeyExists(HKCU, 'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{#SetupSetting("AppId")}_is1') then
   begin
     IsUpgrade := True;
     MsgBox('FalconPulsar is already installed on this computer.' + #13#10 + #13#10 +
