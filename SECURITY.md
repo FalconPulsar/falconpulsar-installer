@@ -6,8 +6,7 @@ report it to us privately — **do not open a public GitHub issue**.
 
 ## Reporting a vulnerability
 
-Email **contact@falconpulsar.com** with the subject line beginning with
-`[security]`. Include:
+Email **security@falconpulsar.com**. Include:
 
 - A description of the vulnerability and the component affected
 - Steps to reproduce (proof-of-concept code is welcome)
