@@ -29,27 +29,6 @@ FalconPulsar ships three installers, but **Linux is the canonical one**. macOS
 is a bash variant that diverges only where the platform forces it, and Windows
 is an orchestration wrapper around the Linux installer running inside WSL2.
 
-```mermaid
-flowchart TB
-    subgraph shared["shared/ (single source of truth)"]
-        compose["compose.yml"]
-        libs["lib/common.sh<br/>lib/checks.sh<br/>lib/prompts.sh<br/>lib/bootstrap.sh"]
-    end
-
-    linux["linux/install.sh<br/>(canonical)"]
-    macos["macos/install.sh<br/>(bash variant)"]
-    windows["windows/installer.iss<br/>+ helpers/*.ps1<br/>(wrapper)"]
-
-    shared --> linux
-    shared --> macos
-    shared -.runs.-> windows
-    windows -.delegates to.-> linux
-
-    linux --> dockerlinux[Docker Engine]
-    macos --> dockermac[Docker Desktop / Colima / etc.]
-    windows --> wsl[WSL2 Ubuntu] --> linux
-```
-
 The rules that make this work:
 
 1. **`shared/compose.yml` is the one compose file.** All three installers
@@ -66,43 +45,6 @@ The rules that make this work:
 `linux/install.sh` is the reference implementation. Every concept in the
 product stack — user creation, Docker install, credential bootstrap, compose
 file generation, healthchecks, systemd unit registration — lives here.
-
-### Execution flow
-
-```mermaid
-sequenceDiagram
-    participant User
-    participant install.sh as linux/install.sh
-    participant common as common.sh
-    participant checks as checks.sh
-    participant prompts as prompts.sh
-    participant bootstrap as bootstrap.sh
-    participant docker as Docker Engine
-
-    User->>install.sh: curl ... | sudo sh
-    install.sh->>common: require_root
-    install.sh->>prompts: prompt_legal_acknowledgement
-    install.sh->>checks: check_supported_os / arch / kernel
-    install.sh->>checks: check_ram / check_disk / check_ports
-    install.sh->>checks: check_docker_installed
-    alt Docker missing
-        install.sh->>checks: install_docker_linux (via get.docker.com)
-    end
-    install.sh->>checks: check_docker_daemon
-    install.sh->>checks: check_dockerhub_login
-    install.sh->>install.sh: create falconpulsar user + home
-    install.sh->>prompts: prompt_admin_credentials
-    install.sh->>install.sh: write compose.yml + .env to $FP_HOME
-    install.sh->>docker: docker compose pull
-    install.sh->>docker: docker compose up -d core (with FP_ADMIN_PASS)
-    install.sh->>bootstrap: fp_wait_for_api_ready (180s timeout)
-    install.sh->>bootstrap: fp_bootstrap_gateway_token (login → token → .env)
-    install.sh->>docker: docker compose up -d (ui + ai-gateway)
-    opt --mode systemd
-        install.sh->>install.sh: register systemd user unit
-    end
-    install.sh->>User: print connection details
-```
 
 ### Function call order (top-level)
 
@@ -181,19 +123,21 @@ the bash Linux installer inside the WSL distro. There is **no Windows-native
 install logic** — every step that actually deploys FalconPulsar is the same
 code that runs on a bare-metal Ubuntu box.
 
-```mermaid
-flowchart LR
-    iss["installer.iss<br/>(Inno Setup + Pascal Script)"]
-    helpers["PowerShell helpers<br/>00→50"]
-    wsl["wsl.exe"]
-    ubuntu["Ubuntu-24.04<br/>(inside WSL2)"]
-    linuxsh["linux/install.sh<br/>(same script<br/>as bare-metal Linux)"]
+The chain is:
 
-    iss -->|CurStepChanged<br/>ssPostInstall| helpers
-    helpers -->|Invoke-WslBash| wsl
-    wsl --> ubuntu
-    helpers -->|40-run-fp-installer.ps1| linuxsh
-    ubuntu --> linuxsh
+```
+FalconPulsar-Setup.exe
+  └── installer.iss (Inno Setup + Pascal Script)
+        └── CurStepChanged(ssPostInstall)
+              └── powershell.exe → helpers/00-check-prereqs.ps1
+              └── powershell.exe → helpers/10-enable-wsl.ps1
+              └── powershell.exe → helpers/20-install-distro.ps1
+              └── powershell.exe → helpers/30-configure-distro.ps1
+              └── powershell.exe → helpers/40-run-fp-installer.ps1
+                    └── wsl.exe -d Ubuntu-24.04 -u root -- bash
+                          └── /opt/falconpulsar-installer/linux/install.sh
+                                └── (same bash code as bare-metal Linux)
+              └── powershell.exe → helpers/50-register-shortcuts.ps1
 ```
 
 ### Wizard pages (`installer.iss`)

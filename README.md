@@ -134,26 +134,6 @@ inside WSL2. There is no Windows-native install logic — every step that
 actually deploys the stack is the same code that runs on a bare-metal
 Ubuntu server.
 
-```mermaid
-flowchart LR
-    subgraph shared["shared/ (single source of truth)"]
-        compose["compose.yml"]
-        libs["lib/*.sh"]
-    end
-
-    linux["linux/install.sh<br/>(canonical)"]
-    macos["macos/install.sh<br/>(bash variant)"]
-    windows["windows/installer.iss<br/>+ helpers/*.ps1"]
-
-    shared --> linux
-    shared --> macos
-    windows -.delegates to.-> linux
-
-    linux --> eng1[Docker Engine]
-    macos --> eng2[Docker Desktop /<br/>Colima / OrbStack]
-    windows --> wsl[WSL2 Ubuntu] --> linux
-```
-
 **Three rules that make this work:**
 
 1. **`shared/compose.yml` is the one compose file.** All three installers
