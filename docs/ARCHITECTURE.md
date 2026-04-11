@@ -61,7 +61,7 @@ From `linux/install.sh` main block:
 9. `check_docker_installed` + `check_compose_v2`
 10. `install_docker_linux` — via `curl https://get.docker.com | sh` if missing
 11. `check_docker_daemon` — daemon is responsive
-12. `check_dockerhub_login` — private image access (removed after images go public)
+12. `fp_registry_ensure_access` — registry probe + interactive login if needed (see `registry_auth.sh`)
 13. User + home directory creation → `add_user_to_docker_group`
 14. `prompt_admin_credentials` → `FP_ADMIN_USER` / `FP_ADMIN_PASS`
 15. Write `compose.yml` and `.env` into `/home/falconpulsar/`
@@ -253,7 +253,7 @@ world-readable to any local user.
 | `port_in_use` / `port_holder` | Test and identify port holders (`ss` / `lsof` / `netstat` fallback) |
 | `check_ports` | Test `FP_DEFAULT_PORTS` = `7433 7434 7435 7436 8080` |
 | `check_docker_installed` / `check_compose_v2` / `check_docker_daemon` | Docker / Compose probes |
-| `check_dockerhub_login` | Verify `~/.docker/config.json` has credentials (pre-release, private images) |
+| `check_dockerhub_login` | **Deprecated** — superseded by `fp_registry_ensure_access` in `registry_auth.sh`, which probes pull access instead of just checking for creds |
 | `install_docker_linux` | `curl https://get.docker.com \| sh` |
 | `add_user_to_docker_group` | `usermod -aG docker` |
 | `check_docker_as_user` | Test if `falconpulsar` can reach the Docker daemon |
@@ -267,6 +267,44 @@ world-readable to any local user.
 | `prompt_path` | Like `prompt_string` but expands `~` and checks parent directory exists |
 | `prompt_password` | Read twice with no echo, minimum 10 characters |
 | `prompt_admin_credentials` | Fill `FP_ADMIN_USER` (default `admin`) and `FP_ADMIN_PASS` (generate or prompt) |
+
+### `registry_auth.sh` — container registry probe, prompt, login
+
+Handles the "can we actually pull FalconPulsar images from the configured
+registry?" question. Works against any OCI-compliant registry (Docker Hub,
+GHCR, Quay, Harbor, GitLab, AWS ECR, GCR, Azure ACR, self-hosted).
+
+| Function | Purpose |
+|---|---|
+| `fp_registry_hostname` | Extract `docker.io` from `docker.io/falconpulsar` (used for `docker login`) |
+| `fp_registry_image_path` | Compose `$reg/$image:$tag` into a full reference |
+| `fp_registry_probe` | `docker manifest inspect` against `$FP_REGISTRY/core:$FP_VERSION`. Returns 0 (ok), 1 (auth needed), 2 (other error). Classifies the error string — never prompts. |
+| `fp_registry_login` | `docker login --password-stdin` wrapping with error detection (unauthorized → 1, other → 2). Password never hits argv. |
+| `fp_registry_prompt_credentials` | Interactive username + password entry (password echo disabled via `stty -echo`) |
+| `fp_registry_prompt_registry` | Ask for an alternative registry URL and reset credentials |
+| `fp_registry_prompt_menu` | The "have creds / different registry / cancel" 3-option menu shown when probe returns auth-needed |
+| `fp_registry_ensure_access` | **Top-level orchestrator.** Called from `linux/install.sh` and `macos/install.sh`. Probes → optional login → re-probe → retry (up to `FP_REGISTRY_MAX_RETRIES`, default 3). Honours `FP_ASSUME_YES` for non-interactive mode. |
+
+### Credentials for cloud-native registries
+
+All three cloud providers (AWS ECR, Google Artifact Registry, Azure ACR)
+support standard username/password auth via `docker login`, which is all
+the installer needs. You just have to generate the right token ahead of
+time.
+
+| Registry | Username | Password / token | How to get it |
+|---|---|---|---|
+| **Docker Hub** | Docker Hub username | Personal Access Token (recommended) or password | [hub.docker.com/settings/security](https://hub.docker.com/settings/security) → New Access Token |
+| **GHCR** (GitHub Container Registry) | GitHub username | GitHub PAT with `read:packages` scope | [github.com/settings/tokens](https://github.com/settings/tokens) → Generate new token (classic) |
+| **AWS ECR (private)** | `AWS` | Output of `aws ecr get-login-password --region <region>` | Long-lived: create an IAM user with `AmazonEC2ContainerRegistryReadOnly`, use `access-key:secret-key` as user/pass via STS token |
+| **AWS ECR Public** | `AWS` | Output of `aws ecr-public get-login-password --region us-east-1` | Same as above |
+| **GCR / Google Artifact Registry** | `_json_key` | Contents of a service account JSON key file | GCP Console → IAM → Service Accounts → create key (JSON). The entire JSON file content is the "password". |
+| **Azure ACR** | Service Principal appId | Service Principal password | `az ad sp create-for-rbac --scopes <acr-scope> --role acrpull` |
+| **Quay / Harbor / GitLab / self-hosted** | As configured in the registry | Personal access token or password | Registry-specific |
+
+Feed the values into the installer via env vars (`FP_REGISTRY_USER` +
+`FP_REGISTRY_PASS`) or the Windows wizard's Container Registry page. The
+installer does the `docker login --password-stdin` for you.
 
 ### `bootstrap.sh` — first-run API bootstrap
 
@@ -282,7 +320,7 @@ Three services on a single user-defined bridge network `falconpulsar`:
 
 | Service | Image | Ports | Depends on |
 |---|---|---|---|
-| `core` | `falconpulsar/core:latest` | 7433 / 7434 / 7435 | — |
+| `core` | `${FP_REGISTRY}/core:${FP_VERSION}` | 7433 / 7434 / 7435 | — |
 | `ui` | `falconpulsar/ui:latest` | 8080 | `core` (healthy) |
 | `ai-gateway` | `falconpulsar/ai-gateway:latest` | 7436 | `core` (healthy) |
 
@@ -300,6 +338,11 @@ bold.
 |---|---|---|---|
 | **`FP_ADMIN_USER`** | `admin` | `prompts.sh`, `compose.yml` | Initial admin username |
 | **`FP_ADMIN_PASS`** | generated or prompted | `prompts.sh`, `bootstrap.sh`, `compose.yml` | Initial admin password (first run only, never persisted) |
+| **`FP_REGISTRY`** | `docker.io/falconpulsar` | `registry_auth.sh`, `compose.yml`, `.env` | Container registry prefix (hostname + namespace). Set to any OCI-compliant registry for mirroring or private distribution. |
+| **`FP_VERSION`** | `latest` | `registry_auth.sh`, `compose.yml`, `.env` | Image tag to pull. Pin to a semver (`v0.1.0`) to stop floating. |
+| **`FP_REGISTRY_USER`** | unset | `registry_auth.sh` | Optional username for registry login (honoured in non-interactive mode). |
+| **`FP_REGISTRY_PASS`** | unset | `registry_auth.sh` | Optional password / token for registry login. |
+| **`FP_REGISTRY_SKIP`** | `0` | `registry_auth.sh` | Set to `1` to bypass the registry probe entirely (air-gapped or pre-pulled images). |
 | `FP_API_KEY` | empty until first run | `bootstrap.sh`, `compose.yml` | AI Gateway service token (written to `.env` after bootstrap) |
 | **`FP_ASSUME_YES`** | `0` | `common.sh`, `prompts.sh`, `checks.sh` | Skip all interactive prompts (CI / unattended mode) |
 | **`FP_LEGAL_ACCEPTED`** | `0` | `prompts.sh` | Pre-accept legal documents (set to `1`) |
@@ -442,9 +485,11 @@ Additionally, FalconPulsar images are private in pre-release.
 
 **Rule:** `test-linux.yml` logs in with `DOCKERHUB_USERNAME` /
 `DOCKERHUB_TOKEN` org secrets before running the installer. When the
-installer itself runs, it verifies credentials via `check_dockerhub_login`
-and copies `~/.docker/config.json` into the `falconpulsar` user's home so
-the stack can pull.
+installer itself runs, it calls `fp_registry_ensure_access` which probes
+pull access against `$FP_REGISTRY/core` and only prompts for credentials
+if the probe fails with an auth error. After login, root's
+`~/.docker/config.json` is copied into the `falconpulsar` user's home so
+the stack can pull under the unprivileged account.
 
 ### 7. Passing credentials on the command line leaks them to any local user
 
@@ -499,6 +544,29 @@ line arguments, but those are fixed at call time.
 `%TEMP%\falconpulsar-distro.txt`. Later helpers (`30-configure-distro`,
 `40-run-fp-installer`, `50-register-shortcuts`) read it with a fallback
 to probing WSL directly if the sentinel is missing.
+
+### 11. `docker manifest inspect` is the right probe, not `docker pull`
+
+**Symptom:** Early drafts of the registry detection used
+`docker pull falconpulsar/core:latest` as the access probe, which (a) hit
+Docker Hub rate limits for anonymous users, (b) downloaded hundreds of MB
+before the first failure, and (c) partially populated the local image
+cache even when the flow was aborted.
+
+**Cause:** `docker pull` is a full pull. There's no "check if I can pull
+without actually pulling" flag. But the OCI distribution spec has a
+manifest endpoint that you can query with a HEAD-like request, and Docker
+exposes that as `docker manifest inspect`. The manifest endpoint returns
+just the image descriptor, not any layer blobs — kilobytes instead of
+megabytes, and it doesn't count against Docker Hub's pull rate limit.
+
+**Rule:** `fp_registry_probe` uses `docker manifest inspect
+$FP_REGISTRY/core:$FP_VERSION` to classify access. Three possible outcomes:
+`ok` (success), `auth-needed` (401 / "unauthorized" / "pull access
+denied"), or `other` (network, DNS, not found, rate limited). Only auth
+failures trigger the interactive credential prompt — network failures exit
+immediately so the installer doesn't ask the user for a Docker Hub password
+when their DNS is broken.
 
 ## Debugging tips
 

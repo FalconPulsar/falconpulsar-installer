@@ -23,7 +23,11 @@ param(
     [Parameter(Mandatory)] [string] $Distro,
     [Parameter(Mandatory)] [string] $InstallDir,
     [Parameter(Mandatory)] [string] $AdminUser,
-    [Parameter(Mandatory)] [string] $AdminPass
+    [Parameter(Mandatory)] [string] $AdminPass,
+    [string] $Registry = 'docker.io/falconpulsar',
+    [string] $RegistryUser = '',
+    [string] $RegistryPass = '',
+    [switch] $RegistrySkip
 )
 
 $ErrorActionPreference = 'Stop'
@@ -193,6 +197,10 @@ Write-Info '(Docker Hub login will be verified by the bash installer)'
 # /proc/<pid>/cmdline). The file is deleted in the same bash invocation.
 $pwEscaped   = $AdminPass -replace "'", "'\''"
 $userEscaped = $AdminUser -replace "'", "'\''"
+$regEscaped  = $Registry -replace "'", "'\''"
+$regUserEscaped = $RegistryUser -replace "'", "'\''"
+$regPassEscaped = $RegistryPass -replace "'", "'\''"
+$regSkipVal = if ($RegistrySkip) { '1' } else { '0' }
 
 $runScript = @"
 set -e
@@ -204,6 +212,10 @@ export FP_ADMIN_USER='$userEscaped'
 export FP_ADMIN_PASS='$pwEscaped'
 export FP_ASSUME_YES=1
 export FP_LEGAL_ACCEPTED=1
+export FP_REGISTRY='$regEscaped'
+export FP_REGISTRY_USER='$regUserEscaped'
+export FP_REGISTRY_PASS='$regPassEscaped'
+export FP_REGISTRY_SKIP='$regSkipVal'
 __FP_ENV_EOF__
 . "`$ENVFILE"
 rm -f "`$ENVFILE"

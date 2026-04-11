@@ -52,6 +52,8 @@ REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 . "${REPO_ROOT}/shared/lib/prompts.sh"
 # shellcheck source=../shared/lib/bootstrap.sh
 . "${REPO_ROOT}/shared/lib/bootstrap.sh"
+# shellcheck source=../shared/lib/registry_auth.sh
+. "${REPO_ROOT}/shared/lib/registry_auth.sh"
 
 trap 'on_error $LINENO' ERR
 
@@ -194,9 +196,10 @@ fi
 
 check_compose_v2 || die "docker compose v2 plugin not available — your runtime is too old or misconfigured"
 
-# Pre-release: images are private. Verify Docker Hub login before we go any
-# further so the user doesn't get a "pull access denied" failure at step 5.
-check_dockerhub_login
+# Verify we can pull images from the configured registry. If the registry
+# requires authentication, fp_registry_ensure_access prompts the user for
+# credentials (or a different registry) and runs `docker login`.
+fp_registry_ensure_access
 
 # ── Step 3: Stack directory ─────────────────────────────────────────────────
 log_step "step 3/6 — stack directory"
@@ -233,6 +236,8 @@ FP_ADMIN_USER=${FP_ADMIN_USER}
 FP_DATA_DIR=${FP_DATA_DIR}
 FP_UID=${FP_UID}
 FP_GID=${FP_GID}
+FP_REGISTRY=${FP_REGISTRY}
+FP_VERSION=${FP_VERSION}
 FP_REST_PORT=${FP_REST_PORT}
 FP_WS_PORT=${FP_WS_PORT}
 FP_PUBSUB_PORT=${FP_PUBSUB_PORT}

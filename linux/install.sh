@@ -56,6 +56,8 @@ REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 . "${REPO_ROOT}/shared/lib/prompts.sh"
 # shellcheck source=../shared/lib/bootstrap.sh
 . "${REPO_ROOT}/shared/lib/bootstrap.sh"
+# shellcheck source=../shared/lib/registry_auth.sh
+. "${REPO_ROOT}/shared/lib/registry_auth.sh"
 
 trap 'on_error $LINENO' ERR
 
@@ -147,11 +149,12 @@ if ! check_docker_daemon; then
     systemctl enable --now docker || die "failed to start Docker daemon"
 fi
 
-# Pre-release: images are private. Check that root has Docker Hub credentials
-# (and that we can copy them into the falconpulsar user's home in step 6).
-# We check root's config here because that's who installs run as. The
-# credentials are copied into ${FP_HOME}/.docker in step 6 below.
-check_dockerhub_login
+# Verify we can pull images from the configured registry. If the registry
+# requires authentication, fp_registry_ensure_access prompts the user for
+# credentials (or a different registry) and runs `docker login`. Whatever
+# configuration ends up in root's ~/.docker/config.json here is copied into
+# the falconpulsar user's home in step 6 so the unprivileged user can pull.
+fp_registry_ensure_access
 
 # ── Step 3: Create the falconpulsar user ────────────────────────────────────
 log_step "step 3/8 — system user '${FP_USER}'"
@@ -249,6 +252,8 @@ FP_ADMIN_USER=${FP_ADMIN_USER}
 FP_DATA_DIR=${FP_DATA_DIR}
 FP_UID=${FP_UID}
 FP_GID=${FP_GID}
+FP_REGISTRY=${FP_REGISTRY}
+FP_VERSION=${FP_VERSION}
 FP_REST_PORT=${FP_REST_PORT}
 FP_WS_PORT=${FP_WS_PORT}
 FP_PUBSUB_PORT=${FP_PUBSUB_PORT}

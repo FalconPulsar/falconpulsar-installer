@@ -14,6 +14,15 @@
 #
 # Optional environment variables (with defaults):
 #
+#   FP_REGISTRY         Container registry prefix (default: docker.io/falconpulsar).
+#                       Change to use a mirror or private registry — the
+#                       three image references below resolve against this
+#                       prefix. Host the images yourself on any OCI-compliant
+#                       registry (GHCR, Quay, Harbor, AWS ECR, GCR, Azure
+#                       ACR, self-hosted) and update this value accordingly.
+#   FP_VERSION          Image tag to pull (default: latest). Set to a
+#                       specific semver tag (e.g. v0.1.0) to pin a release
+#                       and stop floating with `latest`.
 #   FP_ADMIN_PASS       admin password — only set during the first install,
 #                       passed via the parent shell environment, NEVER stored
 #                       in .env. Required only on first run when the core's
@@ -45,7 +54,7 @@ services:
 
   # ── Core: time-series database, REST API, WebSocket pub/sub ──────────────
   core:
-    image: falconpulsar/core:latest
+    image: ${FP_REGISTRY:-docker.io/falconpulsar}/core:${FP_VERSION:-latest}
     container_name: falconpulsar-core
     restart: unless-stopped
     user: "${FP_UID}:${FP_GID}"
@@ -87,7 +96,7 @@ services:
 
   # ── UI: nginx serving the React SPA ─────────────────────────────────────
   ui:
-    image: falconpulsar/ui:latest
+    image: ${FP_REGISTRY:-docker.io/falconpulsar}/ui:${FP_VERSION:-latest}
     container_name: falconpulsar-ui
     restart: unless-stopped
     ports:
@@ -100,7 +109,7 @@ services:
 
   # ── AI Gateway: FastAPI service brokering LLM tool calls ────────────────
   ai-gateway:
-    image: falconpulsar/ai-gateway:latest
+    image: ${FP_REGISTRY:-docker.io/falconpulsar}/ai-gateway:${FP_VERSION:-latest}
     container_name: falconpulsar-ai-gateway
     restart: unless-stopped
     ports:

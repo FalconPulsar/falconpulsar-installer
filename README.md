@@ -97,6 +97,30 @@ Everything else — including every ongoing operation — runs as the
 unprivileged `falconpulsar` user. Every step is reversible via the bundled
 `uninstall.sh` scripts or the Windows uninstaller.
 
+## Alternative container registries
+
+By default the installer pulls images from **`docker.io/falconpulsar`** on
+Docker Hub. If you need to pull from somewhere else — a private mirror,
+an air-gapped internal registry, or a cloud-native registry like AWS ECR,
+Google Artifact Registry, or Azure ACR — set `FP_REGISTRY` to the new
+prefix and provide credentials via `FP_REGISTRY_USER` / `FP_REGISTRY_PASS`.
+
+```bash
+FP_REGISTRY=ghcr.io/your-org/falconpulsar \
+FP_REGISTRY_USER=your-github-username \
+FP_REGISTRY_PASS=ghp_your_personal_access_token \
+    curl -fsSL https://get.falconpulsar.com/linux | sudo -E sh
+```
+
+The Windows installer has a dedicated **"Container Registry"** page with a
+Test Connection button that runs a probe inside WSL before you continue.
+
+Any OCI-compliant registry works — Docker Hub, GHCR, Quay, Harbor,
+GitLab, AWS ECR (public or private), GCR / Google Artifact Registry,
+Azure ACR, or a self-hosted mirror. See the
+[container registry section in ARCHITECTURE.md](docs/ARCHITECTURE.md#credentials-for-cloud-native-registries)
+for per-provider token recipes.
+
 ## After the install
 
 Open **[http://localhost:8080](http://localhost:8080)** in any browser.

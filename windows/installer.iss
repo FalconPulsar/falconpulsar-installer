@@ -105,12 +105,14 @@ Source: "..\shared\lib\common.sh";                          DestDir: "{app}\shar
 Source: "..\shared\lib\checks.sh";                          DestDir: "{app}\shared\lib";     Flags: ignoreversion
 Source: "..\shared\lib\prompts.sh";                         DestDir: "{app}\shared\lib";     Flags: ignoreversion
 Source: "..\shared\lib\bootstrap.sh";                       DestDir: "{app}\shared\lib";     Flags: ignoreversion
+Source: "..\shared\lib\registry_auth.sh";                   DestDir: "{app}\shared\lib";     Flags: ignoreversion
 
 ; ── PowerShell helpers ──────────────────────────────────────────────────────
 Source: "helpers\lib.ps1";                                  DestDir: "{app}\helpers";        Flags: ignoreversion
 Source: "helpers\00-check-prereqs.ps1";                     DestDir: "{app}\helpers";        Flags: ignoreversion
 Source: "helpers\10-enable-wsl.ps1";                        DestDir: "{app}\helpers";        Flags: ignoreversion
 Source: "helpers\20-install-distro.ps1";                    DestDir: "{app}\helpers";        Flags: ignoreversion
+Source: "helpers\25-test-registry.ps1";                     DestDir: "{app}\helpers";        Flags: ignoreversion
 Source: "helpers\30-configure-distro.ps1";                  DestDir: "{app}\helpers";        Flags: ignoreversion
 Source: "helpers\40-run-fp-installer.ps1";                  DestDir: "{app}\helpers";        Flags: ignoreversion
 Source: "helpers\50-register-shortcuts.ps1";                DestDir: "{app}\helpers";        Flags: ignoreversion
@@ -145,6 +147,13 @@ var
   CredentialsPage: TInputQueryWizardPage;
   LegalPage: TWizardPage;
   LegalCheckBox: TNewCheckBox;
+  RegistryPage: TWizardPage;
+  RegistryUrlEdit: TNewEdit;
+  RegistryUserEdit: TNewEdit;
+  RegistryPassEdit: TNewEdit;
+  RegistrySkipCheck: TNewCheckBox;
+  RegistryTestButton: TNewButton;
+  RegistryStatusLabel: TNewStaticText;
   IsUpgrade: Boolean;
   FpLogFile: String;
 
@@ -242,15 +251,19 @@ var
   AdminUserArg: String;
   AdminPassArg: String;
   AppDirArg: String;
+  RegistryArg: String;
+  RegistryUserArg: String;
+  RegistryPassArg: String;
+  RegistrySkipArg: String;
 begin
   if CurStep = ssPostInstall then
   begin
     FpLogFile := GetInstallLogPath();
 
     // Truncate the log at the start of the install run. lib.ps1 always
-    // appends — never overwrites — so this is the single point of init.
+    // appends -- never overwrites -- so this is the single point of init.
     SaveStringToFile(FpLogFile,
-      '=== FalconPulsar Windows installer log — ' +
+      '=== FalconPulsar Windows installer log -- ' +
       GetDateTimeString('yyyy/mm/dd hh:nn:ss', '-', ':') + ' ===' + #13#10,
       False);
 
@@ -262,10 +275,27 @@ begin
     begin
       AdminUserArg := '-AdminUser "admin"';
       AdminPassArg := '-AdminPass "upgrade-placeholder"';
+      RegistryArg := '-Registry "docker.io/falconpulsar"';
+      RegistryUserArg := '';
+      RegistryPassArg := '';
+      RegistrySkipArg := '-RegistrySkip';
     end else
     begin
       AdminUserArg := '-AdminUser "' + CredentialsPage.Values[0] + '"';
       AdminPassArg := '-AdminPass "' + CredentialsPage.Values[1] + '"';
+      RegistryArg := '-Registry "' + RegistryUrlEdit.Text + '"';
+      if Length(RegistryUserEdit.Text) > 0 then
+        RegistryUserArg := '-RegistryUser "' + RegistryUserEdit.Text + '"'
+      else
+        RegistryUserArg := '';
+      if Length(RegistryPassEdit.Text) > 0 then
+        RegistryPassArg := '-RegistryPass "' + RegistryPassEdit.Text + '"'
+      else
+        RegistryPassArg := '';
+      if RegistrySkipCheck.Checked then
+        RegistrySkipArg := '-RegistrySkip'
+      else
+        RegistrySkipArg := '';
     end;
 
     if not RunHelper('00-check-prereqs.ps1', '',
@@ -281,7 +311,10 @@ begin
         'Configuring systemd inside WSL...') then Abort;
 
     if not RunHelper('40-run-fp-installer.ps1',
-        '-Distro {#WslDistroName} ' + AppDirArg + ' ' + AdminUserArg + ' ' + AdminPassArg,
+        '-Distro {#WslDistroName} ' + AppDirArg + ' ' +
+        AdminUserArg + ' ' + AdminPassArg + ' ' +
+        RegistryArg + ' ' + RegistryUserArg + ' ' +
+        RegistryPassArg + ' ' + RegistrySkipArg,
         'Installing FalconPulsar inside WSL (this may take 5-10 minutes)...') then Abort;
 
     if not RunHelper('50-register-shortcuts.ps1',
@@ -306,6 +339,176 @@ end;
 procedure LegalCheckClick(Sender: TObject);
 begin
   WizardForm.NextButton.Enabled := LegalCheckBox.Checked;
+end;
+
+// Registry page: Test Connection button handler.
+// Invokes windows/helpers/25-test-registry.ps1 in a hidden window, passing
+// the registry URL and optional credentials. The helper runs a manifest
+// probe inside WSL and returns 0 on success. Any failure is surfaced in
+// the status label below the button.
+procedure RegistryTestClick(Sender: TObject);
+var
+  HelperPath: String;
+  FullArgs: String;
+  ResultCode: Integer;
+  UrlVal: String;
+  UserVal: String;
+  PassVal: String;
+begin
+  UrlVal := RegistryUrlEdit.Text;
+  UserVal := RegistryUserEdit.Text;
+  PassVal := RegistryPassEdit.Text;
+
+  if Length(UrlVal) = 0 then
+  begin
+    RegistryStatusLabel.Caption := 'Enter a registry URL first.';
+    Exit;
+  end;
+
+  RegistryStatusLabel.Caption := 'Testing connection to ' + UrlVal + ' ...';
+  WizardForm.Refresh();
+
+  HelperPath := ExpandConstant('{app}\helpers\25-test-registry.ps1');
+  FullArgs := '-NoProfile -ExecutionPolicy Bypass -File "' + HelperPath + '"' +
+    ' -Distro {#WslDistroName}' +
+    ' -Registry "' + UrlVal + '"';
+  if Length(UserVal) > 0 then
+    FullArgs := FullArgs + ' -Username "' + UserVal + '"';
+  if Length(PassVal) > 0 then
+    FullArgs := FullArgs + ' -Password "' + PassVal + '"';
+
+  if not Exec('powershell.exe', FullArgs, '',
+      SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+  begin
+    RegistryStatusLabel.Caption := 'FAILED: could not launch test helper.';
+    Exit;
+  end;
+
+  case ResultCode of
+    0: RegistryStatusLabel.Caption := 'OK: connected and images are pullable.';
+    1: RegistryStatusLabel.Caption := 'FAILED: authentication rejected. Check credentials.';
+    2: RegistryStatusLabel.Caption := 'FAILED: network error or registry unreachable.';
+  else
+    RegistryStatusLabel.Caption := 'FAILED: exit code ' + IntToStr(ResultCode) + ' -- see install log.';
+  end;
+end;
+
+// Registry page: enable / disable the input fields based on Skip state.
+procedure RegistrySkipClick(Sender: TObject);
+var
+  Enabled: Boolean;
+begin
+  Enabled := not RegistrySkipCheck.Checked;
+  RegistryUrlEdit.Enabled := Enabled;
+  RegistryUserEdit.Enabled := Enabled;
+  RegistryPassEdit.Enabled := Enabled;
+  RegistryTestButton.Enabled := Enabled;
+end;
+
+// Create the container registry page.
+// New page shown between the legal page and the credentials page. Lets
+// the user pick a registry (default: docker.io/falconpulsar), enter
+// credentials if needed, test the connection, or skip entirely.
+procedure CreateRegistryPage();
+var
+  Y: Integer;
+  Intro: TNewStaticText;
+  UrlLabel: TNewStaticText;
+  UserLabel: TNewStaticText;
+  PassLabel: TNewStaticText;
+begin
+  RegistryPage := CreateCustomPage(
+    LegalPage.ID,
+    'Container Registry',
+    'Where should FalconPulsar pull images from?');
+
+  Y := 0;
+
+  Intro := TNewStaticText.Create(RegistryPage);
+  Intro.Parent     := RegistryPage.Surface;
+  Intro.Top        := Y;
+  Intro.Left       := 0;
+  Intro.Width      := RegistryPage.SurfaceWidth;
+  Intro.AutoSize   := False;
+  Intro.Height     := ScaleY(36);
+  Intro.WordWrap   := True;
+  Intro.Caption    :=
+    'FalconPulsar can be pulled from any OCI-compliant registry: Docker Hub, ' +
+    'GHCR, AWS ECR, Google Artifact Registry, Azure ACR, Quay, Harbor, or a ' +
+    'private mirror. Leave the defaults if unsure.';
+  Y := Y + Intro.Height + ScaleY(8);
+
+  UrlLabel := TNewStaticText.Create(RegistryPage);
+  UrlLabel.Parent  := RegistryPage.Surface;
+  UrlLabel.Top     := Y;
+  UrlLabel.Left    := 0;
+  UrlLabel.Caption := 'Registry (hostname/namespace):';
+  Y := Y + UrlLabel.Height + ScaleY(2);
+
+  RegistryUrlEdit := TNewEdit.Create(RegistryPage);
+  RegistryUrlEdit.Parent := RegistryPage.Surface;
+  RegistryUrlEdit.Top    := Y;
+  RegistryUrlEdit.Left   := 0;
+  RegistryUrlEdit.Width  := RegistryPage.SurfaceWidth;
+  RegistryUrlEdit.Text   := 'docker.io/falconpulsar';
+  Y := Y + RegistryUrlEdit.Height + ScaleY(12);
+
+  UserLabel := TNewStaticText.Create(RegistryPage);
+  UserLabel.Parent  := RegistryPage.Surface;
+  UserLabel.Top     := Y;
+  UserLabel.Left    := 0;
+  UserLabel.Caption := 'Username (leave blank for public / anonymous):';
+  Y := Y + UserLabel.Height + ScaleY(2);
+
+  RegistryUserEdit := TNewEdit.Create(RegistryPage);
+  RegistryUserEdit.Parent := RegistryPage.Surface;
+  RegistryUserEdit.Top    := Y;
+  RegistryUserEdit.Left   := 0;
+  RegistryUserEdit.Width  := RegistryPage.SurfaceWidth;
+  Y := Y + RegistryUserEdit.Height + ScaleY(12);
+
+  PassLabel := TNewStaticText.Create(RegistryPage);
+  PassLabel.Parent  := RegistryPage.Surface;
+  PassLabel.Top     := Y;
+  PassLabel.Left    := 0;
+  PassLabel.Caption := 'Password or token:';
+  Y := Y + PassLabel.Height + ScaleY(2);
+
+  RegistryPassEdit := TNewEdit.Create(RegistryPage);
+  RegistryPassEdit.Parent       := RegistryPage.Surface;
+  RegistryPassEdit.Top          := Y;
+  RegistryPassEdit.Left         := 0;
+  RegistryPassEdit.Width        := RegistryPage.SurfaceWidth;
+  RegistryPassEdit.PasswordChar := '*';
+  Y := Y + RegistryPassEdit.Height + ScaleY(16);
+
+  RegistryTestButton := TNewButton.Create(RegistryPage);
+  RegistryTestButton.Parent   := RegistryPage.Surface;
+  RegistryTestButton.Top      := Y;
+  RegistryTestButton.Left     := 0;
+  RegistryTestButton.Width    := ScaleX(140);
+  RegistryTestButton.Height   := ScaleY(25);
+  RegistryTestButton.Caption  := 'Test connection';
+  RegistryTestButton.OnClick  := @RegistryTestClick;
+  Y := Y + RegistryTestButton.Height + ScaleY(8);
+
+  RegistryStatusLabel := TNewStaticText.Create(RegistryPage);
+  RegistryStatusLabel.Parent   := RegistryPage.Surface;
+  RegistryStatusLabel.Top      := Y;
+  RegistryStatusLabel.Left     := 0;
+  RegistryStatusLabel.Width    := RegistryPage.SurfaceWidth;
+  RegistryStatusLabel.AutoSize := False;
+  RegistryStatusLabel.Height   := ScaleY(18);
+  RegistryStatusLabel.Caption  := '';
+  Y := Y + RegistryStatusLabel.Height + ScaleY(16);
+
+  RegistrySkipCheck := TNewCheckBox.Create(RegistryPage);
+  RegistrySkipCheck.Parent  := RegistryPage.Surface;
+  RegistrySkipCheck.Top     := Y;
+  RegistrySkipCheck.Left    := 0;
+  RegistrySkipCheck.Width   := RegistryPage.SurfaceWidth;
+  RegistrySkipCheck.Caption := 'Skip the registry check (I already have docker login configured)';
+  RegistrySkipCheck.OnClick := @RegistrySkipClick;
 end;
 
 // ── Helper: add a single legal-document link to the legal page ───────────
@@ -384,9 +587,10 @@ end;
 procedure InitializeWizard;
 begin
   CreateLegalPage();
+  CreateRegistryPage();
 
   CredentialsPage := CreateInputQueryPage(
-    LegalPage.ID,
+    RegistryPage.ID,
     'FalconPulsar Admin Credentials',
     'Set the administrator account for the FalconPulsar database',
     'These credentials will be used to log in to the FalconPulsar Web UI ' +
@@ -515,6 +719,8 @@ begin
   if IsUpgrade then
   begin
     if (LegalPage <> nil) and (PageID = LegalPage.ID) then
+      Result := True;
+    if (RegistryPage <> nil) and (PageID = RegistryPage.ID) then
       Result := True;
     if (CredentialsPage <> nil) and (PageID = CredentialsPage.ID) then
       Result := True;
