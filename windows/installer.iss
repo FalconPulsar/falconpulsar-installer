@@ -654,7 +654,7 @@ begin
             'it now and click OK to continue.' + #13#10 + #13#10 +
             'If you want the installer to set up its own Docker Engine inside ' +
             'WSL instead, click OK without starting Docker Desktop.',
-            mbExclamation, MB_OKCANCEL) = IDCANCEL then
+            mbError, MB_OKCANCEL) = IDCANCEL then
             Abort;
         end;
       end;
