@@ -234,8 +234,8 @@ procedure LogStep(Msg: String);
 begin
   if FpLogFile = '' then
     FpLogFile := GetInstallLogPath();
-  SaveStringToFile(FpLogFile,
-    #13#10 + '[' + GetDateTimeString('yyyy-mm-dd hh:nn:ss', '-', ':') +
+  SaveStringToFile(FpLogFile, #13#10 +
+    '[' + GetDateTimeString('yyyy-mm-dd hh:nn:ss', '-', ':') +
     '] ==> ' + Msg + #13#10, True);
 end;
 
