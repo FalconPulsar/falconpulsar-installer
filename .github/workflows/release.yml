@@ -62,6 +62,20 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Build tray app
+        shell: powershell
+        run: |
+          dotnet publish windows/tray-app/FalconPulsarTray.csproj `
+            -c Release -r win-x64 --self-contained `
+            -p:PublishSingleFile=true `
+            -p:EnableCompressionInSingleFile=true `
+            -o windows/tray-app/publish
+
       - name: Install Inno Setup 6
         shell: powershell
         run: choco install innosetup --no-progress -y

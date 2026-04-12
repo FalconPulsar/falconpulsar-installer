@@ -1,0 +1,413 @@
+using System;
+using System.Diagnostics;
+using System.Drawing;
+using System.IO;
+using System.Net.Http;
+using System.Text.Json;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Windows.Forms;
+using Microsoft.Win32;
+
+namespace FalconPulsar.Tray
+{
+    public enum StackStatus
+    {
+        Unknown,
+        Running,
+        PartiallyRunning,
+        Stopped,
+        Error
+    }
+
+    public class TrayApp : IDisposable
+    {
+        private readonly NotifyIcon _trayIcon;
+        private readonly System.Windows.Forms.Timer _pollTimer;
+        private readonly HttpClient _http;
+        private readonly string _distro;
+        private readonly string _composePath;
+
+        private StackStatus _status = StackStatus.Unknown;
+        private bool _coreRunning;
+        private bool _uiRunning;
+        private bool _gatewayRunning;
+        private bool _apiHealthy;
+
+        private ToolStripMenuItem _coreItem;
+        private ToolStripMenuItem _uiItem;
+        private ToolStripMenuItem _gatewayItem;
+        private ToolStripMenuItem _apiItem;
+        private ToolStripMenuItem _startItem;
+        private ToolStripMenuItem _stopItem;
+        private ToolStripMenuItem _restartItem;
+        private ToolStripMenuItem _autoStartItem;
+
+        public TrayApp()
+        {
+            _distro = ReadDistroName();
+            _composePath = "/home/falconpulsar/compose.yml";
+
+            _http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+
+            _trayIcon = new NotifyIcon
+            {
+                Text = "FalconPulsar",
+                Icon = CreateStatusIcon(Color.Gray),
+                Visible = true,
+                ContextMenuStrip = BuildMenu()
+            };
+            _trayIcon.DoubleClick += (s, e) => OpenWebUI();
+
+            _pollTimer = new System.Windows.Forms.Timer { Interval = 15000 };
+            _pollTimer.Tick += async (s, e) => await PollHealth();
+            _pollTimer.Start();
+
+            _ = PollHealth();
+        }
+
+        private string ReadDistroName()
+        {
+            // Try config file first (written by installer)
+            var configPath = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+                "FalconPulsar", "tray-config.txt");
+            if (File.Exists(configPath))
+            {
+                var distro = File.ReadAllText(configPath).Trim();
+                if (!string.IsNullOrEmpty(distro)) return distro;
+            }
+
+            // Try sentinel file
+            var sentinel = Path.Combine(Path.GetTempPath(), "falconpulsar-distro.txt");
+            if (File.Exists(sentinel))
+            {
+                var distro = File.ReadAllText(sentinel).Trim();
+                if (!string.IsNullOrEmpty(distro)) return distro;
+            }
+
+            return "Ubuntu-24.04";
+        }
+
+        private ContextMenuStrip BuildMenu()
+        {
+            var menu = new ContextMenuStrip();
+
+            // Header
+            var header = new ToolStripMenuItem("FalconPulsar v0.1.0")
+            { Enabled = false };
+            header.Font = new Font(header.Font, FontStyle.Bold);
+            menu.Items.Add(header);
+            menu.Items.Add(new ToolStripSeparator());
+
+            // Status items
+            _coreItem = new ToolStripMenuItem("Core: checking...") { Enabled = false };
+            _uiItem = new ToolStripMenuItem("Web UI: checking...") { Enabled = false };
+            _gatewayItem = new ToolStripMenuItem("AI Gateway: checking...") { Enabled = false };
+            _apiItem = new ToolStripMenuItem("REST API: checking...") { Enabled = false };
+            menu.Items.Add(_coreItem);
+            menu.Items.Add(_uiItem);
+            menu.Items.Add(_gatewayItem);
+            menu.Items.Add(_apiItem);
+            menu.Items.Add(new ToolStripSeparator());
+
+            // Actions
+            var openUi = new ToolStripMenuItem("Open Web UI", null,
+                (s, e) => OpenWebUI());
+            openUi.Font = new Font(openUi.Font, FontStyle.Bold);
+            menu.Items.Add(openUi);
+
+            _startItem = new ToolStripMenuItem("Start Stack", null,
+                async (s, e) => await RunComposeCommand("up -d"));
+            _stopItem = new ToolStripMenuItem("Stop Stack", null,
+                async (s, e) => await RunComposeCommand("down"));
+            _restartItem = new ToolStripMenuItem("Restart Stack", null,
+                async (s, e) => await RunComposeCommand("restart"));
+            menu.Items.Add(_startItem);
+            menu.Items.Add(_stopItem);
+            menu.Items.Add(_restartItem);
+            menu.Items.Add(new ToolStripSeparator());
+
+            // Tools
+            menu.Items.Add(new ToolStripMenuItem("View Logs", null,
+                (s, e) => ViewLogs()));
+            menu.Items.Add(new ToolStripMenuItem("Open Data Folder", null,
+                (s, e) => OpenDataFolder()));
+            menu.Items.Add(new ToolStripMenuItem("Open Install Log", null,
+                (s, e) => OpenInstallLog()));
+            menu.Items.Add(new ToolStripSeparator());
+
+            // Settings
+            _autoStartItem = new ToolStripMenuItem("Start with Windows", null,
+                (s, e) => ToggleAutoStart());
+            _autoStartItem.Checked = IsAutoStartEnabled();
+            menu.Items.Add(_autoStartItem);
+
+            menu.Items.Add(new ToolStripMenuItem("Refresh Status", null,
+                async (s, e) => await PollHealth()));
+            menu.Items.Add(new ToolStripSeparator());
+            menu.Items.Add(new ToolStripMenuItem("Exit", null,
+                (s, e) => ExitApp()));
+
+            return menu;
+        }
+
+        private async Task PollHealth()
+        {
+            _coreRunning = await IsContainerRunning("falconpulsar-core");
+            _uiRunning = await IsContainerRunning("falconpulsar-ui");
+            _gatewayRunning = await IsContainerRunning("falconpulsar-ai-gateway");
+            _apiHealthy = await IsApiHealthy();
+
+            // Determine overall status
+            var prev = _status;
+            if (_coreRunning && _uiRunning && _gatewayRunning)
+                _status = _apiHealthy ? StackStatus.Running : StackStatus.PartiallyRunning;
+            else if (_coreRunning || _uiRunning || _gatewayRunning)
+                _status = StackStatus.PartiallyRunning;
+            else
+                _status = StackStatus.Stopped;
+
+            UpdateUI();
+
+            // Notification on status change
+            if (prev != StackStatus.Unknown && prev != _status)
+            {
+                if (_status == StackStatus.Running)
+                    ShowNotification("FalconPulsar is running", "All containers are healthy.",
+                        ToolTipIcon.Info);
+                else if (_status == StackStatus.Stopped)
+                    ShowNotification("FalconPulsar stopped", "All containers have stopped.",
+                        ToolTipIcon.Warning);
+                else if (_status == StackStatus.PartiallyRunning)
+                    ShowNotification("FalconPulsar partially running",
+                        "Some containers are not running.", ToolTipIcon.Warning);
+            }
+        }
+
+        private void UpdateUI()
+        {
+            // Update icon color
+            Color color;
+            string tooltip;
+            switch (_status)
+            {
+                case StackStatus.Running:
+                    color = Color.FromArgb(34, 197, 94); // green
+                    tooltip = "FalconPulsar: Running";
+                    break;
+                case StackStatus.PartiallyRunning:
+                    color = Color.FromArgb(234, 179, 8); // yellow
+                    tooltip = "FalconPulsar: Partially running";
+                    break;
+                case StackStatus.Stopped:
+                    color = Color.FromArgb(239, 68, 68); // red
+                    tooltip = "FalconPulsar: Stopped";
+                    break;
+                default:
+                    color = Color.Gray;
+                    tooltip = "FalconPulsar: Checking...";
+                    break;
+            }
+            _trayIcon.Icon = CreateStatusIcon(color);
+            _trayIcon.Text = tooltip;
+
+            // Update menu items
+            _coreItem.Text = _coreRunning ? "Core: Running" : "Core: Stopped";
+            _coreItem.Image = CreateDot(_coreRunning ? Color.Green : Color.Red);
+            _uiItem.Text = _uiRunning ? "Web UI: Running" : "Web UI: Stopped";
+            _uiItem.Image = CreateDot(_uiRunning ? Color.Green : Color.Red);
+            _gatewayItem.Text = _gatewayRunning ? "AI Gateway: Running" : "AI Gateway: Stopped";
+            _gatewayItem.Image = CreateDot(_gatewayRunning ? Color.Green : Color.Red);
+            _apiItem.Text = _apiHealthy ? "REST API: Healthy" : "REST API: Not responding";
+            _apiItem.Image = CreateDot(_apiHealthy ? Color.Green : Color.Gray);
+
+            // Enable/disable actions based on state
+            _startItem.Enabled = _status != StackStatus.Running;
+            _stopItem.Enabled = _status != StackStatus.Stopped;
+            _restartItem.Enabled = _status != StackStatus.Stopped;
+        }
+
+        private async Task<bool> IsContainerRunning(string name)
+        {
+            try
+            {
+                var psi = new ProcessStartInfo
+                {
+                    FileName = "wsl.exe",
+                    Arguments = $"-d {_distro} -u root -- docker ps --filter name={name} --filter status=running -q",
+                    RedirectStandardOutput = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+                using var proc = Process.Start(psi);
+                var output = await proc.StandardOutput.ReadToEndAsync();
+                await proc.WaitForExitAsync();
+                return !string.IsNullOrWhiteSpace(output);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private async Task<bool> IsApiHealthy()
+        {
+            try
+            {
+                var resp = await _http.GetAsync("http://localhost:7433/api/v1/health");
+                return resp.IsSuccessStatusCode;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private async Task RunComposeCommand(string command)
+        {
+            _trayIcon.Icon = CreateStatusIcon(Color.FromArgb(234, 179, 8));
+            _trayIcon.Text = "FalconPulsar: Working...";
+            _startItem.Enabled = false;
+            _stopItem.Enabled = false;
+            _restartItem.Enabled = false;
+
+            try
+            {
+                var psi = new ProcessStartInfo
+                {
+                    FileName = "wsl.exe",
+                    Arguments = $"-d {_distro} -u falconpulsar -- docker compose -f {_composePath} {command}",
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+                using var proc = Process.Start(psi);
+                await proc.WaitForExitAsync();
+
+                // Wait a moment for containers to settle, then refresh
+                await Task.Delay(3000);
+                await PollHealth();
+            }
+            catch (Exception ex)
+            {
+                ShowNotification("Error", $"Failed to run: {ex.Message}", ToolTipIcon.Error);
+                await PollHealth();
+            }
+        }
+
+        private void OpenWebUI()
+        {
+            Process.Start(new ProcessStartInfo("http://localhost:8080")
+            { UseShellExecute = true });
+        }
+
+        private void ViewLogs()
+        {
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = "wsl.exe",
+                Arguments = $"-d {_distro} -u falconpulsar -- docker compose -f {_composePath} logs -f --tail 100",
+                UseShellExecute = true
+            });
+        }
+
+        private void OpenDataFolder()
+        {
+            Process.Start(new ProcessStartInfo("explorer.exe",
+                $@"\\wsl.localhost\{_distro}\home\falconpulsar")
+            { UseShellExecute = true });
+        }
+
+        private void OpenInstallLog()
+        {
+            var logPath = Path.Combine(Path.GetTempPath(), "falconpulsar-install.log");
+            if (File.Exists(logPath))
+                Process.Start(new ProcessStartInfo("notepad.exe", logPath)
+                { UseShellExecute = true });
+        }
+
+        private bool IsAutoStartEnabled()
+        {
+            using var key = Registry.CurrentUser.OpenSubKey(
+                @"SOFTWARE\Microsoft\Windows\CurrentVersion\Run", false);
+            return key?.GetValue("FalconPulsar") != null;
+        }
+
+        private void ToggleAutoStart()
+        {
+            using var key = Registry.CurrentUser.OpenSubKey(
+                @"SOFTWARE\Microsoft\Windows\CurrentVersion\Run", true);
+            if (key == null) return;
+
+            if (IsAutoStartEnabled())
+            {
+                key.DeleteValue("FalconPulsar", false);
+                _autoStartItem.Checked = false;
+            }
+            else
+            {
+                var exePath = Application.ExecutablePath;
+                key.SetValue("FalconPulsar", $"\"{exePath}\"");
+                _autoStartItem.Checked = true;
+            }
+        }
+
+        private void ShowNotification(string title, string text, ToolTipIcon icon)
+        {
+            _trayIcon.BalloonTipTitle = title;
+            _trayIcon.BalloonTipText = text;
+            _trayIcon.BalloonTipIcon = icon;
+            _trayIcon.ShowBalloonTip(5000);
+        }
+
+        private Icon CreateStatusIcon(Color color)
+        {
+            var bmp = new Bitmap(32, 32);
+            using (var g = Graphics.FromImage(bmp))
+            {
+                g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                g.Clear(Color.Transparent);
+                // Draw a filled circle with the status color
+                using var brush = new SolidBrush(color);
+                g.FillEllipse(brush, 2, 2, 28, 28);
+                // Draw a small "F" in the center
+                using var font = new Font("Segoe UI", 14, FontStyle.Bold);
+                using var textBrush = new SolidBrush(Color.White);
+                var sf = new StringFormat
+                {
+                    Alignment = StringAlignment.Center,
+                    LineAlignment = StringAlignment.Center
+                };
+                g.DrawString("F", font, textBrush, new RectangleF(0, 0, 32, 32), sf);
+            }
+            return Icon.FromHandle(bmp.GetHicon());
+        }
+
+        private Image CreateDot(Color color)
+        {
+            var bmp = new Bitmap(12, 12);
+            using (var g = Graphics.FromImage(bmp))
+            {
+                g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                g.Clear(Color.Transparent);
+                using var brush = new SolidBrush(color);
+                g.FillEllipse(brush, 1, 1, 10, 10);
+            }
+            return bmp;
+        }
+
+        private void ExitApp()
+        {
+            _pollTimer.Stop();
+            _trayIcon.Visible = false;
+            Application.Exit();
+        }
+
+        public void Dispose()
+        {
+            _pollTimer?.Dispose();
+            _trayIcon?.Dispose();
+            _http?.Dispose();
+        }
+    }
+}

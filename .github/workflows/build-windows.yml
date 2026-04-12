@@ -57,6 +57,24 @@ jobs:
           }
           Write-Host "ISCC.exe present at $iscc"
 
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Build tray app
+        shell: powershell
+        run: |
+          dotnet publish windows/tray-app/FalconPulsarTray.csproj `
+            -c Release `
+            -r win-x64 `
+            --self-contained `
+            -p:PublishSingleFile=true `
+            -p:EnableCompressionInSingleFile=true `
+            -o windows/tray-app/publish
+          $exe = Get-ChildItem "windows/tray-app/publish/FalconPulsarTray.exe" -ErrorAction Stop
+          Write-Host "Tray app built: $($exe.Name) ($([math]::Round($exe.Length / 1MB, 2)) MB)"
+
       - name: Generate wizard images from logo
         shell: powershell
         run: |

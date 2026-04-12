@@ -125,6 +125,9 @@ Source: "helpers\45-verify-health.ps1";                     DestDir: "{app}\help
 Source: "helpers\50-register-shortcuts.ps1";                DestDir: "{app}\helpers";        Flags: ignoreversion
 Source: "helpers\uninstall.ps1";                            DestDir: "{app}\helpers";        Flags: ignoreversion
 
+; ── Tray app ──────────────────────────────────────────────────────────────
+Source: "tray-app\publish\FalconPulsarTray.exe";            DestDir: "{app}";                Flags: ignoreversion
+
 ; ── Assets + reference files ────────────────────────────────────────────────
 Source: "assets\license.rtf";                               DestDir: "{app}\assets";         Flags: ignoreversion
 Source: "..\REQUIREMENTS.md";                               DestDir: "{app}";                Flags: ignoreversion
@@ -138,10 +141,18 @@ Source: "..\README.md";                                     DestDir: "{app}";   
 ;   - show a clear error dialog (with the last 2000 chars of the log) on
 ;     any failure, instead of Inno Setup's generic "command failed" dialog
 ;   - check Docker Desktop / WSL Integration state up front
+Filename: "{app}\FalconPulsarTray.exe"; \
+    Description: "Launch FalconPulsar Tray Manager"; Flags: postinstall nowait skipifsilent
 Filename: "http://localhost:8080"; \
-    Description: "Open the FalconPulsar Web UI"; Flags: postinstall shellexec skipifsilent nowait
+    Description: "Open the FalconPulsar Web UI"; Flags: postinstall shellexec skipifsilent nowait unchecked
 Filename: "notepad.exe"; Parameters: "{code:GetLogPath}"; \
     Description: "View install log"; Flags: postinstall shellexec skipifsilent nowait unchecked
+
+[Registry]
+; Auto-start the tray app on Windows login
+Root: HKCU; Subkey: "SOFTWARE\Microsoft\Windows\CurrentVersion\Run"; \
+    ValueName: "FalconPulsar"; ValueType: string; \
+    ValueData: """{app}\FalconPulsarTray.exe"""; Flags: uninsdeletevalue
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{commonprograms}\FalconPulsar"
@@ -753,6 +764,10 @@ begin
         'Registering Start Menu shortcuts...') then begin UpdateStep(6, 'fail'); Abort; end;
     UpdateStep(6, 'done');
     LogInfo('Step 7/7: PASSED');
+
+    // Write tray app config with the selected distro name
+    SaveStringToFile(ExpandConstant('{app}\tray-config.txt'), Distro, False);
+    LogInfo('Tray config written: ' + Distro);
 
     LogStep('Installation completed successfully');
     LogInfo('Web UI: http://localhost:8080');
@@ -1701,6 +1716,9 @@ var
 begin
   if CurUninstallStep = usUninstall then
   begin
+    // Kill the tray app if running
+    Exec('taskkill.exe', '/F /IM FalconPulsarTray.exe', '',
+      SW_HIDE, ewWaitUntilTerminated, ResultCode);
     // Ask the user what they want to remove
     Choice := MsgBox(
       'What would you like to remove?' + #13#10 + #13#10 +

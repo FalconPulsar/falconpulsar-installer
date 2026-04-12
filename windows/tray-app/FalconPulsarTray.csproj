@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <AssemblyName>FalconPulsarTray</AssemblyName>
+    <RootNamespace>FalconPulsar.Tray</RootNamespace>
+    <Version>0.1.0</Version>
+    <Company>FalconPulsar Contributors</Company>
+    <Product>FalconPulsar</Product>
+    <Description>FalconPulsar system tray manager</Description>
+    <PublishSingleFile>true</PublishSingleFile>
+    <SelfContained>true</SelfContained>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+  </PropertyGroup>
+</Project>
