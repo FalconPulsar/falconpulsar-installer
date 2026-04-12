@@ -26,6 +26,9 @@ on:
 permissions:
   contents: read
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   shellcheck:
     name: shellcheck
@@ -52,7 +55,8 @@ jobs:
             macos/uninstall.sh \
             shared/lib/common.sh \
             shared/lib/checks.sh \
-            shared/lib/prompts.sh
+            shared/lib/prompts.sh \
+            shared/lib/registry_auth.sh
 
   validate-compose:
     name: validate compose.yml

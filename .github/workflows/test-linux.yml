@@ -30,6 +30,9 @@ on:
 permissions:
   contents: read
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   smoke-ubuntu-2404:
     name: smoke (ubuntu 24.04, mode=docker)
