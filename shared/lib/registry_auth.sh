@@ -1,3 +1,4 @@
+#!/usr/bin/env bash
 # =============================================================================
 # registry_auth.sh — container registry detection and authentication.
 #
@@ -281,7 +282,7 @@ fp_registry_ensure_access() {
 
     local attempts=0
     while : ; do
-        fp_registry_probe
+        fp_registry_probe "$FP_REGISTRY" "$FP_REGISTRY_SENTINEL" "$FP_VERSION"
         local rc=$?
         case $rc in
             0) return 0 ;;
