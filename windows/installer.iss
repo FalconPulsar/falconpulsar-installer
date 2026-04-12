@@ -139,6 +139,8 @@ Source: "..\README.md";                                     DestDir: "{app}";   
 ;   - check Docker Desktop / WSL Integration state up front
 Filename: "http://localhost:8080"; \
     Description: "Open the FalconPulsar Web UI"; Flags: postinstall shellexec skipifsilent nowait
+Filename: "notepad.exe"; Parameters: "{code:GetLogPath}"; \
+    Description: "View install log"; Flags: postinstall shellexec skipifsilent nowait unchecked
 
 [UninstallRun]
 Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\helpers\uninstall.ps1"" -Distro {#WslDistroName}"; \
@@ -192,6 +194,93 @@ var
 function GetInstallLogPath(): String;
 begin
   Result := AddBackslash(GetEnv('TEMP')) + 'falconpulsar-install.log';
+end;
+
+// Append a timestamped line to the install log. Every significant event
+// in the installer goes through here so the log is a complete audit trail.
+procedure LogInfo(Msg: String);
+begin
+  if FpLogFile = '' then
+    FpLogFile := GetInstallLogPath();
+  SaveStringToFile(FpLogFile,
+    '[' + GetDateTimeString('yyyy-mm-dd hh:nn:ss', '-', ':') + '] [info] ' +
+    Msg + #13#10, True);
+end;
+
+procedure LogWarn(Msg: String);
+begin
+  if FpLogFile = '' then
+    FpLogFile := GetInstallLogPath();
+  SaveStringToFile(FpLogFile,
+    '[' + GetDateTimeString('yyyy-mm-dd hh:nn:ss', '-', ':') + '] [warn] ' +
+    Msg + #13#10, True);
+end;
+
+procedure LogError(Msg: String);
+begin
+  if FpLogFile = '' then
+    FpLogFile := GetInstallLogPath();
+  SaveStringToFile(FpLogFile,
+    '[' + GetDateTimeString('yyyy-mm-dd hh:nn:ss', '-', ':') + '] [error] ' +
+    Msg + #13#10, True);
+end;
+
+procedure LogStep(Msg: String);
+begin
+  if FpLogFile = '' then
+    FpLogFile := GetInstallLogPath();
+  SaveStringToFile(FpLogFile,
+    #13#10 + '[' + GetDateTimeString('yyyy-mm-dd hh:nn:ss', '-', ':') +
+    '] ==> ' + Msg + #13#10, True);
+end;
+
+// Log the machine state: Windows version, build, arch, RAM, user, etc.
+procedure LogMachineState();
+var
+  WinVer: TWindowsVersion;
+begin
+  GetWindowsVersionEx(WinVer);
+  LogStep('Machine state');
+  LogInfo('Installer version: {#MyAppVersion}');
+  LogInfo('Windows: ' + IntToStr(WinVer.Major) + '.' +
+    IntToStr(WinVer.Minor) + ' build ' + IntToStr(WinVer.Build));
+  LogInfo('Architecture: ' + GetEnv('PROCESSOR_ARCHITECTURE'));
+  LogInfo('Username: ' + GetEnv('USERNAME'));
+  LogInfo('Computer: ' + GetEnv('COMPUTERNAME'));
+  LogInfo('Temp dir: ' + GetEnv('TEMP'));
+  LogInfo('Program Files: ' + ExpandConstant('{pf}'));
+  if IsAdmin() then
+    LogInfo('Running as Administrator: yes')
+  else
+    LogWarn('Running as Administrator: no');
+end;
+
+// Log the detection results so the log shows what the wizard saw.
+procedure LogDetectionResults();
+var
+  I: Integer;
+begin
+  LogStep('Environment detection results');
+  LogInfo('WSL status: ' + DetectedWslStatus);
+  LogInfo('Docker Desktop: ' + DetectedDockerDesktop);
+  LogInfo('Distros found: ' + IntToStr(DistroCount));
+  for I := 0 to DistroCount - 1 do
+  begin
+    LogInfo('  [' + IntToStr(I + 1) + '] ' + DistroNames[I] +
+      ' | compatible=' + DistroCompatible[I] +
+      ' | docker=' + DistroHasDocker[I]);
+  end;
+  if DistroCount = 0 then
+    LogInfo('  (none -- will install fresh ' + '{#WslDistroName}' + ')');
+  LogInfo('Auto-selected distro: ' + SelectedDistro);
+  if NeedWslInstall then
+    LogInfo('WSL install needed: yes')
+  else
+    LogInfo('WSL install needed: no');
+  if NeedDistroInstall then
+    LogInfo('Distro install needed: yes')
+  else
+    LogInfo('Distro install needed: no');
 end;
 
 // Read a key=value from the detection file. Returns '' if not found.
@@ -338,6 +427,7 @@ end;
 // ── Helper: show an error dialog with log tail and abort ───────────────────
 procedure ShowStepError(StepName: String; ExitCode: Integer);
 begin
+  LogError('FAILED at: ' + StepName + ' (exit code ' + IntToStr(ExitCode) + ')');
   MsgBox(
     'FalconPulsar install failed at: ' + StepName + #13#10 +
     'Exit code: ' + IntToStr(ExitCode) + #13#10 + #13#10 +
@@ -368,16 +458,13 @@ begin
   if Length(ExtraArgs) > 0 then
     FullArgs := FullArgs + ' ' + ExtraArgs;
 
-  // Append a marker line to the log so the user can see step boundaries
-  SaveStringToFile(FpLogFile, #13#10 + '################ ' + ScriptName + ' ################' + #13#10, True);
+  LogInfo('Running helper: ' + ScriptName);
 
-  // DEBUG: wrap in cmd /c with a pause on failure so the user can read
-  // the error before the window closes. Remove this wrapper once the
-  // install flow is verified working.
   if not Exec('cmd.exe',
     '/c powershell.exe ' + FullArgs + ' & if errorlevel 1 (echo. & echo === FAILED === Press any key to close... & pause >nul)',
     ExpandConstant('{app}\helpers'), SW_SHOWNORMAL, ewWaitUntilTerminated, ResultCode) then
   begin
+    LogError('Helper ' + ScriptName + ' failed to launch');
     ShowStepError(StatusMsg, -1);
     Result := False;
     Exit;
@@ -385,11 +472,13 @@ begin
 
   if ResultCode <> 0 then
   begin
+    LogError('Helper ' + ScriptName + ' exited with code ' + IntToStr(ResultCode));
     ShowStepError(StatusMsg, ResultCode);
     Result := False;
     Exit;
   end;
 
+  LogInfo('Helper ' + ScriptName + ' completed successfully');
   Result := True;
 end;
 
@@ -412,17 +501,19 @@ var
 begin
   if CurStep = ssPostInstall then
   begin
-    FpLogFile := GetInstallLogPath();
+    // Log user choices (never log passwords)
+    LogStep('Install phase starting');
 
-    SaveStringToFile(FpLogFile,
-      '=== FalconPulsar Windows installer log -- ' +
-      GetDateTimeString('yyyy/mm/dd hh:nn:ss', '-', ':') + ' ===' + #13#10,
-      False);
-
-    // Resolve the distro from the selection page (or auto-detected)
     Distro := GetSelectedDistro();
     DistroArg := '-Distro "' + Distro + '"';
     AppDirArg := '-InstallDir "' + ExpandConstant('{app}') + '"';
+
+    LogInfo('Selected distro: ' + Distro);
+    LogInfo('Install dir: ' + ExpandConstant('{app}'));
+    if IsUpgrade then
+      LogInfo('Mode: upgrade')
+    else
+      LogInfo('Mode: fresh install');
 
     if IsUpgrade then
     begin
@@ -437,18 +528,27 @@ begin
       AdminUserArg := '-AdminUser "' + CredentialsPage.Values[0] + '"';
       AdminPassArg := '-AdminPass "' + CredentialsPage.Values[1] + '"';
       RegistryArg := '-Registry "' + RegistryUrlEdit.Text + '"';
+      LogInfo('Registry: ' + RegistryUrlEdit.Text);
       if Length(RegistryUserEdit.Text) > 0 then
-        RegistryUserArg := '-RegistryUser "' + RegistryUserEdit.Text + '"'
-      else
+      begin
+        RegistryUserArg := '-RegistryUser "' + RegistryUserEdit.Text + '"';
+        LogInfo('Registry user: ' + RegistryUserEdit.Text);
+      end else
         RegistryUserArg := '';
       if Length(RegistryPassEdit.Text) > 0 then
-        RegistryPassArg := '-RegistryPass "' + RegistryPassEdit.Text + '"'
-      else
+      begin
+        RegistryPassArg := '-RegistryPass "' + RegistryPassEdit.Text + '"';
+        LogInfo('Registry password: (provided, not logged)');
+      end else
         RegistryPassArg := '';
       if RegistrySkipCheck.Checked then
-        RegistrySkipArg := '-RegistrySkip'
-      else
+      begin
+        RegistrySkipArg := '-RegistrySkip';
+        LogInfo('Registry skip: yes');
+      end else
         RegistrySkipArg := '';
+      LogInfo('Admin user: ' + CredentialsPage.Values[0]);
+      LogInfo('Admin password: (provided, not logged)');
     end;
 
     // If Docker Desktop is installed but not running, prompt the user
@@ -470,39 +570,57 @@ begin
     end;
 
     // Always run prereq checks
+    LogStep('Step 1/6: System prerequisites');
     if not RunHelper('00-check-prereqs.ps1', '',
         'Checking system prerequisites...') then Abort;
+    LogInfo('Step 1/6: PASSED');
 
     // Only enable WSL if not already working
     if NeedWslInstall then
     begin
+      LogStep('Step 2/6: Enabling WSL2');
       if not RunHelper('10-enable-wsl.ps1', '',
           'Enabling WSL2 (this may take several minutes on first run)...') then Abort;
-    end;
+      LogInfo('Step 2/6: PASSED');
+    end else
+      LogInfo('Step 2/6: SKIPPED (WSL already working)');
 
     // Only install a distro if user chose "Install fresh" or none exists
     if NeedDistroInstall then
     begin
+      LogStep('Step 3/6: Installing ' + Distro);
       if not RunHelper('20-install-distro.ps1', DistroArg,
           'Installing ' + Distro + ' inside WSL...') then Abort;
-    end;
+      LogInfo('Step 3/6: PASSED');
+    end else
+      LogInfo('Step 3/6: SKIPPED (using existing distro ' + Distro + ')');
 
     // Always configure systemd (idempotent)
+    LogStep('Step 4/6: Configuring systemd');
     if not RunHelper('30-configure-distro.ps1', DistroArg,
         'Configuring systemd inside ' + Distro + '...') then Abort;
+    LogInfo('Step 4/6: PASSED');
 
     // Run the bash installer inside the selected distro
+    LogStep('Step 5/6: FalconPulsar bash installer');
     if not RunHelper('40-run-fp-installer.ps1',
         DistroArg + ' ' + AppDirArg + ' ' +
         AdminUserArg + ' ' + AdminPassArg + ' ' +
         RegistryArg + ' ' + RegistryUserArg + ' ' +
         RegistryPassArg + ' ' + RegistrySkipArg,
         'Installing FalconPulsar inside WSL (this may take 5-10 minutes)...') then Abort;
+    LogInfo('Step 5/6: PASSED');
 
     // Register shortcuts with the correct distro name
+    LogStep('Step 6/6: Start Menu shortcuts');
     if not RunHelper('50-register-shortcuts.ps1',
         DistroArg + ' ' + AppDirArg,
         'Registering Start Menu shortcuts...') then Abort;
+    LogInfo('Step 6/6: PASSED');
+
+    LogStep('Installation completed successfully');
+    LogInfo('Web UI: http://localhost:8080');
+    LogInfo('Log file: ' + FpLogFile);
   end;
 end;
 
@@ -652,10 +770,15 @@ begin
   end;
 
   if ResultCode = 0 then
-    RegistryStatusLabel.Caption := 'OK: connected and images are pullable.'
-  else
+  begin
+    RegistryStatusLabel.Caption := 'OK: connected and images are pullable.';
+    LogInfo('Registry test: OK (' + UrlVal + ')');
+  end else
+  begin
     RegistryStatusLabel.Caption :=
       'FAILED: cannot pull from ' + UrlVal + '. Check URL, credentials, and network.';
+    LogWarn('Registry test: FAILED (' + UrlVal + ', exit ' + IntToStr(ResultCode) + ')');
+  end;
 end;
 
 // Registry page: enable / disable the input fields based on Skip state.
@@ -1009,6 +1132,11 @@ begin
   Result := CredentialsPage.Values[1];
 end;
 
+function GetLogPath(Param: String): String;
+begin
+  Result := GetInstallLogPath();
+end;
+
 // Top-level prereq check before any page is shown. Anything that's a
 // hard-no goes here so the user gets a clear error before they even see
 // the welcome screen.
@@ -1019,8 +1147,23 @@ begin
   Result := True;
   IsUpgrade := False;
 
+  // Initialize the log file -- truncate any previous run
+  FpLogFile := GetInstallLogPath();
+  SaveStringToFile(FpLogFile,
+    '================================================================' + #13#10 +
+    '  FalconPulsar Installer Log' + #13#10 +
+    '  Version: {#MyAppVersion}' + #13#10 +
+    '  Date: ' + GetDateTimeString('yyyy-mm-dd hh:nn:ss', '-', ':') + #13#10 +
+    '================================================================' + #13#10,
+    False);
+
+  // Log machine state first
+  LogMachineState();
+
   // Run environment detection before any page is shown.
+  LogStep('Running environment detection');
   RunDetection();
+  LogDetectionResults();
 
   GetWindowsVersionEx(WinVer);
 
@@ -1052,11 +1195,13 @@ begin
      RegKeyExists(HKCU, 'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{#SetupSetting("AppId")}_is1') then
   begin
     IsUpgrade := True;
+    LogInfo('Existing installation detected -- upgrade mode');
     MsgBox('FalconPulsar is already installed on this computer.' + #13#10 + #13#10 +
            'Click OK to upgrade to the latest version. Your existing data ' +
            'and configuration will be preserved.',
            mbInformation, MB_OK);
-  end;
+  end else
+    LogInfo('No existing installation found -- fresh install mode');
 end;
 
 // Skip the legal and credentials pages on upgrade -- the user already
