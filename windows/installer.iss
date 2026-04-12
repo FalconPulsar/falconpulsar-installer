@@ -341,19 +341,32 @@ begin
   WizardForm.NextButton.Enabled := LegalCheckBox.Checked;
 end;
 
+// Convert a Windows path to a WSL /mnt/... mount path.
+// C:\Users\foo\file.txt -> /mnt/c/Users/foo/file.txt
+function WinPathToWsl(WinPath: String): String;
+var
+  S: String;
+begin
+  S := WinPath;
+  if (Length(S) >= 3) and (S[2] = ':') then
+    S := '/mnt/' + Lowercase(S[1]) + Copy(S, 3, Length(S));
+  StringChangeEx(S, '\', '/', True);
+  Result := S;
+end;
+
 // Registry page: Test Connection button handler.
-// Invokes windows/helpers/25-test-registry.ps1 in a hidden window, passing
-// the registry URL and optional credentials. The helper runs a manifest
-// probe inside WSL and returns 0 on success. Any failure is surfaced in
-// the status label below the button.
+// Calls wsl.exe directly (not through a helper script) because {app}
+// has not been initialized yet -- the directory selection page comes
+// after the registry page. The probe runs `docker manifest inspect`
+// inside the WSL distro. If credentials were provided, a `docker login`
+// is attempted first using a temp file for the password (never argv).
 procedure RegistryTestClick(Sender: TObject);
 var
-  HelperPath: String;
-  FullArgs: String;
   ResultCode: Integer;
-  UrlVal: String;
-  UserVal: String;
-  PassVal: String;
+  UrlVal, UserVal, PassVal: String;
+  RegHost: String;
+  PassFile, WslPassFile: String;
+  BashCmd, WslArgs: String;
 begin
   UrlVal := RegistryUrlEdit.Text;
   UserVal := RegistryUserEdit.Text;
@@ -368,29 +381,48 @@ begin
   RegistryStatusLabel.Caption := 'Testing connection to ' + UrlVal + ' ...';
   WizardForm.Refresh();
 
-  HelperPath := ExpandConstant('{app}\helpers\25-test-registry.ps1');
-  FullArgs := '-NoProfile -ExecutionPolicy Bypass -File "' + HelperPath + '"' +
-    ' -Distro {#WslDistroName}' +
-    ' -Registry "' + UrlVal + '"';
-  if Length(UserVal) > 0 then
-    FullArgs := FullArgs + ' -Username "' + UserVal + '"';
-  if Length(PassVal) > 0 then
-    FullArgs := FullArgs + ' -Password "' + PassVal + '"';
+  // Extract hostname from "docker.io/falconpulsar" -> "docker.io"
+  RegHost := UrlVal;
+  if Pos('/', RegHost) > 0 then
+    RegHost := Copy(RegHost, 1, Pos('/', RegHost) - 1);
 
-  if not Exec('powershell.exe', FullArgs, '',
-      SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+  // If credentials provided, do a docker login first via a temp file
+  // so the password never appears in argv.
+  if (Length(UserVal) > 0) and (Length(PassVal) > 0) then
   begin
-    RegistryStatusLabel.Caption := 'FAILED: could not launch test helper.';
+    PassFile := AddBackslash(GetEnv('TEMP')) + 'fp-reg-pass.tmp';
+    SaveStringToFile(PassFile, PassVal, False);
+    WslPassFile := WinPathToWsl(PassFile);
+
+    BashCmd := 'cat "' + WslPassFile + '" | docker login "' + RegHost +
+      '" --username "' + UserVal + '" --password-stdin >/dev/null 2>&1';
+    WslArgs := '-d {#WslDistroName} -u root -- bash -c "' + BashCmd + '"';
+
+    Exec('wsl.exe', WslArgs, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    DeleteFile(PassFile);
+
+    if ResultCode <> 0 then
+    begin
+      RegistryStatusLabel.Caption := 'FAILED: login rejected by ' + RegHost + '. Check credentials.';
+      Exit;
+    end;
+  end;
+
+  // Probe: docker manifest inspect (HEAD-like, no actual pull)
+  BashCmd := 'DOCKER_CLI_HINTS=false docker manifest inspect "' +
+    UrlVal + '/core:latest" >/dev/null 2>&1';
+  WslArgs := '-d {#WslDistroName} -u root -- bash -c "' + BashCmd + '"';
+
+  if not Exec('wsl.exe', WslArgs, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+  begin
+    RegistryStatusLabel.Caption := 'WSL is not available yet. The install step will handle registry access.';
     Exit;
   end;
 
-  case ResultCode of
-    0: RegistryStatusLabel.Caption := 'OK: connected and images are pullable.';
-    1: RegistryStatusLabel.Caption := 'FAILED: authentication rejected. Check credentials.';
-    2: RegistryStatusLabel.Caption := 'FAILED: network error or registry unreachable.';
+  if ResultCode = 0 then
+    RegistryStatusLabel.Caption := 'OK: connected and images are pullable.'
   else
-    RegistryStatusLabel.Caption := 'FAILED: exit code ' + IntToStr(ResultCode) + ' -- see install log.';
-  end;
+    RegistryStatusLabel.Caption := 'FAILED: cannot pull from ' + UrlVal + '. Check URL, credentials, and network.';
 end;
 
 // Registry page: enable / disable the input fields based on Skip state.

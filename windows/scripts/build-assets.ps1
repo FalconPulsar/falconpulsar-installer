@@ -51,8 +51,9 @@ try {
     try {
         $g = [System.Drawing.Graphics]::FromImage($headerBmp)
         try {
-            # White background — matches the wizard chrome on every page
-            $g.Clear([System.Drawing.Color]::White)
+            # Dark navy background — matches the welcome panel and makes the
+            # falcon logo visible against the header chrome.
+            $g.Clear([System.Drawing.Color]::FromArgb(255, 14, 26, 49))
             $g.InterpolationMode    = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
             $g.SmoothingMode        = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
             $g.PixelOffsetMode      = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
