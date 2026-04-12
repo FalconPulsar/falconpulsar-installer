@@ -58,8 +58,7 @@ PrivilegesRequiredOverridesAllowed=
 
 OutputDir=.\Output
 OutputBaseFilename=FalconPulsar-Setup-{#MyAppVersion}
-; SetupIconFile is omitted for v0.1 — Inno Setup uses its default. A real
-; icon will land before v1.0.
+SetupIconFile=assets\falcon.ico
 WizardStyle=modern
 WizardSizePercent=120
 WizardImageFile=assets\welcome.bmp
@@ -166,7 +165,13 @@ const
   MAX_DISTROS = 20;
 
 var
-  CredentialsPage: TInputQueryWizardPage;
+  CredentialsPage: TWizardPage;
+  CredUserEdit: TNewEdit;
+  CredPassEdit: TNewEdit;
+  CredConfirmEdit: TNewEdit;
+  CredStrengthLabel: TNewStaticText;
+  CredGeneratedLabel: TNewEdit;
+  CredGeneratedCaption: TNewStaticText;
   LegalPage: TWizardPage;
   LegalCheckBox: TNewCheckBox;
   DistroPage: TWizardPage;
@@ -525,8 +530,8 @@ begin
       RegistrySkipArg := '-RegistrySkip';
     end else
     begin
-      AdminUserArg := '-AdminUser "' + CredentialsPage.Values[0] + '"';
-      AdminPassArg := '-AdminPass "' + CredentialsPage.Values[1] + '"';
+      AdminUserArg := '-AdminUser "' + CredUserEdit.Text + '"';
+      AdminPassArg := '-AdminPass "' + CredPassEdit.Text + '"';
       RegistryArg := '-Registry "' + RegistryUrlEdit.Text + '"';
       LogInfo('Registry: ' + RegistryUrlEdit.Text);
       if Length(RegistryUserEdit.Text) > 0 then
@@ -547,7 +552,7 @@ begin
         LogInfo('Registry skip: yes');
       end else
         RegistrySkipArg := '';
-      LogInfo('Admin user: ' + CredentialsPage.Values[0]);
+      LogInfo('Admin user: ' + CredUserEdit.Text);
       LogInfo('Admin password: (provided, not logged)');
     end;
 
@@ -692,20 +697,30 @@ begin
     RegHost := 'docker.io';
 
   // Decide how to run docker: Docker Desktop (native) or WSL distro.
+  // Re-detect Docker Desktop state LIVE each time the button is clicked,
+  // because the user may have started it since the wizard opened.
   UseDockerDesktop := False;
   DockerExe := ExpandConstant('{pf}\Docker\Docker\resources\bin\docker.exe');
   Distro := GetSelectedDistro();
 
-  if FileExists(DockerExe) and (DetectedDockerDesktop = 'running') then
-    UseDockerDesktop := True;
-
-  // Docker Desktop installed but not running
-  if (not UseDockerDesktop) and (DetectedDockerDesktop = 'installed') then
+  if FileExists(DockerExe) then
   begin
-    RegistryStatusLabel.Caption :=
-      'Docker Desktop is installed but not running. Please start Docker ' +
-      'Desktop and click Test again, or skip and let the installer handle it.';
-    Exit;
+    // Live check: is Docker Desktop actually responsive right now?
+    if Exec(DockerExe, 'info', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    begin
+      if ResultCode = 0 then
+      begin
+        UseDockerDesktop := True;
+        LogInfo('Test connection: using Docker Desktop (live check OK)');
+      end else
+      begin
+        RegistryStatusLabel.Caption :=
+          'Docker Desktop is installed but not running. Please start Docker ' +
+          'Desktop and click Test again, or skip this check.';
+        LogInfo('Test connection: Docker Desktop not responsive (exit ' + IntToStr(ResultCode) + ')');
+        Exit;
+      end;
+    end;
   end;
 
   // No Docker Desktop and no WSL — can't test
@@ -1050,27 +1065,239 @@ begin
     WizardForm.NextButton.Enabled := LegalCheckBox.Checked;
 end;
 
-// Custom page: admin username + password (double-entry).
+// Password strength assessment: returns Weak / Medium / Strong.
+function GetPasswordStrength(Pass: String): String;
+var
+  HasUpper, HasLower, HasDigit, HasSymbol: Boolean;
+  Classes: Integer;
+  I: Integer;
+  C: Char;
+begin
+  HasUpper := False;
+  HasLower := False;
+  HasDigit := False;
+  HasSymbol := False;
+
+  for I := 1 to Length(Pass) do
+  begin
+    C := Pass[I];
+    if (C >= 'A') and (C <= 'Z') then HasUpper := True
+    else if (C >= 'a') and (C <= 'z') then HasLower := True
+    else if (C >= '0') and (C <= '9') then HasDigit := True
+    else HasSymbol := True;
+  end;
+
+  Classes := 0;
+  if HasUpper then Classes := Classes + 1;
+  if HasLower then Classes := Classes + 1;
+  if HasDigit then Classes := Classes + 1;
+  if HasSymbol then Classes := Classes + 1;
+
+  if (Length(Pass) < 10) or (Classes <= 1) then
+    Result := 'Weak'
+  else if (Length(Pass) >= 12) and (Classes >= 3) then
+    Result := 'Strong'
+  else
+    Result := 'Medium';
+end;
+
+// Update the strength label when the password field changes.
+procedure CredPassChange(Sender: TObject);
+var
+  Strength: String;
+begin
+  Strength := GetPasswordStrength(CredPassEdit.Text);
+  if Length(CredPassEdit.Text) = 0 then
+    CredStrengthLabel.Caption := ''
+  else
+    CredStrengthLabel.Caption := 'Password strength: ' + Strength;
+end;
+
+// Generate a random password: 20 chars, mix of upper/lower/digit/symbol.
+procedure CredGenerateClick(Sender: TObject);
+var
+  Chars: String;
+  Pass: String;
+  I: Integer;
+begin
+  Chars := 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789!@#$%&*-_=+';
+  Pass := '';
+  for I := 1 to 20 do
+    Pass := Pass + Chars[Random(Length(Chars)) + 1];
+  CredPassEdit.Text := Pass;
+  CredConfirmEdit.Text := Pass;
+  CredPassEdit.PasswordChar := #0;
+  CredGeneratedLabel.Text := Pass;
+  CredGeneratedLabel.Visible := True;
+  CredGeneratedCaption.Visible := True;
+  CredStrengthLabel.Caption := 'Password strength: Strong (auto-generated)';
+  LogInfo('Admin password: auto-generated (20 chars)');
+end;
+
+// Copy the current password to the clipboard via clip.exe.
+procedure CredCopyClick(Sender: TObject);
+var
+  PassFile: String;
+  ResultCode: Integer;
+begin
+  if Length(CredPassEdit.Text) = 0 then Exit;
+  PassFile := AddBackslash(GetEnv('TEMP')) + 'fp-pass-copy.tmp';
+  SaveStringToFile(PassFile, CredPassEdit.Text, False);
+  Exec('cmd.exe', '/c type "' + PassFile + '" | clip', '',
+    SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  DeleteFile(PassFile);
+  CredStrengthLabel.Caption := CredStrengthLabel.Caption + '  (copied!)';
+end;
+
+// Create the credentials page as a fully custom TWizardPage.
+procedure CreateCredentialsPage();
+var
+  Y: Integer;
+  Intro: TNewStaticText;
+  UserLabel: TNewStaticText;
+  PassLabel: TNewStaticText;
+  ConfirmLabel: TNewStaticText;
+  ReqLabel: TNewStaticText;
+  GenButton: TNewButton;
+  CopyButton: TNewButton;
+begin
+  CredentialsPage := CreateCustomPage(
+    RegistryPage.ID,
+    'FalconPulsar Admin Credentials',
+    'Set the administrator account for the Web UI');
+
+  Y := 0;
+
+  Intro := TNewStaticText.Create(CredentialsPage);
+  Intro.Parent     := CredentialsPage.Surface;
+  Intro.Top        := Y;
+  Intro.Left       := 0;
+  Intro.Width      := CredentialsPage.SurfaceWidth;
+  Intro.AutoSize   := False;
+  Intro.Height     := ScaleY(30);
+  Intro.WordWrap   := True;
+  Intro.Caption    :=
+    'The password is NOT stored on disk. It is used once to create the admin ' +
+    'user and then exchanged for a service token. Save it now.';
+  Y := Y + Intro.Height + ScaleY(8);
+
+  // Username
+  UserLabel := TNewStaticText.Create(CredentialsPage);
+  UserLabel.Parent  := CredentialsPage.Surface;
+  UserLabel.Top     := Y;
+  UserLabel.Left    := 0;
+  UserLabel.Caption := 'Admin username:';
+  Y := Y + UserLabel.Height + ScaleY(2);
+
+  CredUserEdit := TNewEdit.Create(CredentialsPage);
+  CredUserEdit.Parent := CredentialsPage.Surface;
+  CredUserEdit.Top    := Y;
+  CredUserEdit.Left   := 0;
+  CredUserEdit.Width  := CredentialsPage.SurfaceWidth;
+  CredUserEdit.Text   := 'admin';
+  Y := Y + CredUserEdit.Height + ScaleY(10);
+
+  // Password
+  PassLabel := TNewStaticText.Create(CredentialsPage);
+  PassLabel.Parent  := CredentialsPage.Surface;
+  PassLabel.Top     := Y;
+  PassLabel.Left    := 0;
+  PassLabel.Caption := 'Admin password:';
+  Y := Y + PassLabel.Height + ScaleY(2);
+
+  CredPassEdit := TNewEdit.Create(CredentialsPage);
+  CredPassEdit.Parent       := CredentialsPage.Surface;
+  CredPassEdit.Top          := Y;
+  CredPassEdit.Left         := 0;
+  CredPassEdit.Width        := CredentialsPage.SurfaceWidth;
+  CredPassEdit.PasswordChar := '*';
+  CredPassEdit.OnChange     := @CredPassChange;
+  Y := Y + CredPassEdit.Height + ScaleY(10);
+
+  // Confirm password
+  ConfirmLabel := TNewStaticText.Create(CredentialsPage);
+  ConfirmLabel.Parent  := CredentialsPage.Surface;
+  ConfirmLabel.Top     := Y;
+  ConfirmLabel.Left    := 0;
+  ConfirmLabel.Caption := 'Confirm password:';
+  Y := Y + ConfirmLabel.Height + ScaleY(2);
+
+  CredConfirmEdit := TNewEdit.Create(CredentialsPage);
+  CredConfirmEdit.Parent       := CredentialsPage.Surface;
+  CredConfirmEdit.Top          := Y;
+  CredConfirmEdit.Left         := 0;
+  CredConfirmEdit.Width        := CredentialsPage.SurfaceWidth;
+  CredConfirmEdit.PasswordChar := '*';
+  Y := Y + CredConfirmEdit.Height + ScaleY(6);
+
+  // Strength indicator
+  CredStrengthLabel := TNewStaticText.Create(CredentialsPage);
+  CredStrengthLabel.Parent   := CredentialsPage.Surface;
+  CredStrengthLabel.Top      := Y;
+  CredStrengthLabel.Left     := 0;
+  CredStrengthLabel.Width    := CredentialsPage.SurfaceWidth;
+  CredStrengthLabel.AutoSize := False;
+  CredStrengthLabel.Height   := ScaleY(16);
+  CredStrengthLabel.Caption  := '';
+  Y := Y + CredStrengthLabel.Height + ScaleY(4);
+
+  // Requirements text
+  ReqLabel := TNewStaticText.Create(CredentialsPage);
+  ReqLabel.Parent   := CredentialsPage.Surface;
+  ReqLabel.Top      := Y;
+  ReqLabel.Left     := 0;
+  ReqLabel.Width    := CredentialsPage.SurfaceWidth;
+  ReqLabel.AutoSize := False;
+  ReqLabel.Height   := ScaleY(16);
+  ReqLabel.Caption  := 'Min 10 chars. Use uppercase, lowercase, numbers, and symbols for a strong password.';
+  ReqLabel.Font.Color := clGray;
+  Y := Y + ReqLabel.Height + ScaleY(12);
+
+  // Generate + Copy buttons side by side
+  GenButton := TNewButton.Create(CredentialsPage);
+  GenButton.Parent  := CredentialsPage.Surface;
+  GenButton.Top     := Y;
+  GenButton.Left    := 0;
+  GenButton.Width   := ScaleX(160);
+  GenButton.Height  := ScaleY(25);
+  GenButton.Caption := 'Generate strong password';
+  GenButton.OnClick := @CredGenerateClick;
+
+  CopyButton := TNewButton.Create(CredentialsPage);
+  CopyButton.Parent  := CredentialsPage.Surface;
+  CopyButton.Top     := Y;
+  CopyButton.Left    := ScaleX(170);
+  CopyButton.Width   := ScaleX(120);
+  CopyButton.Height  := ScaleY(25);
+  CopyButton.Caption := 'Copy password';
+  CopyButton.OnClick := @CredCopyClick;
+  Y := Y + GenButton.Height + ScaleY(8);
+
+  // Generated password display (read-only, visible only after Generate)
+  CredGeneratedCaption := TNewStaticText.Create(CredentialsPage);
+  CredGeneratedCaption.Parent  := CredentialsPage.Surface;
+  CredGeneratedCaption.Top     := Y;
+  CredGeneratedCaption.Left    := 0;
+  CredGeneratedCaption.Caption := 'Generated password (save this now):';
+  CredGeneratedCaption.Visible := False;
+  Y := Y + CredGeneratedCaption.Height + ScaleY(2);
+
+  CredGeneratedLabel := TNewEdit.Create(CredentialsPage);
+  CredGeneratedLabel.Parent   := CredentialsPage.Surface;
+  CredGeneratedLabel.Top      := Y;
+  CredGeneratedLabel.Left     := 0;
+  CredGeneratedLabel.Width    := CredentialsPage.SurfaceWidth;
+  CredGeneratedLabel.ReadOnly := True;
+  CredGeneratedLabel.Text     := '';
+  CredGeneratedLabel.Visible  := False;
+end;
+
 procedure InitializeWizard;
 begin
   CreateLegalPage();
   CreateDistroPage();
   CreateRegistryPage();
-
-  CredentialsPage := CreateInputQueryPage(
-    RegistryPage.ID,
-    'FalconPulsar Admin Credentials',
-    'Set the administrator account for the FalconPulsar database',
-    'These credentials will be used to log in to the FalconPulsar Web UI ' +
-    'at http://localhost:8080. The password is NOT stored on disk anywhere ' +
-    'after the install — the installer uses it once to bootstrap the admin ' +
-    'user and then exchanges it for a service token. Save it now.');
-
-  CredentialsPage.Add('Admin username:', False);
-  CredentialsPage.Add('Admin password:', True);
-  CredentialsPage.Add('Confirm password:', True);
-
-  CredentialsPage.Values[0] := 'admin';
+  CreateCredentialsPage();
 
   // Bring the wizard to the foreground after UAC elevation. Windows
   // suppresses focus theft from new processes by default, so the elevated
@@ -1099,19 +1326,19 @@ begin
 
   if CurPageID = CredentialsPage.ID then
   begin
-    if Length(CredentialsPage.Values[0]) < 1 then
+    if Length(CredUserEdit.Text) < 1 then
     begin
       MsgBox('Admin username cannot be empty.', mbError, MB_OK);
       Result := False;
       Exit;
     end;
-    if Length(CredentialsPage.Values[1]) < 10 then
+    if Length(CredPassEdit.Text) < 10 then
     begin
       MsgBox('Admin password must be at least 10 characters.', mbError, MB_OK);
       Result := False;
       Exit;
     end;
-    if CredentialsPage.Values[1] <> CredentialsPage.Values[2] then
+    if CredPassEdit.Text <> CredConfirmEdit.Text then
     begin
       MsgBox('The two passwords do not match.', mbError, MB_OK);
       Result := False;
@@ -1124,12 +1351,12 @@ end;
 // {code:GetAdminPass} parameter substitution.
 function GetAdminUser(Param: String): String;
 begin
-  Result := CredentialsPage.Values[0];
+  Result := CredUserEdit.Text;
 end;
 
 function GetAdminPass(Param: String): String;
 begin
-  Result := CredentialsPage.Values[1];
+  Result := CredPassEdit.Text;
 end;
 
 function GetLogPath(Param: String): String;

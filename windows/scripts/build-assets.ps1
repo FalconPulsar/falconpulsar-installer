@@ -116,6 +116,43 @@ try {
     } finally {
         $welcomeBmp.Dispose()
     }
+    # ── Icon: multi-size .ico for SetupIconFile ────────────────────────────
+    # Inno Setup uses this as the installer .exe icon and the Add/Remove
+    # Programs entry icon. We generate a single 256x256 PNG-compressed
+    # icon entry. Windows Explorer scales it to 16/32/48 as needed.
+    $icoPath = Join-Path $assetsDir 'falcon.ico'
+    Write-Host "Generating $icoPath (256x256 icon)"
+    $icoSize = 256
+    $icoBmp = New-Object System.Drawing.Bitmap $icoSize, $icoSize
+    try {
+        $g = [System.Drawing.Graphics]::FromImage($icoBmp)
+        try {
+            $g.Clear([System.Drawing.Color]::Transparent)
+            $g.InterpolationMode    = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+            $g.SmoothingMode        = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+            $g.PixelOffsetMode      = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
+            $g.CompositingQuality   = [System.Drawing.Drawing2D.CompositingQuality]::HighQuality
+            $g.DrawImage($png, 0, 0, $icoSize, $icoSize)
+        } finally {
+            $g.Dispose()
+        }
+        # Save as .ico using the Icon class. System.Drawing.Icon requires
+        # a bitmap handle, not a file stream.
+        $hIcon = $icoBmp.GetHicon()
+        $icon = [System.Drawing.Icon]::FromHandle($hIcon)
+        try {
+            $fs = [System.IO.File]::Create($icoPath)
+            try {
+                $icon.Save($fs)
+            } finally {
+                $fs.Close()
+            }
+        } finally {
+            $icon.Dispose()
+        }
+    } finally {
+        $icoBmp.Dispose()
+    }
 } finally {
     $png.Dispose()
 }
@@ -123,6 +160,10 @@ try {
 Write-Host ''
 Write-Host 'Generated assets:'
 Get-ChildItem -Path $assetsDir -Filter '*.bmp' | ForEach-Object {
+    $sizeKB = [math]::Round($_.Length / 1KB, 1)
+    Write-Host "  $($_.Name) ($sizeKB KB)"
+}
+Get-ChildItem -Path $assetsDir -Filter '*.ico' | ForEach-Object {
     $sizeKB = [math]::Round($_.Length / 1KB, 1)
     Write-Host "  $($_.Name) ($sizeKB KB)"
 }

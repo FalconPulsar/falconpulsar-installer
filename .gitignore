@@ -12,6 +12,7 @@ windows/Output/
 # windows/scripts/build-assets.ps1 — see windows/README-windows-build.md)
 windows/assets/header.bmp
 windows/assets/welcome.bmp
+windows/assets/falcon.ico
 
 # Local test artifacts
 *.log
