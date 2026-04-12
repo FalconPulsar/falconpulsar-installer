@@ -157,6 +157,14 @@ fi
 fp_registry_ensure_access
 
 # ── Step 3: Create the falconpulsar user ────────────────────────────────────
+# Handles all re-install scenarios defensively:
+#   - User exists, home dir exists: nothing to do
+#   - User exists, home dir missing: recreate the directory
+#   - User missing, home dir exists: create user with existing home
+#   - User missing, home dir missing: create user + home (fresh install)
+#   - Home dir exists but wrong ownership: fix it
+#   - Data dir missing: create it
+#   - .docker dir missing: create it (for credential copy in step 6)
 log_step "step 3/8 — system user '${FP_USER}'"
 if id "$FP_USER" >/dev/null 2>&1; then
     log_success "user ${FP_USER} already exists"
@@ -171,9 +179,30 @@ else
     log_success "created ${FP_USER} (home: ${FP_HOME})"
 fi
 
+# Ensure all required directories exist with correct ownership.
+# A previous uninstall may have deleted some but not all.
+for dir in "$FP_HOME" "$FP_DATA_DIR" "${FP_HOME}/.docker"; do
+    if [ ! -d "$dir" ]; then
+        mkdir -p "$dir"
+        log_info "created missing directory: ${dir}"
+    fi
+done
+chown -R "${FP_USER}:${FP_USER}" "$FP_HOME"
+chmod 0750 "$FP_DATA_DIR"
+chmod 0700 "${FP_HOME}/.docker"
+log_success "home directory ready: ${FP_HOME}"
+
 FP_UID="$(id -u "$FP_USER")"
 FP_GID="$(id -g "$FP_USER")"
 export FP_UID FP_GID
+
+# Stop any stale containers from a previous install before proceeding.
+# This prevents port conflicts and ensures a clean state.
+if run_as_user "$FP_USER" docker compose -f "${FP_HOME}/compose.yml" ps -q 2>/dev/null | grep -q .; then
+    log_info "stopping stale containers from previous install..."
+    run_as_user "$FP_USER" docker compose -f "${FP_HOME}/compose.yml" down --remove-orphans 2>/dev/null || true
+    log_info "stale containers stopped"
+fi
 
 # ── Step 4: Docker group membership ─────────────────────────────────────────
 log_step "step 4/8 — docker group"

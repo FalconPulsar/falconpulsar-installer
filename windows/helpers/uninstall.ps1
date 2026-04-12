@@ -96,13 +96,14 @@ set +e
 rm -rf /home/falconpulsar 2>/dev/null
 echo "[info] /home/falconpulsar removed (database deleted)"
 # Remove the system user
-if id falconpulsar >/dev/null 2>&1; then
-    userdel falconpulsar 2>/dev/null
-    echo "[info] falconpulsar user removed"
-fi
-# Remove systemd unit if present
+# Remove systemd unit before removing user
 rm -f /home/falconpulsar/.config/systemd/user/falconpulsar.service 2>/dev/null
 loginctl disable-linger falconpulsar 2>/dev/null
+# Remove the system user (--force to handle lingering processes)
+if id falconpulsar >/dev/null 2>&1; then
+    userdel --force falconpulsar 2>/dev/null
+    echo "[info] falconpulsar user removed"
+fi
 echo "[info] Purge complete"
 '@
     $null = Invoke-WslBash -Distro $Distro -Script $purgeScript -User root
