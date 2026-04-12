@@ -216,17 +216,19 @@ begin
   StepNames[5] := 'Verify installation';
   StepNames[6] := 'Start Menu shortcuts';
 
-  Y := ScaleY(60);
+  // Position the checklist below Inno Setup's built-in progress bar
+  // and status label. The progress bar + status take roughly 50px.
+  Y := WizardForm.ProgressGauge.Top + WizardForm.ProgressGauge.Height + ScaleY(16);
   for I := 0 to STEP_COUNT - 1 do
   begin
     StepLabels[I] := TNewStaticText.Create(WizardForm);
     StepLabels[I].Parent := WizardForm.InnerPage;
-    StepLabels[I].Left   := ScaleX(20);
+    StepLabels[I].Left   := ScaleX(10);
     StepLabels[I].Top    := Y;
-    StepLabels[I].Width  := WizardForm.InnerPage.Width - ScaleX(40);
+    StepLabels[I].Width  := WizardForm.InnerPage.Width - ScaleX(20);
     StepLabels[I].Caption := '[ ] ' + StepNames[I];
     StepLabels[I].Font.Size := 9;
-    Y := Y + ScaleY(20);
+    Y := Y + ScaleY(18);
   end;
 end;
 

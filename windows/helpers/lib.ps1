@@ -184,15 +184,24 @@ function Invoke-WslBash {
         -RedirectStandardOutput $outFile `
         -RedirectStandardError $errFile
 
-    # Display captured output for logging
+    # Display captured output. Use Write-Host (not Write-Info) to avoid
+    # polluting the PowerShell pipeline -- Write-Info calls Write-Output
+    # which would make $rc = Invoke-WslBash(...) capture the text as
+    # part of the return value. Write-FpLogLine logs to the file.
     if (Test-Path $outFile) {
-        Get-Content $outFile | ForEach-Object { Write-Info $_ }
+        Get-Content $outFile | ForEach-Object {
+            Write-Host $_
+            Write-FpLogLine $_
+        }
         Remove-Item $outFile -ErrorAction SilentlyContinue
     }
     if (Test-Path $errFile) {
         $errContent = Get-Content $errFile -Raw
         if ($errContent -and $errContent.Trim().Length -gt 0) {
-            $errContent.Trim().Split("`n") | ForEach-Object { Write-Warn $_ }
+            $errContent.Trim().Split("`n") | ForEach-Object {
+                Write-Host $_
+                Write-FpLogLine $_
+            }
         }
         Remove-Item $errFile -ErrorAction SilentlyContinue
     }
