@@ -109,6 +109,12 @@ Source: "..\shared\lib\registry_auth.sh";                   DestDir: "{app}\shar
 
 ; ── PowerShell helpers ──────────────────────────────────────────────────────
 Source: "helpers\lib.ps1";                                  DestDir: "{app}\helpers";        Flags: ignoreversion
+Source: "helpers\05-detect-environment.ps1";                 DestDir: "{app}\helpers";        Flags: ignoreversion
+; Also include detection files for temp extraction (ExtractTemporaryFile)
+; so they can run before {app} is initialized. dontcopy = only extracted
+; on demand via Pascal Script, not during normal [Files] processing.
+Source: "helpers\05-detect-environment.ps1";                                                     Flags: dontcopy
+Source: "helpers\lib.ps1";                                                                       Flags: dontcopy
 Source: "helpers\00-check-prereqs.ps1";                     DestDir: "{app}\helpers";        Flags: ignoreversion
 Source: "helpers\10-enable-wsl.ps1";                        DestDir: "{app}\helpers";        Flags: ignoreversion
 Source: "helpers\20-install-distro.ps1";                    DestDir: "{app}\helpers";        Flags: ignoreversion
@@ -140,13 +146,34 @@ Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Fil
 
 [Code]
 // =============================================================================
-// Pascal Script — custom pages, prereq checks, install orchestrator
+// Pascal Script -- custom pages, prereq checks, install orchestrator
+//
+// Wizard flow:
+//   Welcome -> Legal -> Distro Selection (if multiple) -> Registry
+//   -> Credentials -> Directory -> Install -> Finish
+//
+// Environment detection runs at InitializeSetup via 05-detect-environment.ps1
+// which writes %TEMP%\falconpulsar-detect.txt. The results drive:
+//   - whether the Distro Selection page is shown
+//   - which distro name is passed to all helpers
+//   - whether WSL/distro install steps are skipped
+//   - which Docker engine the Test Connection button uses
 // =============================================================================
+
+const
+  MAX_DISTROS = 20;
 
 var
   CredentialsPage: TInputQueryWizardPage;
   LegalPage: TWizardPage;
   LegalCheckBox: TNewCheckBox;
+  DistroPage: TWizardPage;
+  DistroRadios: array[0..MAX_DISTROS] of TNewRadioButton;
+  DistroLabels: array[0..MAX_DISTROS] of TNewStaticText;
+  DistroNames: array[0..MAX_DISTROS] of String;
+  DistroCompatible: array[0..MAX_DISTROS] of String;
+  DistroHasDocker: array[0..MAX_DISTROS] of String;
+  DistroCount: Integer;
   RegistryPage: TWizardPage;
   RegistryUrlEdit: TNewEdit;
   RegistryUserEdit: TNewEdit;
@@ -156,13 +183,138 @@ var
   RegistryStatusLabel: TNewStaticText;
   IsUpgrade: Boolean;
   FpLogFile: String;
+  DetectedWslStatus: String;
+  DetectedDockerDesktop: String;
+  SelectedDistro: String;
+  NeedWslInstall: Boolean;
+  NeedDistroInstall: Boolean;
 
-// ── Helper: locate the install log file ────────────────────────────────────
-// Both the Pascal Script orchestrator AND lib.ps1 derive this exact path
-// from %TEMP%, so they both write to the same file.
 function GetInstallLogPath(): String;
 begin
   Result := AddBackslash(GetEnv('TEMP')) + 'falconpulsar-install.log';
+end;
+
+// Read a key=value from the detection file. Returns '' if not found.
+function ReadDetectValue(Key: String): String;
+var
+  Lines: TArrayOfString;
+  I: Integer;
+  Line: String;
+  EqPos: Integer;
+begin
+  Result := '';
+  if not LoadStringsFromFile(AddBackslash(GetEnv('TEMP')) + 'falconpulsar-detect.txt', Lines) then
+    Exit;
+  for I := 0 to GetArrayLength(Lines) - 1 do
+  begin
+    Line := Lines[I];
+    EqPos := Pos('=', Line);
+    if EqPos > 0 then
+    begin
+      if Copy(Line, 1, EqPos - 1) = Key then
+      begin
+        Result := Copy(Line, EqPos + 1, Length(Line));
+        Exit;
+      end;
+    end;
+  end;
+end;
+
+// Run the detection helper before wizard pages are shown.
+procedure RunDetection();
+var
+  DetectScript: String;
+  ResultCode: Integer;
+  I: Integer;
+  CountStr: String;
+begin
+  DetectedWslStatus := 'not-installed';
+  DetectedDockerDesktop := 'not-found';
+  DistroCount := 0;
+  SelectedDistro := '{#WslDistroName}';
+  NeedWslInstall := True;
+  NeedDistroInstall := True;
+
+  // The detection helper is bundled alongside the installer at build time.
+  // At InitializeSetup, {app} is not yet set, but the helper can be run
+  // from {tmp} (Inno Setup's temp extraction dir). We extract it first.
+  ExtractTemporaryFile('05-detect-environment.ps1');
+  ExtractTemporaryFile('lib.ps1');
+  DetectScript := ExpandConstant('{tmp}\05-detect-environment.ps1');
+
+  Exec('powershell.exe',
+    '-NoProfile -ExecutionPolicy Bypass -File "' + DetectScript + '"',
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+
+  // Read the results
+  DetectedWslStatus := ReadDetectValue('WSL_STATUS');
+  DetectedDockerDesktop := ReadDetectValue('DOCKER_DESKTOP');
+  CountStr := ReadDetectValue('DISTRO_COUNT');
+  if CountStr <> '' then
+    DistroCount := StrToIntDef(CountStr, 0);
+
+  if DetectedWslStatus = 'working' then
+    NeedWslInstall := False;
+
+  for I := 1 to DistroCount do
+  begin
+    if I > MAX_DISTROS then Break;
+    DistroNames[I - 1] := ReadDetectValue('DISTRO_' + IntToStr(I) + '_NAME');
+    DistroCompatible[I - 1] := ReadDetectValue('DISTRO_' + IntToStr(I) + '_COMPATIBLE');
+    DistroHasDocker[I - 1] := ReadDetectValue('DISTRO_' + IntToStr(I) + '_DOCKER');
+  end;
+
+  // If exactly one compatible distro exists, auto-select it
+  if DistroCount = 1 then
+  begin
+    SelectedDistro := DistroNames[0];
+    NeedDistroInstall := False;
+  end
+  else if DistroCount > 1 then
+  begin
+    // Default to first compatible distro
+    SelectedDistro := '';
+    for I := 0 to DistroCount - 1 do
+    begin
+      if DistroCompatible[I] = 'yes' then
+      begin
+        SelectedDistro := DistroNames[I];
+        NeedDistroInstall := False;
+        Break;
+      end;
+    end;
+    if SelectedDistro = '' then
+      SelectedDistro := '{#WslDistroName}';
+  end;
+  // If DistroCount = 0: NeedDistroInstall stays True, SelectedDistro stays default
+end;
+
+// Return the distro selected on the Distro Selection page (or auto-selected).
+function GetSelectedDistro(): String;
+var
+  I: Integer;
+begin
+  // Check radio buttons if the page was shown
+  if DistroPage <> nil then
+  begin
+    for I := 0 to DistroCount - 1 do
+    begin
+      if DistroRadios[I].Checked then
+      begin
+        Result := DistroNames[I];
+        NeedDistroInstall := False;
+        Exit;
+      end;
+    end;
+    // Last radio = "Install fresh Ubuntu 24.04"
+    if DistroRadios[DistroCount].Checked then
+    begin
+      Result := '{#WslDistroName}';
+      NeedDistroInstall := True;
+      Exit;
+    end;
+  end;
+  Result := SelectedDistro;
 end;
 
 // ── Helper: read the tail of the log file for the error dialog ─────────────
@@ -255,22 +407,23 @@ var
   RegistryUserArg: String;
   RegistryPassArg: String;
   RegistrySkipArg: String;
+  Distro: String;
+  DistroArg: String;
 begin
   if CurStep = ssPostInstall then
   begin
     FpLogFile := GetInstallLogPath();
 
-    // Truncate the log at the start of the install run. lib.ps1 always
-    // appends -- never overwrites -- so this is the single point of init.
     SaveStringToFile(FpLogFile,
       '=== FalconPulsar Windows installer log -- ' +
       GetDateTimeString('yyyy/mm/dd hh:nn:ss', '-', ':') + ' ===' + #13#10,
       False);
 
+    // Resolve the distro from the selection page (or auto-detected)
+    Distro := GetSelectedDistro();
+    DistroArg := '-Distro "' + Distro + '"';
     AppDirArg := '-InstallDir "' + ExpandConstant('{app}') + '"';
 
-    // On upgrade, use placeholder credentials -- 40-run-fp-installer.ps1
-    // detects the existing data directory and skips the password/init flow.
     if IsUpgrade then
     begin
       AdminUserArg := '-AdminUser "admin"';
@@ -298,27 +451,39 @@ begin
         RegistrySkipArg := '';
     end;
 
+    // Always run prereq checks
     if not RunHelper('00-check-prereqs.ps1', '',
         'Checking system prerequisites...') then Abort;
 
-    if not RunHelper('10-enable-wsl.ps1', '',
-        'Enabling WSL2 (this may take several minutes on first run)...') then Abort;
+    // Only enable WSL if not already working
+    if NeedWslInstall then
+    begin
+      if not RunHelper('10-enable-wsl.ps1', '',
+          'Enabling WSL2 (this may take several minutes on first run)...') then Abort;
+    end;
 
-    if not RunHelper('20-install-distro.ps1', '-Distro {#WslDistroName}',
-        'Installing Ubuntu 24.04 inside WSL (downloading ~500 MB)...') then Abort;
+    // Only install a distro if user chose "Install fresh" or none exists
+    if NeedDistroInstall then
+    begin
+      if not RunHelper('20-install-distro.ps1', DistroArg,
+          'Installing ' + Distro + ' inside WSL...') then Abort;
+    end;
 
-    if not RunHelper('30-configure-distro.ps1', '-Distro {#WslDistroName}',
-        'Configuring systemd inside WSL...') then Abort;
+    // Always configure systemd (idempotent)
+    if not RunHelper('30-configure-distro.ps1', DistroArg,
+        'Configuring systemd inside ' + Distro + '...') then Abort;
 
+    // Run the bash installer inside the selected distro
     if not RunHelper('40-run-fp-installer.ps1',
-        '-Distro {#WslDistroName} ' + AppDirArg + ' ' +
+        DistroArg + ' ' + AppDirArg + ' ' +
         AdminUserArg + ' ' + AdminPassArg + ' ' +
         RegistryArg + ' ' + RegistryUserArg + ' ' +
         RegistryPassArg + ' ' + RegistrySkipArg,
         'Installing FalconPulsar inside WSL (this may take 5-10 minutes)...') then Abort;
 
+    // Register shortcuts with the correct distro name
     if not RunHelper('50-register-shortcuts.ps1',
-        '-Distro {#WslDistroName} ' + AppDirArg,
+        DistroArg + ' ' + AppDirArg,
         'Registering Start Menu shortcuts...') then Abort;
   end;
 end;
@@ -367,6 +532,9 @@ var
   RegHost: String;
   PassFile, WslPassFile: String;
   BashCmd, WslArgs: String;
+  Distro: String;
+  UseDockerDesktop: Boolean;
+  DockerExe: String;
 begin
   UrlVal := RegistryUrlEdit.Text;
   UserVal := RegistryUserEdit.Text;
@@ -382,50 +550,85 @@ begin
   WizardForm.Refresh();
 
   // Extract hostname for docker login.
-  // "ghcr.io/falconpulsar" -> "ghcr.io"
-  // "falconpulsar" (bare Docker Hub namespace) -> "docker.io"
   if Pos('/', UrlVal) > 0 then
     RegHost := Copy(UrlVal, 1, Pos('/', UrlVal) - 1)
   else
     RegHost := 'docker.io';
 
-  // If credentials provided, do a docker login first via a temp file
-  // so the password never appears in argv.
+  // Decide how to run docker: Docker Desktop (native) or WSL distro.
+  UseDockerDesktop := False;
+  DockerExe := ExpandConstant('{pf}\Docker\Docker\resources\bin\docker.exe');
+  Distro := GetSelectedDistro();
+
+  if FileExists(DockerExe) and (DetectedDockerDesktop = 'running') then
+    UseDockerDesktop := True;
+
+  // If no Docker Desktop and no WSL distro with Docker, can't test
+  if (not UseDockerDesktop) and (DetectedWslStatus <> 'working') then
+  begin
+    RegistryStatusLabel.Caption :=
+      'Docker is not available yet. The installer will set up WSL + Docker ' +
+      'and verify registry access during the install step.';
+    Exit;
+  end;
+
+  // If credentials provided, login first
   if (Length(UserVal) > 0) and (Length(PassVal) > 0) then
   begin
     PassFile := AddBackslash(GetEnv('TEMP')) + 'fp-reg-pass.tmp';
     SaveStringToFile(PassFile, PassVal, False);
-    WslPassFile := WinPathToWsl(PassFile);
 
-    BashCmd := 'cat "' + WslPassFile + '" | docker login "' + RegHost +
-      '" --username "' + UserVal + '" --password-stdin >/dev/null 2>&1';
-    WslArgs := '-d {#WslDistroName} -u root -- bash -c "' + BashCmd + '"';
+    if UseDockerDesktop then
+    begin
+      // Native Windows docker login via temp file piped through cmd
+      Exec('cmd.exe',
+        '/c type "' + PassFile + '" | "' + DockerExe + '" login "' + RegHost +
+        '" --username "' + UserVal + '" --password-stdin',
+        '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    end else
+    begin
+      WslPassFile := WinPathToWsl(PassFile);
+      BashCmd := 'cat "' + WslPassFile + '" | docker login "' + RegHost +
+        '" --username "' + UserVal + '" --password-stdin >/dev/null 2>&1';
+      WslArgs := '-d ' + Distro + ' -u root -- bash -c "' + BashCmd + '"';
+      Exec('wsl.exe', WslArgs, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    end;
 
-    Exec('wsl.exe', WslArgs, '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
     DeleteFile(PassFile);
 
     if ResultCode <> 0 then
     begin
-      RegistryStatusLabel.Caption := 'FAILED: login rejected by ' + RegHost + '. Check credentials.';
+      RegistryStatusLabel.Caption :=
+        'FAILED: login rejected by ' + RegHost + '. Check credentials.';
       Exit;
     end;
   end;
 
-  // Probe: docker manifest inspect (HEAD-like, no actual pull)
-  BashCmd := 'DOCKER_CLI_HINTS=false docker manifest inspect "' +
-    UrlVal + '/core:latest" >/dev/null 2>&1';
-  WslArgs := '-d {#WslDistroName} -u root -- bash -c "' + BashCmd + '"';
-
-  if not Exec('wsl.exe', WslArgs, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+  // Probe: docker manifest inspect
+  if UseDockerDesktop then
   begin
-    RegistryStatusLabel.Caption := 'WSL is not available yet. The install step will handle registry access.';
-    Exit;
+    Exec(DockerExe,
+      'manifest inspect "' + UrlVal + '/core:latest"',
+      '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  end else
+  begin
+    BashCmd := 'DOCKER_CLI_HINTS=false docker manifest inspect "' +
+      UrlVal + '/core:latest" >/dev/null 2>&1';
+    WslArgs := '-d ' + Distro + ' -u root -- bash -c "' + BashCmd + '"';
+    if not Exec('wsl.exe', WslArgs, '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    begin
+      RegistryStatusLabel.Caption :=
+        'Docker is not available in ' + Distro + '. ' +
+        'The installer will set it up during the install step.';
+      Exit;
+    end;
   end;
 
   if ResultCode = 0 then
     RegistryStatusLabel.Caption := 'OK: connected and images are pullable.'
   else
-    RegistryStatusLabel.Caption := 'FAILED: cannot pull from ' + UrlVal + '. Check URL, credentials, and network.';
+    RegistryStatusLabel.Caption :=
+      'FAILED: cannot pull from ' + UrlVal + '. Check URL, credentials, and network.';
 end;
 
 // Registry page: enable / disable the input fields based on Skip state.
@@ -444,6 +647,85 @@ end;
 // New page shown between the legal page and the credentials page. Lets
 // the user pick a registry (default: falconpulsar on Docker Hub), enter
 // credentials if needed, test the connection, or skip entirely.
+// Create the distro selection page. Only shown when 2+ distros are
+// registered in WSL. Each distro gets a radio button with a compatibility
+// tag. The last option is always "Install a fresh Ubuntu 24.04".
+procedure CreateDistroPage();
+var
+  Y, I: Integer;
+  Intro: TNewStaticText;
+  Caption: String;
+  Tag: String;
+begin
+  DistroPage := CreateCustomPage(
+    LegalPage.ID,
+    'Linux Environment',
+    'Choose which WSL distribution to use for FalconPulsar');
+
+  Y := 0;
+
+  Intro := TNewStaticText.Create(DistroPage);
+  Intro.Parent     := DistroPage.Surface;
+  Intro.Top        := Y;
+  Intro.Left       := 0;
+  Intro.Width      := DistroPage.SurfaceWidth;
+  Intro.AutoSize   := False;
+  Intro.Height     := ScaleY(36);
+  Intro.WordWrap   := True;
+  Intro.Caption    :=
+    'We found multiple Linux distributions in WSL. Select which one ' +
+    'FalconPulsar should use. Docker will be installed automatically ' +
+    'if not already present in the selected distribution.';
+  Y := Y + Intro.Height + ScaleY(12);
+
+  for I := 0 to DistroCount - 1 do
+  begin
+    if I >= MAX_DISTROS then Break;
+
+    // Build the caption with compatibility and Docker tags
+    Tag := '';
+    if DistroCompatible[I] = 'yes' then
+      Tag := ' [compatible]'
+    else if DistroCompatible[I] = 'no' then
+      Tag := ' [not compatible]'
+    else
+      Tag := ' [unknown]';
+
+    if DistroHasDocker[I] = 'yes' then
+      Tag := Tag + ' [Docker installed]';
+
+    Caption := DistroNames[I] + Tag;
+
+    DistroRadios[I] := TNewRadioButton.Create(DistroPage);
+    DistroRadios[I].Parent  := DistroPage.Surface;
+    DistroRadios[I].Top     := Y;
+    DistroRadios[I].Left    := ScaleX(8);
+    DistroRadios[I].Width   := DistroPage.SurfaceWidth - ScaleX(16);
+    DistroRadios[I].Caption := Caption;
+
+    // Auto-select the first compatible distro
+    if (I = 0) or ((DistroCompatible[I] = 'yes') and (not DistroRadios[0].Checked)) then
+    begin
+      if DistroCompatible[I] = 'yes' then
+        DistroRadios[I].Checked := True;
+    end;
+
+    Y := Y + ScaleY(22);
+  end;
+
+  // "Install fresh" option -- always the last radio button
+  DistroRadios[DistroCount] := TNewRadioButton.Create(DistroPage);
+  DistroRadios[DistroCount].Parent  := DistroPage.Surface;
+  DistroRadios[DistroCount].Top     := Y;
+  DistroRadios[DistroCount].Left    := ScaleX(8);
+  DistroRadios[DistroCount].Width   := DistroPage.SurfaceWidth - ScaleX(16);
+  DistroRadios[DistroCount].Caption := 'Install a fresh Ubuntu 24.04 (recommended)';
+
+  // If no compatible distro was auto-selected, default to fresh install
+  if SelectedDistro = '{#WslDistroName}' then
+    DistroRadios[DistroCount].Checked := True;
+end;
+
 procedure CreateRegistryPage();
 var
   Y: Integer;
@@ -453,7 +735,7 @@ var
   PassLabel: TNewStaticText;
 begin
   RegistryPage := CreateCustomPage(
-    LegalPage.ID,
+    DistroPage.ID,
     'Container Registry',
     'Where should FalconPulsar pull images from?');
 
@@ -622,6 +904,7 @@ end;
 procedure InitializeWizard;
 begin
   CreateLegalPage();
+  CreateDistroPage();
   CreateRegistryPage();
 
   CredentialsPage := CreateInputQueryPage(
@@ -709,6 +992,9 @@ begin
   Result := True;
   IsUpgrade := False;
 
+  // Run environment detection before any page is shown.
+  RunDetection();
+
   GetWindowsVersionEx(WinVer);
 
   // Refuse Windows older than 10.0.19045 (Windows 10 22H2).
@@ -751,6 +1037,14 @@ end;
 function ShouldSkipPage(PageID: Integer): Boolean;
 begin
   Result := False;
+
+  // Skip the distro page when 0 or 1 distros detected (nothing to choose)
+  if (DistroPage <> nil) and (PageID = DistroPage.ID) then
+  begin
+    if (DistroCount <= 1) or IsUpgrade then
+      Result := True;
+  end;
+
   if IsUpgrade then
   begin
     if (LegalPage <> nil) and (PageID = LegalPage.ID) then
