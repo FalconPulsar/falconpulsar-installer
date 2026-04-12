@@ -120,6 +120,7 @@ Source: "helpers\20-install-distro.ps1";                    DestDir: "{app}\help
 Source: "helpers\25-test-registry.ps1";                     DestDir: "{app}\helpers";        Flags: ignoreversion
 Source: "helpers\30-configure-distro.ps1";                  DestDir: "{app}\helpers";        Flags: ignoreversion
 Source: "helpers\40-run-fp-installer.ps1";                  DestDir: "{app}\helpers";        Flags: ignoreversion
+Source: "helpers\45-verify-health.ps1";                     DestDir: "{app}\helpers";        Flags: ignoreversion
 Source: "helpers\50-register-shortcuts.ps1";                DestDir: "{app}\helpers";        Flags: ignoreversion
 Source: "helpers\uninstall.ps1";                            DestDir: "{app}\helpers";        Flags: ignoreversion
 
@@ -163,11 +164,11 @@ Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Fil
 
 const
   MAX_DISTROS = 20;
-  STEP_COUNT = 6;
+  STEP_COUNT = 7;
 
 var
-  StepLabels: array[0..5] of TNewStaticText;
-  StepNames: array[0..5] of String;
+  StepLabels: array[0..6] of TNewStaticText;
+  StepNames: array[0..6] of String;
   CredentialsPage: TWizardPage;
   CredUserEdit: TNewEdit;
   CredPassEdit: TNewEdit;
@@ -212,7 +213,8 @@ begin
   StepNames[2] := 'Install Linux distro';
   StepNames[3] := 'Configure systemd';
   StepNames[4] := 'FalconPulsar installer';
-  StepNames[5] := 'Start Menu shortcuts';
+  StepNames[5] := 'Verify installation';
+  StepNames[6] := 'Start Menu shortcuts';
 
   Y := ScaleY(60);
   for I := 0 to STEP_COUNT - 1 do
@@ -662,51 +664,51 @@ begin
 
     // Step 1: System prerequisites
     UpdateStep(0, 'current');
-    LogStep('Step 1/6: System prerequisites');
+    LogStep('Step 1/7: System prerequisites');
     if not RunHelper('00-check-prereqs.ps1', '',
         'Checking system prerequisites...') then begin UpdateStep(0, 'fail'); Abort; end;
     UpdateStep(0, 'done');
-    LogInfo('Step 1/6: PASSED');
+    LogInfo('Step 1/7: PASSED');
 
     // Step 2: Enable WSL
     if NeedWslInstall then
     begin
       UpdateStep(1, 'current');
-      LogStep('Step 2/6: Enabling WSL2');
+      LogStep('Step 2/7: Enabling WSL2');
       if not RunHelper('10-enable-wsl.ps1', '',
           'Enabling WSL2 (this may take several minutes on first run)...') then begin UpdateStep(1, 'fail'); Abort; end;
       UpdateStep(1, 'done');
-      LogInfo('Step 2/6: PASSED');
+      LogInfo('Step 2/7: PASSED');
     end else begin
       UpdateStep(1, 'skip');
-      LogInfo('Step 2/6: SKIPPED (WSL already working)');
+      LogInfo('Step 2/7: SKIPPED (WSL already working)');
     end;
 
     // Step 3: Install distro
     if NeedDistroInstall then
     begin
       UpdateStep(2, 'current');
-      LogStep('Step 3/6: Installing ' + Distro);
+      LogStep('Step 3/7: Installing ' + Distro);
       if not RunHelper('20-install-distro.ps1', DistroArg,
           'Installing ' + Distro + ' inside WSL...') then begin UpdateStep(2, 'fail'); Abort; end;
       UpdateStep(2, 'done');
-      LogInfo('Step 3/6: PASSED');
+      LogInfo('Step 3/7: PASSED');
     end else begin
       UpdateStep(2, 'skip');
-      LogInfo('Step 3/6: SKIPPED (using existing distro ' + Distro + ')');
+      LogInfo('Step 3/7: SKIPPED (using existing distro ' + Distro + ')');
     end;
 
     // Step 4: Configure systemd
     UpdateStep(3, 'current');
-    LogStep('Step 4/6: Configuring systemd');
+    LogStep('Step 4/7: Configuring systemd');
     if not RunHelper('30-configure-distro.ps1', DistroArg,
         'Configuring systemd inside ' + Distro + '...') then begin UpdateStep(3, 'fail'); Abort; end;
     UpdateStep(3, 'done');
-    LogInfo('Step 4/6: PASSED');
+    LogInfo('Step 4/7: PASSED');
 
     // Step 5: FalconPulsar bash installer
     UpdateStep(4, 'current');
-    LogStep('Step 5/6: FalconPulsar bash installer');
+    LogStep('Step 5/7: FalconPulsar bash installer');
     if not RunHelper('40-run-fp-installer.ps1',
         DistroArg + ' ' + AppDirArg + ' ' +
         AdminUserArg + ' ' + AdminPassArg + ' ' +
@@ -714,16 +716,24 @@ begin
         RegistryPassArg + ' ' + RegistrySkipArg,
         'Installing FalconPulsar inside WSL (this may take 5-10 minutes)...') then begin UpdateStep(4, 'fail'); Abort; end;
     UpdateStep(4, 'done');
-    LogInfo('Step 5/6: PASSED');
+    LogInfo('Step 5/7: PASSED');
 
-    // Step 6: Start Menu shortcuts
+    // Step 6: Verify installation health
     UpdateStep(5, 'current');
-    LogStep('Step 6/6: Start Menu shortcuts');
+    LogStep('Step 6/7: Verifying installation');
+    if not RunHelper('45-verify-health.ps1', DistroArg,
+        'Verifying FalconPulsar containers are running...') then begin UpdateStep(5, 'fail'); Abort; end;
+    UpdateStep(5, 'done');
+    LogInfo('Step 6/7: PASSED');
+
+    // Step 7: Start Menu shortcuts
+    UpdateStep(6, 'current');
+    LogStep('Step 7/7: Start Menu shortcuts');
     if not RunHelper('50-register-shortcuts.ps1',
         DistroArg + ' ' + AppDirArg,
-        'Registering Start Menu shortcuts...') then begin UpdateStep(5, 'fail'); Abort; end;
-    UpdateStep(5, 'done');
-    LogInfo('Step 6/6: PASSED');
+        'Registering Start Menu shortcuts...') then begin UpdateStep(6, 'fail'); Abort; end;
+    UpdateStep(6, 'done');
+    LogInfo('Step 7/7: PASSED');
 
     LogStep('Installation completed successfully');
     LogInfo('Web UI: http://localhost:8080');

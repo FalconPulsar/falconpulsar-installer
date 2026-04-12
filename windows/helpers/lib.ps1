@@ -164,15 +164,41 @@ function Invoke-WslBash {
     # and commands (e.g. '/opt/dir'$'\r' instead of '/opt/dir').
     $Script = $Script -replace "`r", ''
 
-    # Capture output and exit code separately. $LASTEXITCODE must be
-    # saved immediately after wsl.exe finishes. Output is displayed via
-    # Write-Host which goes to the console but NOT the PowerShell
-    # pipeline, preventing stdout from polluting the function return.
-    $output = & wsl.exe -d $Distro -u $User -- bash -c $Script 2>&1
-    $ec = $LASTEXITCODE
-    if ($output) {
-        $output | ForEach-Object { Write-Host $_ }
+    # Write the script to a temp file and run `bash /path/to/file.sh`
+    # instead of `bash -c "..."`. This avoids ALL quoting, argument
+    # splitting, and pipeline issues that plague the bash -c approach
+    # when multi-line scripts pass through PowerShell -> wsl.exe.
+    $scriptFile = Join-Path $env:TEMP 'fp-wsl-run.sh'
+    [System.IO.File]::WriteAllText($scriptFile, $Script, (New-Object System.Text.UTF8Encoding $false))
+    $wslPath = ConvertTo-WslPath $scriptFile
+
+    # Start-Process -Wait -PassThru gives us:
+    #   - clean exit code via $proc.ExitCode (no pipeline pollution)
+    #   - output goes to the log file (via lib.ps1 Write-Info in callers)
+    # -RedirectStandardOutput captures stdout so we can log it.
+    $outFile = Join-Path $env:TEMP 'fp-wsl-stdout.txt'
+    $errFile = Join-Path $env:TEMP 'fp-wsl-stderr.txt'
+    $proc = Start-Process -FilePath 'wsl.exe' `
+        -ArgumentList "-d $Distro -u $User -- bash `"$wslPath`"" `
+        -NoNewWindow -Wait -PassThru `
+        -RedirectStandardOutput $outFile `
+        -RedirectStandardError $errFile
+
+    # Display captured output for logging
+    if (Test-Path $outFile) {
+        Get-Content $outFile | ForEach-Object { Write-Info $_ }
+        Remove-Item $outFile -ErrorAction SilentlyContinue
     }
+    if (Test-Path $errFile) {
+        $errContent = Get-Content $errFile -Raw
+        if ($errContent -and $errContent.Trim().Length -gt 0) {
+            $errContent.Trim().Split("`n") | ForEach-Object { Write-Warn $_ }
+        }
+        Remove-Item $errFile -ErrorAction SilentlyContinue
+    }
+
+    $ec = $proc.ExitCode
+    Remove-Item $scriptFile -ErrorAction SilentlyContinue
     return $ec
 }
 
