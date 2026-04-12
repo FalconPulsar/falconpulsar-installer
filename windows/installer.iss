@@ -84,8 +84,8 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 ; Custom welcome page text. WelcomeLabel1 is the bold heading; WelcomeLabel2
 ; is the body paragraph beneath it. Inno Setup wraps the body to the panel
 ; width automatically — keep paragraphs short.
-WelcomeLabel1=Welcome to the FalconPulsar Setup Wizard
-WelcomeLabel2=FalconPulsar is an AI-native industrial technology platform.%n%nThis installer will set up the entire FalconPulsar stack on your computer:%n%n  - Core engine (REST API + WebSocket)%n  - Web UI for dashboards, configuration and operations%n  - AI Gateway for natural-language interaction with your data%n%nThe stack runs inside WSL2 (Windows Subsystem for Linux). The installer will set up WSL2 and install Ubuntu 24.04 if they are not already present.%n%nClick Next to continue.
+WelcomeLabel1=FalconPulsar
+WelcomeLabel2=Self-host in 3 minutes. One command, your infrastructure.%n%nfalconpulsar.com%n%nDetecting your environment...
 
 ; Finish page — point the user at the Web UI
 FinishedLabel=FalconPulsar is now installed and running on your computer.%n%nOpen %1 in any web browser to log in to the Web UI with the admin credentials you set during this install. The admin password is NOT stored on disk anywhere — make sure you saved it.%n%nClick Finish to exit Setup.
@@ -177,6 +177,7 @@ var
   CredCharCountLabel: TNewStaticText;
   CredGeneratedLabel: TNewEdit;
   CredGeneratedCaption: TNewStaticText;
+  CopyButton: TNewButton;
   LegalPage: TWizardPage;
   LegalCheckBox: TNewCheckBox;
   DistroPage: TWizardPage;
@@ -1209,12 +1210,39 @@ end;
 procedure CredPassChange(Sender: TObject);
 var
   Strength: String;
+  Len: Integer;
 begin
+  Len := Length(CredPassEdit.Text);
   Strength := GetPasswordStrength(CredPassEdit.Text);
-  if Length(CredPassEdit.Text) = 0 then
-    CredStrengthLabel.Caption := ''
-  else
+
+  // Update character count
+  if CredCharCountLabel <> nil then
+  begin
+    if Len < 10 then
+      CredCharCountLabel.Caption := IntToStr(Len) + '/10 characters (minimum 10)'
+    else
+      CredCharCountLabel.Caption := IntToStr(Len) + ' characters';
+  end;
+
+  // Update strength bar + label
+  if Len = 0 then
+  begin
+    CredStrengthLabel.Caption := '';
+    if CredStrengthBar <> nil then
+      CredStrengthBar.Position := 0;
+  end else
+  begin
     CredStrengthLabel.Caption := 'Password strength: ' + Strength;
+    if CredStrengthBar <> nil then
+    begin
+      if Strength = 'Weak' then
+        CredStrengthBar.Position := 30
+      else if Strength = 'Medium' then
+        CredStrengthBar.Position := 60
+      else
+        CredStrengthBar.Position := 100;
+    end;
+  end;
 end;
 
 // Generate a random password: 20 chars, mix of upper/lower/digit/symbol.
@@ -1234,7 +1262,10 @@ begin
   CredGeneratedLabel.Text := Pass;
   CredGeneratedLabel.Visible := True;
   CredGeneratedCaption.Visible := True;
+  if CopyButton <> nil then CopyButton.Visible := True;
   CredStrengthLabel.Caption := 'Password strength: Strong (auto-generated)';
+  if CredStrengthBar <> nil then CredStrengthBar.Position := 100;
+  if CredCharCountLabel <> nil then CredCharCountLabel.Caption := '20 characters';
   LogInfo('Admin password: auto-generated (20 chars)');
 end;
 
@@ -1263,7 +1294,6 @@ var
   ConfirmLabel: TNewStaticText;
   ReqLabel: TNewStaticText;
   GenButton: TNewButton;
-  CopyButton: TNewButton;
 begin
   CredentialsPage := CreateCustomPage(
     RegistryPage.ID,
@@ -1334,15 +1364,37 @@ begin
   CredConfirmEdit.PasswordChar := '*';
   Y := Y + CredConfirmEdit.Height + ScaleY(6);
 
-  // Strength indicator
+  // Strength progress bar
+  CredStrengthBar := TNewProgressBar.Create(CredentialsPage);
+  CredStrengthBar.Parent   := CredentialsPage.Surface;
+  CredStrengthBar.Top      := Y;
+  CredStrengthBar.Left     := 0;
+  CredStrengthBar.Width    := CredentialsPage.SurfaceWidth;
+  CredStrengthBar.Height   := ScaleY(14);
+  CredStrengthBar.Min      := 0;
+  CredStrengthBar.Max      := 100;
+  CredStrengthBar.Position := 0;
+  Y := Y + CredStrengthBar.Height + ScaleY(2);
+
+  // Strength text + character count on same line
   CredStrengthLabel := TNewStaticText.Create(CredentialsPage);
   CredStrengthLabel.Parent   := CredentialsPage.Surface;
   CredStrengthLabel.Top      := Y;
   CredStrengthLabel.Left     := 0;
-  CredStrengthLabel.Width    := CredentialsPage.SurfaceWidth;
+  CredStrengthLabel.Width    := ScaleX(200);
   CredStrengthLabel.AutoSize := False;
   CredStrengthLabel.Height   := ScaleY(16);
   CredStrengthLabel.Caption  := '';
+
+  CredCharCountLabel := TNewStaticText.Create(CredentialsPage);
+  CredCharCountLabel.Parent    := CredentialsPage.Surface;
+  CredCharCountLabel.Top       := Y;
+  CredCharCountLabel.Left      := ScaleX(210);
+  CredCharCountLabel.Width     := CredentialsPage.SurfaceWidth - ScaleX(210);
+  CredCharCountLabel.AutoSize  := False;
+  CredCharCountLabel.Height    := ScaleY(16);
+  CredCharCountLabel.Caption   := '0/10 characters (minimum 10)';
+  CredCharCountLabel.Font.Color := clGray;
   Y := Y + CredStrengthLabel.Height + ScaleY(4);
 
   // Requirements text
@@ -1353,28 +1405,19 @@ begin
   ReqLabel.Width    := CredentialsPage.SurfaceWidth;
   ReqLabel.AutoSize := False;
   ReqLabel.Height   := ScaleY(16);
-  ReqLabel.Caption  := 'Min 10 chars. Use uppercase, lowercase, numbers, and symbols for a strong password.';
+  ReqLabel.Caption  := 'Use uppercase, lowercase, numbers, and symbols for a strong password.';
   ReqLabel.Font.Color := clGray;
-  Y := Y + ReqLabel.Height + ScaleY(12);
+  Y := Y + ReqLabel.Height + ScaleY(10);
 
-  // Generate + Copy buttons side by side
+  // Generate button only (copy is next to the generated field below)
   GenButton := TNewButton.Create(CredentialsPage);
   GenButton.Parent  := CredentialsPage.Surface;
   GenButton.Top     := Y;
   GenButton.Left    := 0;
-  GenButton.Width   := ScaleX(160);
+  GenButton.Width   := ScaleX(180);
   GenButton.Height  := ScaleY(25);
   GenButton.Caption := 'Generate strong password';
   GenButton.OnClick := @CredGenerateClick;
-
-  CopyButton := TNewButton.Create(CredentialsPage);
-  CopyButton.Parent  := CredentialsPage.Surface;
-  CopyButton.Top     := Y;
-  CopyButton.Left    := ScaleX(170);
-  CopyButton.Width   := ScaleX(120);
-  CopyButton.Height  := ScaleY(25);
-  CopyButton.Caption := 'Copy password';
-  CopyButton.OnClick := @CredCopyClick;
   Y := Y + GenButton.Height + ScaleY(8);
 
   // Generated password display (read-only, visible only after Generate)
@@ -1386,31 +1429,86 @@ begin
   CredGeneratedCaption.Visible := False;
   Y := Y + CredGeneratedCaption.Height + ScaleY(2);
 
+  // Generated password field + Copy button side by side
   CredGeneratedLabel := TNewEdit.Create(CredentialsPage);
   CredGeneratedLabel.Parent   := CredentialsPage.Surface;
   CredGeneratedLabel.Top      := Y;
   CredGeneratedLabel.Left     := 0;
-  CredGeneratedLabel.Width    := CredentialsPage.SurfaceWidth;
+  CredGeneratedLabel.Width    := CredentialsPage.SurfaceWidth - ScaleX(55);
   CredGeneratedLabel.ReadOnly := True;
   CredGeneratedLabel.Text     := '';
   CredGeneratedLabel.Visible  := False;
+
+  CopyButton := TNewButton.Create(CredentialsPage);
+  CopyButton.Parent  := CredentialsPage.Surface;
+  CopyButton.Top     := Y;
+  CopyButton.Left    := CredentialsPage.SurfaceWidth - ScaleX(50);
+  CopyButton.Width   := ScaleX(50);
+  CopyButton.Height  := CredGeneratedLabel.Height;
+  CopyButton.Caption := 'Copy';
+  CopyButton.OnClick := @CredCopyClick;
+  CopyButton.Visible := False;
 end;
 
 procedure InitializeWizard;
+var
+  Summary: String;
+  UrlLabel: TNewStaticText;
 begin
-  // Show the wizard immediately, then run detection with a visible status.
   WizardForm.BringToFront();
 
-  // Show a "detecting environment" message on the welcome page while
-  // detection runs. This eliminates the perceived 10-second delay.
-  WizardForm.StatusLabel.Caption := 'Detecting environment (WSL, Docker, distros)...';
+  // Style the Welcome page title to be bigger and branded
+  WizardForm.WelcomeLabel1.Font.Size := 22;
+
+  // Add a clickable falconpulsar.com link on the Welcome page
+  UrlLabel := TNewStaticText.Create(WizardForm);
+  UrlLabel.Parent    := WizardForm.WelcomePage;
+  UrlLabel.Left      := WizardForm.WelcomeLabel2.Left;
+  UrlLabel.Top       := WizardForm.WelcomeLabel2.Top + ScaleY(46);
+  UrlLabel.Caption   := 'falconpulsar.com';
+  UrlLabel.Font.Size := 10;
+  UrlLabel.Font.Color := clBlue;
+  UrlLabel.Font.Style := [fsUnderline];
+  UrlLabel.Cursor    := crHand;
+  UrlLabel.Hint      := 'https://falconpulsar.com';
+  UrlLabel.OnClick   := @OpenLegalUrl;
+
   WizardForm.Refresh();
 
+  // Run detection while the branded Welcome page is visible.
   LogStep('Running environment detection');
   RunDetection();
   LogDetectionResults();
 
-  WizardForm.StatusLabel.Caption := '';
+  // Update the Welcome page with detection results summary.
+  Summary := 'Self-host in 3 minutes. One command, your infrastructure.' +
+    #13#10 + #13#10;
+
+  if DetectedWslStatus = 'working' then
+    Summary := Summary + 'WSL2: detected' + #13#10
+  else
+    Summary := Summary + 'WSL2: will be installed' + #13#10;
+
+  if DistroCount > 0 then
+    Summary := Summary + 'Linux: ' + DistroNames[0] + ' found' + #13#10
+  else
+    Summary := Summary + 'Linux: Ubuntu 24.04 will be installed' + #13#10;
+
+  if DetectedDockerDesktop = 'running' then
+    Summary := Summary + 'Docker: Docker Desktop running' + #13#10
+  else if DetectedDockerDesktop = 'installed' then
+    Summary := Summary + 'Docker: Docker Desktop installed (start it for best results)' + #13#10
+  else
+    Summary := Summary + 'Docker: will be installed inside WSL' + #13#10;
+
+  Summary := Summary + #13#10 +
+    'This installer will set up the entire FalconPulsar stack:' + #13#10 +
+    '  - Core engine (REST API + WebSocket)' + #13#10 +
+    '  - Web UI for dashboards and operations' + #13#10 +
+    '  - AI Gateway for natural-language interaction' + #13#10 + #13#10 +
+    'Click Next to continue.';
+
+  WizardForm.WelcomeLabel2.Caption := Summary;
 
   CreateLegalPage();
   CreateDistroPage();

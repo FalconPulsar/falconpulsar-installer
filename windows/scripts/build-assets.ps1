@@ -121,9 +121,9 @@ try {
     # Programs entry icon. We generate a single 256x256 PNG-compressed
     # icon entry. Windows Explorer scales it to 16/32/48 as needed.
     $icoPath = Join-Path $assetsDir 'falcon.ico'
-    Write-Host "Generating $icoPath (256x256 icon)"
+    Write-Host "Generating $icoPath (256x256 PNG-compressed icon)"
     $icoSize = 256
-    $icoBmp = New-Object System.Drawing.Bitmap $icoSize, $icoSize
+    $icoBmp = New-Object System.Drawing.Bitmap $icoSize, $icoSize, ([System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
     try {
         $g = [System.Drawing.Graphics]::FromImage($icoBmp)
         try {
@@ -136,20 +136,33 @@ try {
         } finally {
             $g.Dispose()
         }
-        # Save as .ico using the Icon class. System.Drawing.Icon requires
-        # a bitmap handle, not a file stream.
-        $hIcon = $icoBmp.GetHicon()
-        $icon = [System.Drawing.Icon]::FromHandle($hIcon)
-        try {
-            $fs = [System.IO.File]::Create($icoPath)
-            try {
-                $icon.Save($fs)
-            } finally {
-                $fs.Close()
-            }
-        } finally {
-            $icon.Dispose()
-        }
+        # Write the .ico binary format manually because GetHicon() always
+        # returns a 32x32 handle. We embed a single 256x256 PNG entry
+        # that Windows scales to all needed sizes (16, 32, 48, 256).
+        $ms = New-Object System.IO.MemoryStream
+        $icoBmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
+        $pngBytes = $ms.ToArray()
+        $ms.Dispose()
+
+        $fs = [System.IO.File]::Create($icoPath)
+        $bw = New-Object System.IO.BinaryWriter($fs)
+        # ICO header (6 bytes)
+        $bw.Write([int16]0)                    # reserved
+        $bw.Write([int16]1)                    # type: icon
+        $bw.Write([int16]1)                    # image count
+        # Directory entry (16 bytes)
+        $bw.Write([byte]0)                     # width: 0 means 256
+        $bw.Write([byte]0)                     # height: 0 means 256
+        $bw.Write([byte]0)                     # color palette
+        $bw.Write([byte]0)                     # reserved
+        $bw.Write([int16]1)                    # color planes
+        $bw.Write([int16]32)                   # bits per pixel
+        $bw.Write([int32]$pngBytes.Length)      # PNG data size
+        $bw.Write([int32]22)                   # data offset (6 + 16)
+        # PNG image data
+        $bw.Write($pngBytes)
+        $bw.Close()
+        $fs.Close()
     } finally {
         $icoBmp.Dispose()
     }
