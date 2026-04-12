@@ -188,6 +188,7 @@ for dir in "$FP_HOME" "$FP_DATA_DIR" "${FP_HOME}/.docker"; do
     fi
 done
 chown -R "${FP_USER}:${FP_USER}" "$FP_HOME"
+chmod 0755 "$FP_HOME"
 chmod 0750 "$FP_DATA_DIR"
 chmod 0700 "${FP_HOME}/.docker"
 log_success "home directory ready: ${FP_HOME}"

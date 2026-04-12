@@ -101,10 +101,10 @@ namespace FalconPulsar.Tray
             menu.Items.Add(new ToolStripSeparator());
 
             // Status items
-            _coreItem = new ToolStripMenuItem("Core: checking...") { Enabled = false };
-            _uiItem = new ToolStripMenuItem("Web UI: checking...") { Enabled = false };
-            _gatewayItem = new ToolStripMenuItem("AI Gateway: checking...") { Enabled = false };
-            _apiItem = new ToolStripMenuItem("REST API: checking...") { Enabled = false };
+            _coreItem = new ToolStripMenuItem("Core: checking...");
+            _uiItem = new ToolStripMenuItem("Web UI: checking...");
+            _gatewayItem = new ToolStripMenuItem("AI Gateway: checking...");
+            _apiItem = new ToolStripMenuItem("REST API: checking...");
             menu.Items.Add(_coreItem);
             menu.Items.Add(_uiItem);
             menu.Items.Add(_gatewayItem);
