@@ -14,7 +14,7 @@
 #
 # Optional environment variables (with defaults):
 #
-#   FP_REGISTRY         Container registry prefix (default: docker.io/falconpulsar).
+#   FP_REGISTRY         Container registry prefix (default: falconpulsar).
 #                       Change to use a mirror or private registry — the
 #                       three image references below resolve against this
 #                       prefix. Host the images yourself on any OCI-compliant
@@ -54,7 +54,7 @@ services:
 
   # ── Core: time-series database, REST API, WebSocket pub/sub ──────────────
   core:
-    image: ${FP_REGISTRY:-docker.io/falconpulsar}/core:${FP_VERSION:-latest}
+    image: ${FP_REGISTRY:-falconpulsar}/core:${FP_VERSION:-latest}
     container_name: falconpulsar-core
     restart: unless-stopped
     user: "${FP_UID}:${FP_GID}"
@@ -96,7 +96,7 @@ services:
 
   # ── UI: nginx serving the React SPA ─────────────────────────────────────
   ui:
-    image: ${FP_REGISTRY:-docker.io/falconpulsar}/ui:${FP_VERSION:-latest}
+    image: ${FP_REGISTRY:-falconpulsar}/ui:${FP_VERSION:-latest}
     container_name: falconpulsar-ui
     restart: unless-stopped
     ports:
@@ -109,7 +109,7 @@ services:
 
   # ── AI Gateway: FastAPI service brokering LLM tool calls ────────────────
   ai-gateway:
-    image: ${FP_REGISTRY:-docker.io/falconpulsar}/ai-gateway:${FP_VERSION:-latest}
+    image: ${FP_REGISTRY:-falconpulsar}/ai-gateway:${FP_VERSION:-latest}
     container_name: falconpulsar-ai-gateway
     restart: unless-stopped
     ports:

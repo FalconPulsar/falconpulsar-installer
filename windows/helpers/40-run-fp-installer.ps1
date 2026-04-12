@@ -24,7 +24,7 @@ param(
     [Parameter(Mandatory)] [string] $InstallDir,
     [Parameter(Mandatory)] [string] $AdminUser,
     [Parameter(Mandatory)] [string] $AdminPass,
-    [string] $Registry = 'docker.io/falconpulsar',
+    [string] $Registry = 'falconpulsar',
     [string] $RegistryUser = '',
     [string] $RegistryPass = '',
     [switch] $RegistrySkip

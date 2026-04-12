@@ -29,7 +29,7 @@
 #
 # Honoured environment variables for unattended / CI use:
 #
-#   FP_REGISTRY         Registry URL prefix (default: docker.io/falconpulsar)
+#   FP_REGISTRY         Registry prefix (default: falconpulsar on Docker Hub)
 #   FP_VERSION          Image tag to probe (default: latest)
 #   FP_REGISTRY_USER    Pre-provided username
 #   FP_REGISTRY_PASS    Pre-provided password / token
@@ -45,7 +45,7 @@
 FP_REGISTRY_AUTH_SH_LOADED=1
 
 # Default registry if the user hasn't overridden it.
-: "${FP_REGISTRY:=docker.io/falconpulsar}"
+: "${FP_REGISTRY:=falconpulsar}"
 : "${FP_VERSION:=latest}"
 
 # The sentinel image used for the probe. Picking `core` because it exists in
@@ -62,13 +62,17 @@ FP_REGISTRY_AUTH_SH_LOADED=1
 # fp_registry_hostname <registry-prefix>
 # Extract the hostname portion from a registry prefix for use with
 # `docker login`. Examples:
+#   falconpulsar                    -> docker.io  (Docker Hub implicit)
 #   docker.io/falconpulsar          -> docker.io
 #   ghcr.io/falconpulsar            -> ghcr.io
 #   123.dkr.ecr.us-east-1.amazonaws.com/fp -> 123.dkr.ecr.us-east-1.amazonaws.com
 #   myregistry.corp.example.com:5000/fp    -> myregistry.corp.example.com:5000
 fp_registry_hostname() {
     local reg="$1"
-    printf '%s\n' "${reg%%/*}"
+    case "$reg" in
+        */*) printf '%s\n' "${reg%%/*}" ;;
+        *)   printf 'docker.io\n' ;;
+    esac
 }
 
 # fp_registry_image_path <registry-prefix> <image-name> <tag>
@@ -84,7 +88,8 @@ fp_registry_is_public_hostname() {
     case "$1" in
         docker.io|index.docker.io|registry-1.docker.io) return 0 ;;
         ghcr.io|quay.io|public.ecr.aws) return 0 ;;
-        *) return 1 ;;
+        # Bare namespace like "falconpulsar" implies Docker Hub
+        *) case "$1" in *.*) return 1 ;; *) return 0 ;; esac ;;
     esac
 }
 

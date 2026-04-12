@@ -275,7 +275,7 @@ begin
     begin
       AdminUserArg := '-AdminUser "admin"';
       AdminPassArg := '-AdminPass "upgrade-placeholder"';
-      RegistryArg := '-Registry "docker.io/falconpulsar"';
+      RegistryArg := '-Registry "falconpulsar"';
       RegistryUserArg := '';
       RegistryPassArg := '';
       RegistrySkipArg := '-RegistrySkip';
@@ -381,10 +381,13 @@ begin
   RegistryStatusLabel.Caption := 'Testing connection to ' + UrlVal + ' ...';
   WizardForm.Refresh();
 
-  // Extract hostname from "docker.io/falconpulsar" -> "docker.io"
-  RegHost := UrlVal;
-  if Pos('/', RegHost) > 0 then
-    RegHost := Copy(RegHost, 1, Pos('/', RegHost) - 1);
+  // Extract hostname for docker login.
+  // "ghcr.io/falconpulsar" -> "ghcr.io"
+  // "falconpulsar" (bare Docker Hub namespace) -> "docker.io"
+  if Pos('/', UrlVal) > 0 then
+    RegHost := Copy(UrlVal, 1, Pos('/', UrlVal) - 1)
+  else
+    RegHost := 'docker.io';
 
   // If credentials provided, do a docker login first via a temp file
   // so the password never appears in argv.
@@ -439,7 +442,7 @@ end;
 
 // Create the container registry page.
 // New page shown between the legal page and the credentials page. Lets
-// the user pick a registry (default: docker.io/falconpulsar), enter
+// the user pick a registry (default: falconpulsar on Docker Hub), enter
 // credentials if needed, test the connection, or skip entirely.
 procedure CreateRegistryPage();
 var
@@ -482,7 +485,7 @@ begin
   RegistryUrlEdit.Top    := Y;
   RegistryUrlEdit.Left   := 0;
   RegistryUrlEdit.Width  := RegistryPage.SurfaceWidth;
-  RegistryUrlEdit.Text   := 'docker.io/falconpulsar';
+  RegistryUrlEdit.Text   := 'falconpulsar';
   Y := Y + RegistryUrlEdit.Height + ScaleY(12);
 
   UserLabel := TNewStaticText.Create(RegistryPage);

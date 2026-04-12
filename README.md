@@ -99,7 +99,7 @@ unprivileged `falconpulsar` user. Every step is reversible via the bundled
 
 ## Alternative container registries
 
-By default the installer pulls images from **`docker.io/falconpulsar`** on
+By default the installer pulls images from **`falconpulsar`** on
 Docker Hub. If you need to pull from somewhere else — a private mirror,
 an air-gapped internal registry, or a cloud-native registry like AWS ECR,
 Google Artifact Registry, or Azure ACR — set `FP_REGISTRY` to the new

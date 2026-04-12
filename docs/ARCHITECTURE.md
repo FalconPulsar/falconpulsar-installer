@@ -276,7 +276,7 @@ GHCR, Quay, Harbor, GitLab, AWS ECR, GCR, Azure ACR, self-hosted).
 
 | Function | Purpose |
 |---|---|
-| `fp_registry_hostname` | Extract `docker.io` from `docker.io/falconpulsar` (used for `docker login`) |
+| `fp_registry_hostname` | Extract hostname for `docker login` — returns `docker.io` for bare namespaces like `falconpulsar`, or `ghcr.io` from `ghcr.io/falconpulsar` |
 | `fp_registry_image_path` | Compose `$reg/$image:$tag` into a full reference |
 | `fp_registry_probe` | `docker manifest inspect` against `$FP_REGISTRY/core:$FP_VERSION`. Returns 0 (ok), 1 (auth needed), 2 (other error). Classifies the error string — never prompts. |
 | `fp_registry_login` | `docker login --password-stdin` wrapping with error detection (unauthorized → 1, other → 2). Password never hits argv. |
@@ -338,7 +338,7 @@ bold.
 |---|---|---|---|
 | **`FP_ADMIN_USER`** | `admin` | `prompts.sh`, `compose.yml` | Initial admin username |
 | **`FP_ADMIN_PASS`** | generated or prompted | `prompts.sh`, `bootstrap.sh`, `compose.yml` | Initial admin password (first run only, never persisted) |
-| **`FP_REGISTRY`** | `docker.io/falconpulsar` | `registry_auth.sh`, `compose.yml`, `.env` | Container registry prefix (hostname + namespace). Set to any OCI-compliant registry for mirroring or private distribution. |
+| **`FP_REGISTRY`** | `falconpulsar` | `registry_auth.sh`, `compose.yml`, `.env` | Container registry prefix (namespace, or hostname/namespace for non-Docker Hub registries). Set to any OCI-compliant registry for mirroring or private distribution. |
 | **`FP_VERSION`** | `latest` | `registry_auth.sh`, `compose.yml`, `.env` | Image tag to pull. Pin to a semver (`v0.1.0`) to stop floating. |
 | **`FP_REGISTRY_USER`** | unset | `registry_auth.sh` | Optional username for registry login (honoured in non-interactive mode). |
 | **`FP_REGISTRY_PASS`** | unset | `registry_auth.sh` | Optional password / token for registry login. |
