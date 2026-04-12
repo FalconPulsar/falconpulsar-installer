@@ -166,7 +166,12 @@ function Invoke-WslBash {
 
     # `-u root` keeps us privileged for system-level operations even after
     # the falconpulsar user is created.
-    & wsl.exe -d $Distro -u $User -- bash -c $Script
+    # Out-Host sends wsl.exe stdout to the console (visible to the user
+    # and captured in the Inno Setup log) WITHOUT putting it into the
+    # PowerShell pipeline. Without this, the output pollutes the function
+    # return value -- $rc becomes @("stdout line", exitCode) instead of
+    # just exitCode, causing false failures in callers that check $rc -ne 0.
+    & wsl.exe -d $Distro -u $User -- bash -c $Script | Out-Host
     return $LASTEXITCODE
 }
 

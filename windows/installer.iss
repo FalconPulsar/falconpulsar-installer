@@ -163,13 +163,18 @@ Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Fil
 
 const
   MAX_DISTROS = 20;
+  STEP_COUNT = 6;
 
 var
+  StepLabels: array[0..5] of TNewStaticText;
+  StepNames: array[0..5] of String;
   CredentialsPage: TWizardPage;
   CredUserEdit: TNewEdit;
   CredPassEdit: TNewEdit;
   CredConfirmEdit: TNewEdit;
   CredStrengthLabel: TNewStaticText;
+  CredStrengthBar: TNewProgressBar;
+  CredCharCountLabel: TNewStaticText;
   CredGeneratedLabel: TNewEdit;
   CredGeneratedCaption: TNewStaticText;
   LegalPage: TWizardPage;
@@ -195,6 +200,67 @@ var
   SelectedDistro: String;
   NeedWslInstall: Boolean;
   NeedDistroInstall: Boolean;
+
+// Create the installation checklist on the Installing (progress) page.
+// Called once at the start of the install phase.
+procedure CreateChecklist();
+var
+  I, Y: Integer;
+begin
+  StepNames[0] := 'System prerequisites';
+  StepNames[1] := 'Enable WSL2';
+  StepNames[2] := 'Install Linux distro';
+  StepNames[3] := 'Configure systemd';
+  StepNames[4] := 'FalconPulsar installer';
+  StepNames[5] := 'Start Menu shortcuts';
+
+  Y := ScaleY(60);
+  for I := 0 to STEP_COUNT - 1 do
+  begin
+    StepLabels[I] := TNewStaticText.Create(WizardForm);
+    StepLabels[I].Parent := WizardForm.InnerPage;
+    StepLabels[I].Left   := ScaleX(20);
+    StepLabels[I].Top    := Y;
+    StepLabels[I].Width  := WizardForm.InnerPage.Width - ScaleX(40);
+    StepLabels[I].Caption := '[ ] ' + StepNames[I];
+    StepLabels[I].Font.Size := 9;
+    Y := Y + ScaleY(20);
+  end;
+end;
+
+// Update a single step in the checklist.
+//   status: 'current' | 'done' | 'fail' | 'skip'
+procedure UpdateStep(Index: Integer; Status: String);
+begin
+  if (Index < 0) or (Index >= STEP_COUNT) then Exit;
+  if StepLabels[Index] = nil then Exit;
+
+  if Status = 'current' then
+  begin
+    StepLabels[Index].Caption := '[-] ' + StepNames[Index] + '...';
+    StepLabels[Index].Font.Color := clBlue;
+    StepLabels[Index].Font.Style := [fsBold];
+  end
+  else if Status = 'done' then
+  begin
+    StepLabels[Index].Caption := '[OK] ' + StepNames[Index];
+    StepLabels[Index].Font.Color := clGreen;
+    StepLabels[Index].Font.Style := [];
+  end
+  else if Status = 'fail' then
+  begin
+    StepLabels[Index].Caption := '[X] ' + StepNames[Index] + ' -- FAILED';
+    StepLabels[Index].Font.Color := clRed;
+    StepLabels[Index].Font.Style := [fsBold];
+  end
+  else if Status = 'skip' then
+  begin
+    StepLabels[Index].Caption := '[--] ' + StepNames[Index] + ' (skipped)';
+    StepLabels[Index].Font.Color := clGray;
+    StepLabels[Index].Font.Style := [];
+  end;
+  WizardForm.Refresh();
+end;
 
 function GetInstallLogPath(): String;
 begin
@@ -560,67 +626,105 @@ begin
     // to start it before proceeding. Docker Desktop provides the Docker
     // engine for WSL distros via its WSL Integration feature -- if it's
     // not running, docker commands inside WSL will fail.
-    if DetectedDockerDesktop = 'installed' then
+    // Live-check Docker Desktop state (user may have started it since the
+    // wizard opened). The cached DetectedDockerDesktop from startup is stale.
     begin
-      if MsgBox(
-        'Docker Desktop is installed on this machine but is not currently ' +
-        'running.' + #13#10 + #13#10 +
-        'If you use Docker Desktop as your container engine, please start ' +
-        'it now and click OK to continue.' + #13#10 + #13#10 +
-        'If you want the installer to set up its own Docker Engine inside ' +
-        'WSL instead (independent of Docker Desktop), click OK without ' +
-        'starting Docker Desktop.',
-        mbInformation, MB_OKCANCEL) = IDCANCEL then
-        Abort;
+      var DockerExePath: String;
+      var DockerCheckRC: Integer;
+      var DockerLive: Boolean;
+      DockerLive := False;
+      DockerExePath := ExpandConstant('{pf}\Docker\Docker\resources\bin\docker.exe');
+      if FileExists(DockerExePath) then
+      begin
+        if Exec(DockerExePath, 'info', '', SW_HIDE, ewWaitUntilTerminated, DockerCheckRC) then
+        begin
+          if DockerCheckRC = 0 then
+          begin
+            DockerLive := True;
+            LogInfo('Docker Desktop: running (live check at install time)');
+          end;
+        end;
+        if (not DockerLive) then
+        begin
+          LogWarn('Docker Desktop installed but not responsive at install time');
+          if MsgBox(
+            'WARNING: Docker Desktop is installed but is not currently running.' +
+            #13#10 + #13#10 +
+            'If you use Docker Desktop as your container engine, please start ' +
+            'it now and click OK to continue.' + #13#10 + #13#10 +
+            'If you want the installer to set up its own Docker Engine inside ' +
+            'WSL instead, click OK without starting Docker Desktop.',
+            mbExclamation, MB_OKCANCEL) = IDCANCEL then
+            Abort;
+        end;
+      end;
     end;
 
-    // Always run prereq checks
+    CreateChecklist();
+
+    // Step 1: System prerequisites
+    UpdateStep(0, 'current');
     LogStep('Step 1/6: System prerequisites');
     if not RunHelper('00-check-prereqs.ps1', '',
-        'Checking system prerequisites...') then Abort;
+        'Checking system prerequisites...') then begin UpdateStep(0, 'fail'); Abort; end;
+    UpdateStep(0, 'done');
     LogInfo('Step 1/6: PASSED');
 
-    // Only enable WSL if not already working
+    // Step 2: Enable WSL
     if NeedWslInstall then
     begin
+      UpdateStep(1, 'current');
       LogStep('Step 2/6: Enabling WSL2');
       if not RunHelper('10-enable-wsl.ps1', '',
-          'Enabling WSL2 (this may take several minutes on first run)...') then Abort;
+          'Enabling WSL2 (this may take several minutes on first run)...') then begin UpdateStep(1, 'fail'); Abort; end;
+      UpdateStep(1, 'done');
       LogInfo('Step 2/6: PASSED');
-    end else
+    end else begin
+      UpdateStep(1, 'skip');
       LogInfo('Step 2/6: SKIPPED (WSL already working)');
+    end;
 
-    // Only install a distro if user chose "Install fresh" or none exists
+    // Step 3: Install distro
     if NeedDistroInstall then
     begin
+      UpdateStep(2, 'current');
       LogStep('Step 3/6: Installing ' + Distro);
       if not RunHelper('20-install-distro.ps1', DistroArg,
-          'Installing ' + Distro + ' inside WSL...') then Abort;
+          'Installing ' + Distro + ' inside WSL...') then begin UpdateStep(2, 'fail'); Abort; end;
+      UpdateStep(2, 'done');
       LogInfo('Step 3/6: PASSED');
-    end else
+    end else begin
+      UpdateStep(2, 'skip');
       LogInfo('Step 3/6: SKIPPED (using existing distro ' + Distro + ')');
+    end;
 
-    // Always configure systemd (idempotent)
+    // Step 4: Configure systemd
+    UpdateStep(3, 'current');
     LogStep('Step 4/6: Configuring systemd');
     if not RunHelper('30-configure-distro.ps1', DistroArg,
-        'Configuring systemd inside ' + Distro + '...') then Abort;
+        'Configuring systemd inside ' + Distro + '...') then begin UpdateStep(3, 'fail'); Abort; end;
+    UpdateStep(3, 'done');
     LogInfo('Step 4/6: PASSED');
 
-    // Run the bash installer inside the selected distro
+    // Step 5: FalconPulsar bash installer
+    UpdateStep(4, 'current');
     LogStep('Step 5/6: FalconPulsar bash installer');
     if not RunHelper('40-run-fp-installer.ps1',
         DistroArg + ' ' + AppDirArg + ' ' +
         AdminUserArg + ' ' + AdminPassArg + ' ' +
         RegistryArg + ' ' + RegistryUserArg + ' ' +
         RegistryPassArg + ' ' + RegistrySkipArg,
-        'Installing FalconPulsar inside WSL (this may take 5-10 minutes)...') then Abort;
+        'Installing FalconPulsar inside WSL (this may take 5-10 minutes)...') then begin UpdateStep(4, 'fail'); Abort; end;
+    UpdateStep(4, 'done');
     LogInfo('Step 5/6: PASSED');
 
-    // Register shortcuts with the correct distro name
+    // Step 6: Start Menu shortcuts
+    UpdateStep(5, 'current');
     LogStep('Step 6/6: Start Menu shortcuts');
     if not RunHelper('50-register-shortcuts.ps1',
         DistroArg + ' ' + AppDirArg,
-        'Registering Start Menu shortcuts...') then Abort;
+        'Registering Start Menu shortcuts...') then begin UpdateStep(5, 'fail'); Abort; end;
+    UpdateStep(5, 'done');
     LogInfo('Step 6/6: PASSED');
 
     LogStep('Installation completed successfully');
@@ -1294,17 +1398,24 @@ end;
 
 procedure InitializeWizard;
 begin
+  // Show the wizard immediately, then run detection with a visible status.
+  WizardForm.BringToFront();
+
+  // Show a "detecting environment" message on the welcome page while
+  // detection runs. This eliminates the perceived 10-second delay.
+  WizardForm.StatusLabel.Caption := 'Detecting environment (WSL, Docker, distros)...';
+  WizardForm.Refresh();
+
+  LogStep('Running environment detection');
+  RunDetection();
+  LogDetectionResults();
+
+  WizardForm.StatusLabel.Caption := '';
+
   CreateLegalPage();
   CreateDistroPage();
   CreateRegistryPage();
   CreateCredentialsPage();
-
-  // Bring the wizard to the foreground after UAC elevation. Windows
-  // suppresses focus theft from new processes by default, so the elevated
-  // setup.exe lands in the taskbar instead of on top of the user's desktop.
-  // Calling BringToFront() from InitializeWizard runs after the form is
-  // realized and shoves it back to the foreground.
-  WizardForm.BringToFront();
 end;
 
 // Validate the legal and credentials pages when the user clicks Next.
@@ -1384,13 +1495,11 @@ begin
     '================================================================' + #13#10,
     False);
 
-  // Log machine state first
   LogMachineState();
 
-  // Run environment detection before any page is shown.
-  LogStep('Running environment detection');
-  RunDetection();
-  LogDetectionResults();
+  // Environment detection is deferred to InitializeWizard (after the
+  // window exists) so we can show a "Please wait..." message. Only the
+  // instant checks (Windows version, registry key) stay here.
 
   GetWindowsVersionEx(WinVer);
 

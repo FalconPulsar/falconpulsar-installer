@@ -91,7 +91,13 @@ if ($wslStatus -eq 'working') {
         if ($LASTEXITCODE -eq 0 -and $rawList) {
             $distros = $rawList | ForEach-Object {
                 ($_ -replace "`0", '').Trim()
-            } | Where-Object { $_ -ne '' }
+            } | Where-Object {
+                # Filter out Docker Desktop's internal WSL distros --
+                # they are management VMs, not real Linux environments.
+                $_ -ne '' -and
+                $_ -ne 'docker-desktop' -and
+                $_ -ne 'docker-desktop-data'
+            }
         }
     } catch {
         # Ignore
