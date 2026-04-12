@@ -207,16 +207,16 @@ set -e
 umask 077
 ENVFILE=`$(mktemp /root/fp-install.env.XXXXXX)
 trap 'rm -f "`$ENVFILE"' EXIT
-cat > "`$ENVFILE" <<'__FP_ENV_EOF__'
-export FP_ADMIN_USER='$userEscaped'
-export FP_ADMIN_PASS='$pwEscaped'
-export FP_ASSUME_YES=1
-export FP_LEGAL_ACCEPTED=1
-export FP_REGISTRY='$regEscaped'
-export FP_REGISTRY_USER='$regUserEscaped'
-export FP_REGISTRY_PASS='$regPassEscaped'
-export FP_REGISTRY_SKIP='$regSkipVal'
-__FP_ENV_EOF__
+printf '%s\n' \
+  "export FP_ADMIN_USER='$userEscaped'" \
+  "export FP_ADMIN_PASS='$pwEscaped'" \
+  "export FP_ASSUME_YES=1" \
+  "export FP_LEGAL_ACCEPTED=1" \
+  "export FP_REGISTRY='$regEscaped'" \
+  "export FP_REGISTRY_USER='$regUserEscaped'" \
+  "export FP_REGISTRY_PASS='$regPassEscaped'" \
+  "export FP_REGISTRY_SKIP='$regSkipVal'" \
+  > "`$ENVFILE"
 . "`$ENVFILE"
 rm -f "`$ENVFILE"
 trap - EXIT

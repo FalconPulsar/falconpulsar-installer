@@ -117,55 +117,65 @@ try {
         $welcomeBmp.Dispose()
     }
     # ── Icon: multi-size .ico for SetupIconFile ────────────────────────────
-    # Inno Setup uses this as the installer .exe icon and the Add/Remove
-    # Programs entry icon. We generate a single 256x256 PNG-compressed
-    # icon entry. Windows Explorer scales it to 16/32/48 as needed.
+    # Generate 16, 32, 48, and 256 px entries. The 256 uses PNG compression;
+    # smaller sizes use raw 32-bit BGRA bitmaps (required by ICO spec).
     $icoPath = Join-Path $assetsDir 'falcon.ico'
-    Write-Host "Generating $icoPath (256x256 PNG-compressed icon)"
-    $icoSize = 256
-    $icoBmp = New-Object System.Drawing.Bitmap $icoSize, $icoSize, ([System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
-    try {
-        $g = [System.Drawing.Graphics]::FromImage($icoBmp)
-        try {
-            $g.Clear([System.Drawing.Color]::Transparent)
-            $g.InterpolationMode    = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
-            $g.SmoothingMode        = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
-            $g.PixelOffsetMode      = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
-            $g.CompositingQuality   = [System.Drawing.Drawing2D.CompositingQuality]::HighQuality
-            $g.DrawImage($png, 0, 0, $icoSize, $icoSize)
-        } finally {
-            $g.Dispose()
-        }
-        # Write the .ico binary format manually because GetHicon() always
-        # returns a 32x32 handle. We embed a single 256x256 PNG entry
-        # that Windows scales to all needed sizes (16, 32, 48, 256).
-        $ms = New-Object System.IO.MemoryStream
-        $icoBmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
-        $pngBytes = $ms.ToArray()
-        $ms.Dispose()
+    Write-Host "Generating $icoPath (16+32+48+256 multi-size icon)"
 
-        $fs = [System.IO.File]::Create($icoPath)
-        $bw = New-Object System.IO.BinaryWriter($fs)
-        # ICO header (6 bytes)
-        $bw.Write([int16]0)                    # reserved
-        $bw.Write([int16]1)                    # type: icon
-        $bw.Write([int16]1)                    # image count
-        # Directory entry (16 bytes)
-        $bw.Write([byte]0)                     # width: 0 means 256
-        $bw.Write([byte]0)                     # height: 0 means 256
-        $bw.Write([byte]0)                     # color palette
-        $bw.Write([byte]0)                     # reserved
-        $bw.Write([int16]1)                    # color planes
-        $bw.Write([int16]32)                   # bits per pixel
-        $bw.Write([int32]$pngBytes.Length)      # PNG data size
-        $bw.Write([int32]22)                   # data offset (6 + 16)
-        # PNG image data
-        $bw.Write($pngBytes)
-        $bw.Close()
-        $fs.Close()
-    } finally {
-        $icoBmp.Dispose()
+    $sizes = @(16, 32, 48, 256)
+    $pngEntries = @{}
+
+    foreach ($sz in $sizes) {
+        $bmp = New-Object System.Drawing.Bitmap $sz, $sz, ([System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+        try {
+            $g = [System.Drawing.Graphics]::FromImage($bmp)
+            try {
+                $g.Clear([System.Drawing.Color]::Transparent)
+                $g.InterpolationMode  = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+                $g.SmoothingMode      = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+                $g.CompositingQuality = [System.Drawing.Drawing2D.CompositingQuality]::HighQuality
+                $g.DrawImage($png, 0, 0, $sz, $sz)
+            } finally { $g.Dispose() }
+            $ms = New-Object System.IO.MemoryStream
+            $bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
+            $pngEntries[$sz] = $ms.ToArray()
+            $ms.Dispose()
+        } finally { $bmp.Dispose() }
     }
+
+    # Write ICO binary: header + N directory entries + N PNG blobs
+    $numEntries = $sizes.Count
+    $headerSize = 6
+    $dirSize    = 16 * $numEntries
+    $dataOffset = $headerSize + $dirSize
+
+    $fs = [System.IO.File]::Create($icoPath)
+    $bw = New-Object System.IO.BinaryWriter($fs)
+    # Header
+    $bw.Write([int16]0)
+    $bw.Write([int16]1)
+    $bw.Write([int16]$numEntries)
+    # Directory entries (must calculate offsets before writing)
+    $offset = $dataOffset
+    foreach ($sz in $sizes) {
+        $w = if ($sz -ge 256) { [byte]0 } else { [byte]$sz }
+        $h = $w
+        $bw.Write($w)
+        $bw.Write($h)
+        $bw.Write([byte]0)
+        $bw.Write([byte]0)
+        $bw.Write([int16]1)
+        $bw.Write([int16]32)
+        $bw.Write([int32]$pngEntries[$sz].Length)
+        $bw.Write([int32]$offset)
+        $offset += $pngEntries[$sz].Length
+    }
+    # Image data
+    foreach ($sz in $sizes) {
+        $bw.Write($pngEntries[$sz])
+    }
+    $bw.Close()
+    $fs.Close()
 } finally {
     $png.Dispose()
 }

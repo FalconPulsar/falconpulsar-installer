@@ -173,7 +173,6 @@ var
   CredPassEdit: TNewEdit;
   CredConfirmEdit: TNewEdit;
   CredStrengthLabel: TNewStaticText;
-  CredStrengthBar: TNewProgressBar;
   CredCharCountLabel: TNewStaticText;
   CredGeneratedLabel: TNewEdit;
   CredGeneratedCaption: TNewStaticText;
@@ -532,9 +531,8 @@ begin
 
   LogInfo('Running helper: ' + ScriptName);
 
-  if not Exec('cmd.exe',
-    '/c powershell.exe ' + FullArgs + ' & if errorlevel 1 (echo. & echo === FAILED === Press any key to close... & pause >nul)',
-    ExpandConstant('{app}\helpers'), SW_SHOWNORMAL, ewWaitUntilTerminated, ResultCode) then
+  if not Exec('powershell.exe', FullArgs,
+    ExpandConstant('{app}\helpers'), SW_HIDE, ewWaitUntilTerminated, ResultCode) then
   begin
     LogError('Helper ' + ScriptName + ' failed to launch');
     ShowStepError(StatusMsg, -1);
@@ -1227,20 +1225,16 @@ begin
   if Len = 0 then
   begin
     CredStrengthLabel.Caption := '';
-    if CredStrengthBar <> nil then
-      CredStrengthBar.Position := 0;
+    CredStrengthLabel.Font.Color := clWindowText;
   end else
   begin
     CredStrengthLabel.Caption := 'Password strength: ' + Strength;
-    if CredStrengthBar <> nil then
-    begin
-      if Strength = 'Weak' then
-        CredStrengthBar.Position := 30
-      else if Strength = 'Medium' then
-        CredStrengthBar.Position := 60
-      else
-        CredStrengthBar.Position := 100;
-    end;
+    if Strength = 'Weak' then
+      CredStrengthLabel.Font.Color := clRed
+    else if Strength = 'Medium' then
+      CredStrengthLabel.Font.Color := $0080FF
+    else
+      CredStrengthLabel.Font.Color := clGreen;
   end;
 end;
 
@@ -1261,9 +1255,8 @@ begin
   CredGeneratedLabel.Text := Pass;
   CredGeneratedLabel.Visible := True;
   CredGeneratedCaption.Visible := True;
-  if CopyButton <> nil then CopyButton.Visible := True;
   CredStrengthLabel.Caption := 'Password strength: Strong (auto-generated)';
-  if CredStrengthBar <> nil then CredStrengthBar.Position := 100;
+  CredStrengthLabel.Font.Color := clGreen;
   if CredCharCountLabel <> nil then CredCharCountLabel.Caption := '20 characters';
   LogInfo('Admin password: auto-generated (20 chars)');
 end;
@@ -1342,9 +1335,19 @@ begin
   CredPassEdit.Parent       := CredentialsPage.Surface;
   CredPassEdit.Top          := Y;
   CredPassEdit.Left         := 0;
-  CredPassEdit.Width        := CredentialsPage.SurfaceWidth;
+  CredPassEdit.Width        := CredentialsPage.SurfaceWidth - ScaleX(55);
   CredPassEdit.PasswordChar := '*';
   CredPassEdit.OnChange     := @CredPassChange;
+
+  // Copy button right next to the password field
+  CopyButton := TNewButton.Create(CredentialsPage);
+  CopyButton.Parent  := CredentialsPage.Surface;
+  CopyButton.Top     := Y;
+  CopyButton.Left    := CredentialsPage.SurfaceWidth - ScaleX(50);
+  CopyButton.Width   := ScaleX(50);
+  CopyButton.Height  := CredPassEdit.Height;
+  CopyButton.Caption := 'Copy';
+  CopyButton.OnClick := @CredCopyClick;
   Y := Y + CredPassEdit.Height + ScaleY(10);
 
   // Confirm password
@@ -1362,18 +1365,6 @@ begin
   CredConfirmEdit.Width        := CredentialsPage.SurfaceWidth;
   CredConfirmEdit.PasswordChar := '*';
   Y := Y + CredConfirmEdit.Height + ScaleY(6);
-
-  // Strength progress bar
-  CredStrengthBar := TNewProgressBar.Create(CredentialsPage);
-  CredStrengthBar.Parent   := CredentialsPage.Surface;
-  CredStrengthBar.Top      := Y;
-  CredStrengthBar.Left     := 0;
-  CredStrengthBar.Width    := CredentialsPage.SurfaceWidth;
-  CredStrengthBar.Height   := ScaleY(14);
-  CredStrengthBar.Min      := 0;
-  CredStrengthBar.Max      := 100;
-  CredStrengthBar.Position := 0;
-  Y := Y + CredStrengthBar.Height + ScaleY(2);
 
   // Strength text + character count on same line
   CredStrengthLabel := TNewStaticText.Create(CredentialsPage);
@@ -1428,105 +1419,45 @@ begin
   CredGeneratedCaption.Visible := False;
   Y := Y + CredGeneratedCaption.Height + ScaleY(2);
 
-  // Generated password field + Copy button side by side
+  // Generated password display (read-only, visible only after Generate)
   CredGeneratedLabel := TNewEdit.Create(CredentialsPage);
   CredGeneratedLabel.Parent   := CredentialsPage.Surface;
   CredGeneratedLabel.Top      := Y;
   CredGeneratedLabel.Left     := 0;
-  CredGeneratedLabel.Width    := CredentialsPage.SurfaceWidth - ScaleX(55);
+  CredGeneratedLabel.Width    := CredentialsPage.SurfaceWidth;
   CredGeneratedLabel.ReadOnly := True;
   CredGeneratedLabel.Text     := '';
   CredGeneratedLabel.Visible  := False;
-
-  CopyButton := TNewButton.Create(CredentialsPage);
-  CopyButton.Parent  := CredentialsPage.Surface;
-  CopyButton.Top     := Y;
-  CopyButton.Left    := CredentialsPage.SurfaceWidth - ScaleX(50);
-  CopyButton.Width   := ScaleX(50);
-  CopyButton.Height  := CredGeneratedLabel.Height;
-  CopyButton.Caption := 'Copy';
-  CopyButton.OnClick := @CredCopyClick;
-  CopyButton.Visible := False;
 end;
 
 procedure InitializeWizard;
 var
   Summary: String;
-  UrlLabel: TNewStaticText;
-  VersionLabel: TNewStaticText;
-  CopyrightLabel: TNewStaticText;
-  TaglineLabel: TNewStaticText;
-  BaseY: Integer;
 begin
   WizardForm.BringToFront();
-
-  // Style the Welcome page title
-  WizardForm.WelcomeLabel1.Font.Size := 22;
-
-  BaseY := WizardForm.WelcomeLabel2.Top;
-
-  // Version label (right below the title area)
-  VersionLabel := TNewStaticText.Create(WizardForm);
-  VersionLabel.Parent    := WizardForm.WelcomePage;
-  VersionLabel.Left      := WizardForm.WelcomeLabel2.Left;
-  VersionLabel.Top       := BaseY;
-  VersionLabel.Caption   := 'Version {#MyAppVersion}';
-  VersionLabel.Font.Size := 10;
-  VersionLabel.Font.Color := clGray;
-
-  // Tagline
-  TaglineLabel := TNewStaticText.Create(WizardForm);
-  TaglineLabel.Parent    := WizardForm.WelcomePage;
-  TaglineLabel.Left      := WizardForm.WelcomeLabel2.Left;
-  TaglineLabel.Top       := BaseY + ScaleY(22);
-  TaglineLabel.Caption   := 'Self-host in 3 minutes. Your infrastructure, your data.';
-  TaglineLabel.Font.Size := 9;
-
-  // Clickable URL
-  UrlLabel := TNewStaticText.Create(WizardForm);
-  UrlLabel.Parent    := WizardForm.WelcomePage;
-  UrlLabel.Left      := WizardForm.WelcomeLabel2.Left;
-  UrlLabel.Top       := BaseY + ScaleY(44);
-  UrlLabel.Caption   := 'falconpulsar.com';
-  UrlLabel.Font.Size := 9;
-  UrlLabel.Font.Color := clBlue;
-  UrlLabel.Font.Style := [fsUnderline];
-  UrlLabel.Cursor    := crHand;
-  UrlLabel.Hint      := 'https://falconpulsar.com';
-  UrlLabel.OnClick   := @OpenLegalUrl;
-
-  // Copyright
-  CopyrightLabel := TNewStaticText.Create(WizardForm);
-  CopyrightLabel.Parent    := WizardForm.WelcomePage;
-  CopyrightLabel.Left      := WizardForm.WelcomeLabel2.Left;
-  CopyrightLabel.Top       := BaseY + ScaleY(66);
-  CopyrightLabel.Caption   := '2026 {#MyAppPublisher}. Apache 2.0 License.';
-  CopyrightLabel.Font.Size := 8;
-  CopyrightLabel.Font.Color := clGray;
-
-  // Push the WelcomeLabel2 down to make room for the branded header
-  WizardForm.WelcomeLabel2.Top := BaseY + ScaleY(96);
-
   WizardForm.Refresh();
 
-  // Run detection while the branded Welcome page is visible.
+  // Run detection while the Welcome page is visible.
   LogStep('Running environment detection');
   RunDetection();
   LogDetectionResults();
 
-  // Update WelcomeLabel2 with detection results summary.
-  Summary := 'Your environment:' + #13#10;
+  // Build the full Welcome text with version, branding, and detection results.
+  Summary :=
+    'Version {#MyAppVersion}' + #13#10 +
+    'Self-host in 3 minutes. Your infrastructure, your data.' + #13#10 +
+    'https://falconpulsar.com' + #13#10 +
+    '(c) 2026 {#MyAppPublisher}. Apache 2.0 License.' + #13#10 + #13#10;
 
+  Summary := Summary + 'Your environment:' + #13#10;
   if DetectedWslStatus = 'working' then
     Summary := Summary + '  WSL2: detected' + #13#10
   else
     Summary := Summary + '  WSL2: will be installed' + #13#10;
-
   if DistroCount > 0 then
     Summary := Summary + '  Linux: ' + DistroNames[0] + ' found' + #13#10
   else
     Summary := Summary + '  Linux: Ubuntu 24.04 will be installed' + #13#10;
-
   if DetectedDockerDesktop = 'running' then
     Summary := Summary + '  Docker: Docker Desktop running' + #13#10
   else if DetectedDockerDesktop = 'installed' then

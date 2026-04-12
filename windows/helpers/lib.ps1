@@ -164,15 +164,16 @@ function Invoke-WslBash {
     # and commands (e.g. '/opt/dir'$'\r' instead of '/opt/dir').
     $Script = $Script -replace "`r", ''
 
-    # `-u root` keeps us privileged for system-level operations even after
-    # the falconpulsar user is created.
-    # Out-Host sends wsl.exe stdout to the console (visible to the user
-    # and captured in the Inno Setup log) WITHOUT putting it into the
-    # PowerShell pipeline. Without this, the output pollutes the function
-    # return value -- $rc becomes @("stdout line", exitCode) instead of
-    # just exitCode, causing false failures in callers that check $rc -ne 0.
-    & wsl.exe -d $Distro -u $User -- bash -c $Script | Out-Host
-    return $LASTEXITCODE
+    # Capture output and exit code separately. $LASTEXITCODE must be
+    # saved immediately after wsl.exe finishes. Output is displayed via
+    # Write-Host which goes to the console but NOT the PowerShell
+    # pipeline, preventing stdout from polluting the function return.
+    $output = & wsl.exe -d $Distro -u $User -- bash -c $Script 2>&1
+    $ec = $LASTEXITCODE
+    if ($output) {
+        $output | ForEach-Object { Write-Host $_ }
+    }
+    return $ec
 }
 
 # Translate a Windows path to its WSL mount path.
