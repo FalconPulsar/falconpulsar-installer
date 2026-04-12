@@ -360,25 +360,61 @@ namespace FalconPulsar.Tray
             _trayIcon.ShowBalloonTip(5000);
         }
 
-        private Icon CreateStatusIcon(Color color)
+        private Bitmap _falconLogo;
+
+        private Bitmap GetFalconLogo()
         {
-            var bmp = new Bitmap(32, 32);
+            if (_falconLogo == null)
+            {
+                var asm = System.Reflection.Assembly.GetExecutingAssembly();
+                using var stream = asm.GetManifestResourceStream("falcon-logo.png");
+                if (stream != null)
+                    _falconLogo = new Bitmap(stream);
+            }
+            return _falconLogo;
+        }
+
+        private Icon CreateStatusIcon(Color statusColor)
+        {
+            const int size = 32;
+            const int dotSize = 12;
+            var bmp = new Bitmap(size, size);
             using (var g = Graphics.FromImage(bmp))
             {
                 g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
                 g.Clear(Color.Transparent);
-                // Draw a filled circle with the status color
-                using var brush = new SolidBrush(color);
-                g.FillEllipse(brush, 2, 2, 28, 28);
-                // Draw a small "F" in the center
-                using var font = new Font("Segoe UI", 14, FontStyle.Bold);
-                using var textBrush = new SolidBrush(Color.White);
-                var sf = new StringFormat
+
+                // Draw the falcon logo scaled to fit
+                var logo = GetFalconLogo();
+                if (logo != null)
                 {
-                    Alignment = StringAlignment.Center,
-                    LineAlignment = StringAlignment.Center
-                };
-                g.DrawString("F", font, textBrush, new RectangleF(0, 0, 32, 32), sf);
+                    g.DrawImage(logo, 0, 0, size, size);
+                }
+                else
+                {
+                    // Fallback if logo resource is missing
+                    using var fallbackBrush = new SolidBrush(Color.FromArgb(14, 26, 49));
+                    g.FillEllipse(fallbackBrush, 2, 2, size - 4, size - 4);
+                    using var font = new Font("Segoe UI", 14, FontStyle.Bold);
+                    using var textBrush = new SolidBrush(Color.White);
+                    var sf = new StringFormat
+                    {
+                        Alignment = StringAlignment.Center,
+                        LineAlignment = StringAlignment.Center
+                    };
+                    g.DrawString("F", font, textBrush, new RectangleF(0, 0, size, size), sf);
+                }
+
+                // Draw a small status dot in the bottom-right corner
+                int dotX = size - dotSize - 1;
+                int dotY = size - dotSize - 1;
+                // White border around the dot for visibility
+                using var borderBrush = new SolidBrush(Color.White);
+                g.FillEllipse(borderBrush, dotX - 1, dotY - 1, dotSize + 2, dotSize + 2);
+                // Colored status dot
+                using var dotBrush = new SolidBrush(statusColor);
+                g.FillEllipse(dotBrush, dotX, dotY, dotSize, dotSize);
             }
             return Icon.FromHandle(bmp.GetHicon());
         }

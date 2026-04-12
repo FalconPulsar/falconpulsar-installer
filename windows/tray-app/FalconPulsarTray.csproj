@@ -13,4 +13,7 @@
     <SelfContained>true</SelfContained>
     <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
   </PropertyGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="..\assets\falcon-logo.png" LogicalName="falcon-logo.png" />
+  </ItemGroup>
 </Project>
