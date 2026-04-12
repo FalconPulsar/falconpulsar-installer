@@ -91,6 +91,11 @@ rm -rf /opt/falconpulsar-installer
 mkdir -p /opt/falconpulsar-installer
 cp -a '$wslInstallDirEscaped/linux'  /opt/falconpulsar-installer/
 cp -a '$wslInstallDirEscaped/shared' /opt/falconpulsar-installer/
+# Strip Windows CRLF line endings from all shell scripts. The files
+# were copied from NTFS (/mnt/c/) where Git or Inno Setup may have
+# converted them to CRLF. Bash chokes on \r characters.
+find /opt/falconpulsar-installer -name '*.sh' -exec sed -i 's/\r$//' {} +
+sed -i 's/\r$//' /opt/falconpulsar-installer/shared/compose.yml 2>/dev/null || true
 chmod +x /opt/falconpulsar-installer/linux/install.sh
 chmod +x /opt/falconpulsar-installer/linux/uninstall.sh
 chmod +x /opt/falconpulsar-installer/shared/lib/*.sh
