@@ -451,6 +451,24 @@ begin
         RegistrySkipArg := '';
     end;
 
+    // If Docker Desktop is installed but not running, prompt the user
+    // to start it before proceeding. Docker Desktop provides the Docker
+    // engine for WSL distros via its WSL Integration feature -- if it's
+    // not running, docker commands inside WSL will fail.
+    if DetectedDockerDesktop = 'installed' then
+    begin
+      if MsgBox(
+        'Docker Desktop is installed on this machine but is not currently ' +
+        'running.' + #13#10 + #13#10 +
+        'If you use Docker Desktop as your container engine, please start ' +
+        'it now and click OK to continue.' + #13#10 + #13#10 +
+        'If you want the installer to set up its own Docker Engine inside ' +
+        'WSL instead (independent of Docker Desktop), click OK without ' +
+        'starting Docker Desktop.',
+        mbInformation, MB_OKCANCEL) = IDCANCEL then
+        Abort;
+    end;
+
     // Always run prereq checks
     if not RunHelper('00-check-prereqs.ps1', '',
         'Checking system prerequisites...') then Abort;
@@ -563,7 +581,16 @@ begin
   if FileExists(DockerExe) and (DetectedDockerDesktop = 'running') then
     UseDockerDesktop := True;
 
-  // If no Docker Desktop and no WSL distro with Docker, can't test
+  // Docker Desktop installed but not running
+  if (not UseDockerDesktop) and (DetectedDockerDesktop = 'installed') then
+  begin
+    RegistryStatusLabel.Caption :=
+      'Docker Desktop is installed but not running. Please start Docker ' +
+      'Desktop and click Test again, or skip and let the installer handle it.';
+    Exit;
+  end;
+
+  // No Docker Desktop and no WSL — can't test
   if (not UseDockerDesktop) and (DetectedWslStatus <> 'working') then
   begin
     RegistryStatusLabel.Caption :=
