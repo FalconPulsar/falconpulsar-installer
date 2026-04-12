@@ -85,7 +85,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 ; is the body paragraph beneath it. Inno Setup wraps the body to the panel
 ; width automatically — keep paragraphs short.
 WelcomeLabel1=FalconPulsar
-WelcomeLabel2=Self-host in 3 minutes. One command, your infrastructure.%n%nfalconpulsar.com%n%nDetecting your environment...
+WelcomeLabel2=Version {#MyAppVersion}%n%nDetecting your environment...
 
 ; Finish page — point the user at the Web UI
 FinishedLabel=FalconPulsar is now installed and running on your computer.%n%nOpen %1 in any web browser to log in to the Web UI with the admin credentials you set during this install. The admin password is NOT stored on disk anywhere — make sure you saved it.%n%nClick Finish to exit Setup.
@@ -649,8 +649,7 @@ begin
         begin
           LogWarn('Docker Desktop installed but not responsive at install time');
           if MsgBox(
-            'WARNING: Docker Desktop is installed but is not currently running.' +
-            #13#10 + #13#10 +
+            'WARNING: Docker Desktop is installed but is not currently running.' + #13#10 + #13#10 +
             'If you use Docker Desktop as your container engine, please start ' +
             'it now and click OK to continue.' + #13#10 + #13#10 +
             'If you want the installer to set up its own Docker Engine inside ' +
@@ -1454,24 +1453,59 @@ procedure InitializeWizard;
 var
   Summary: String;
   UrlLabel: TNewStaticText;
+  VersionLabel: TNewStaticText;
+  CopyrightLabel: TNewStaticText;
+  TaglineLabel: TNewStaticText;
+  BaseY: Integer;
 begin
   WizardForm.BringToFront();
 
-  // Style the Welcome page title to be bigger and branded
+  // Style the Welcome page title
   WizardForm.WelcomeLabel1.Font.Size := 22;
 
-  // Add a clickable falconpulsar.com link on the Welcome page
+  BaseY := WizardForm.WelcomeLabel2.Top;
+
+  // Version label (right below the title area)
+  VersionLabel := TNewStaticText.Create(WizardForm);
+  VersionLabel.Parent    := WizardForm.WelcomePage;
+  VersionLabel.Left      := WizardForm.WelcomeLabel2.Left;
+  VersionLabel.Top       := BaseY;
+  VersionLabel.Caption   := 'Version {#MyAppVersion}';
+  VersionLabel.Font.Size := 10;
+  VersionLabel.Font.Color := clGray;
+
+  // Tagline
+  TaglineLabel := TNewStaticText.Create(WizardForm);
+  TaglineLabel.Parent    := WizardForm.WelcomePage;
+  TaglineLabel.Left      := WizardForm.WelcomeLabel2.Left;
+  TaglineLabel.Top       := BaseY + ScaleY(22);
+  TaglineLabel.Caption   := 'Self-host in 3 minutes. Your infrastructure, your data.';
+  TaglineLabel.Font.Size := 9;
+
+  // Clickable URL
   UrlLabel := TNewStaticText.Create(WizardForm);
   UrlLabel.Parent    := WizardForm.WelcomePage;
   UrlLabel.Left      := WizardForm.WelcomeLabel2.Left;
-  UrlLabel.Top       := WizardForm.WelcomeLabel2.Top + ScaleY(46);
+  UrlLabel.Top       := BaseY + ScaleY(44);
   UrlLabel.Caption   := 'falconpulsar.com';
-  UrlLabel.Font.Size := 10;
+  UrlLabel.Font.Size := 9;
   UrlLabel.Font.Color := clBlue;
   UrlLabel.Font.Style := [fsUnderline];
   UrlLabel.Cursor    := crHand;
   UrlLabel.Hint      := 'https://falconpulsar.com';
   UrlLabel.OnClick   := @OpenLegalUrl;
+
+  // Copyright
+  CopyrightLabel := TNewStaticText.Create(WizardForm);
+  CopyrightLabel.Parent    := WizardForm.WelcomePage;
+  CopyrightLabel.Left      := WizardForm.WelcomeLabel2.Left;
+  CopyrightLabel.Top       := BaseY + ScaleY(66);
+  CopyrightLabel.Caption   := '2026 {#MyAppPublisher}. Apache 2.0 License.';
+  CopyrightLabel.Font.Size := 8;
+  CopyrightLabel.Font.Color := clGray;
+
+  // Push the WelcomeLabel2 down to make room for the branded header
+  WizardForm.WelcomeLabel2.Top := BaseY + ScaleY(96);
 
   WizardForm.Refresh();
 
@@ -1480,29 +1514,28 @@ begin
   RunDetection();
   LogDetectionResults();
 
-  // Update the Welcome page with detection results summary.
-  Summary := 'Self-host in 3 minutes. One command, your infrastructure.' +
-    #13#10 + #13#10;
+  // Update WelcomeLabel2 with detection results summary.
+  Summary := 'Your environment:' + #13#10;
 
   if DetectedWslStatus = 'working' then
-    Summary := Summary + 'WSL2: detected' + #13#10
+    Summary := Summary + '  WSL2: detected' + #13#10
   else
-    Summary := Summary + 'WSL2: will be installed' + #13#10;
+    Summary := Summary + '  WSL2: will be installed' + #13#10;
 
   if DistroCount > 0 then
-    Summary := Summary + 'Linux: ' + DistroNames[0] + ' found' + #13#10
+    Summary := Summary + '  Linux: ' + DistroNames[0] + ' found' + #13#10
   else
-    Summary := Summary + 'Linux: Ubuntu 24.04 will be installed' + #13#10;
+    Summary := Summary + '  Linux: Ubuntu 24.04 will be installed' + #13#10;
 
   if DetectedDockerDesktop = 'running' then
-    Summary := Summary + 'Docker: Docker Desktop running' + #13#10
+    Summary := Summary + '  Docker: Docker Desktop running' + #13#10
   else if DetectedDockerDesktop = 'installed' then
-    Summary := Summary + 'Docker: Docker Desktop installed (start it for best results)' + #13#10
+    Summary := Summary + '  Docker: Docker Desktop installed (start it)' + #13#10
   else
-    Summary := Summary + 'Docker: will be installed inside WSL' + #13#10;
+    Summary := Summary + '  Docker: will be installed inside WSL' + #13#10;
 
   Summary := Summary + #13#10 +
-    'This installer will set up the entire FalconPulsar stack:' + #13#10 +
+    'This installer will set up:' + #13#10 +
     '  - Core engine (REST API + WebSocket)' + #13#10 +
     '  - Web UI for dashboards and operations' + #13#10 +
     '  - AI Gateway for natural-language interaction' + #13#10 + #13#10 +
