@@ -142,6 +142,9 @@ Filename: "http://localhost:8080"; \
 Filename: "notepad.exe"; Parameters: "{code:GetLogPath}"; \
     Description: "View install log"; Flags: postinstall shellexec skipifsilent nowait unchecked
 
+[UninstallDelete]
+Type: filesandordirs; Name: "{commonprograms}\FalconPulsar"
+
 [UninstallRun]
 Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\helpers\uninstall.ps1"" -Distro {#WslDistroName}"; \
     Flags: runhidden waituntilterminated
@@ -201,6 +204,7 @@ var
   SelectedDistro: String;
   NeedWslInstall: Boolean;
   NeedDistroInstall: Boolean;
+  DetectionDone: Boolean;
 
 // Create the installation checklist on the Installing (progress) page.
 // Called once at the start of the install phase.
@@ -1174,7 +1178,80 @@ end;
 // this to gate the Next button on the legal page based on the checkbox
 // state.
 procedure CurPageChanged(CurPageID: Integer);
+var
+  Summary: String;
+  I: Integer;
+  Tag: String;
 begin
+  // Welcome page: run detection the first time it's displayed.
+  // This runs AFTER the form is visible, so the user sees
+  // "Detecting your environment..." while detection runs.
+  if (CurPageID = wpWelcome) and (not DetectionDone) then
+  begin
+    DetectionDone := True;
+    WizardForm.Refresh();
+
+    LogStep('Running environment detection');
+    RunDetection();
+    LogDetectionResults();
+
+    // Update the Welcome text with detection results
+    Summary :=
+      'Version {#MyAppVersion}' + #13#10 +
+      'Self-host in 3 minutes. Your infrastructure, your data.' + #13#10 +
+      'https://falconpulsar.com' + #13#10 +
+      '(c) 2026 {#MyAppPublisher}. Apache 2.0 License.' + #13#10 + #13#10 +
+      'Your environment:' + #13#10;
+    if DetectedWslStatus = 'working' then
+      Summary := Summary + '  WSL2: detected' + #13#10
+    else
+      Summary := Summary + '  WSL2: will be installed' + #13#10;
+    if DistroCount > 0 then
+      Summary := Summary + '  Linux: ' + DistroNames[0] + ' found' + #13#10
+    else
+      Summary := Summary + '  Linux: Ubuntu 24.04 will be installed' + #13#10;
+    if DetectedDockerDesktop = 'running' then
+      Summary := Summary + '  Docker: Docker Desktop running' + #13#10
+    else if DetectedDockerDesktop = 'installed' then
+      Summary := Summary + '  Docker: Docker Desktop installed (start it)' + #13#10
+    else
+      Summary := Summary + '  Docker: will be installed inside WSL' + #13#10;
+    Summary := Summary + #13#10 +
+      'This installer will set up:' + #13#10 +
+      '  - Core engine (REST API + WebSocket)' + #13#10 +
+      '  - Web UI for dashboards and operations' + #13#10 +
+      '  - AI Gateway for natural-language interaction' + #13#10 + #13#10 +
+      'Click Next to continue.';
+    WizardForm.WelcomeLabel2.Caption := Summary;
+
+    // Now that detection is done, populate the distro page radio buttons.
+    // The page was created empty in InitializeWizard; we fill it now.
+    if DistroCount >= 2 then
+    begin
+      for I := 0 to DistroCount - 1 do
+      begin
+        if I >= MAX_DISTROS then Break;
+        Tag := '';
+        if DistroCompatible[I] = 'yes' then
+          Tag := ' [compatible]'
+        else if DistroCompatible[I] = 'no' then
+          Tag := ' [not compatible]'
+        else
+          Tag := ' [unknown]';
+        if DistroHasDocker[I] = 'yes' then
+          Tag := Tag + ' [Docker installed]';
+        if DistroRadios[I] <> nil then
+        begin
+          DistroRadios[I].Caption := DistroNames[I] + Tag;
+          DistroRadios[I].Visible := True;
+          if DistroCompatible[I] = 'yes' then
+            DistroRadios[I].Checked := True;
+        end;
+      end;
+    end;
+  end;
+
+  // Legal page: gate Next button on checkbox
   if (LegalPage <> nil) and (CurPageID = LegalPage.ID) then
     WizardForm.NextButton.Enabled := LegalCheckBox.Checked;
 end;
@@ -1443,49 +1520,11 @@ begin
 end;
 
 procedure InitializeWizard;
-var
-  Summary: String;
 begin
-  WizardForm.BringToFront();
-  WizardForm.Refresh();
+  DetectionDone := False;
 
-  // Run detection while the Welcome page is visible.
-  LogStep('Running environment detection');
-  RunDetection();
-  LogDetectionResults();
-
-  // Build the full Welcome text with version, branding, and detection results.
-  Summary :=
-    'Version {#MyAppVersion}' + #13#10 +
-    'Self-host in 3 minutes. Your infrastructure, your data.' + #13#10 +
-    'https://falconpulsar.com' + #13#10 +
-    '(c) 2026 {#MyAppPublisher}. Apache 2.0 License.' + #13#10 + #13#10;
-
-  Summary := Summary + 'Your environment:' + #13#10;
-  if DetectedWslStatus = 'working' then
-    Summary := Summary + '  WSL2: detected' + #13#10
-  else
-    Summary := Summary + '  WSL2: will be installed' + #13#10;
-  if DistroCount > 0 then
-    Summary := Summary + '  Linux: ' + DistroNames[0] + ' found' + #13#10
-  else
-    Summary := Summary + '  Linux: Ubuntu 24.04 will be installed' + #13#10;
-  if DetectedDockerDesktop = 'running' then
-    Summary := Summary + '  Docker: Docker Desktop running' + #13#10
-  else if DetectedDockerDesktop = 'installed' then
-    Summary := Summary + '  Docker: Docker Desktop installed (start it)' + #13#10
-  else
-    Summary := Summary + '  Docker: will be installed inside WSL' + #13#10;
-
-  Summary := Summary + #13#10 +
-    'This installer will set up:' + #13#10 +
-    '  - Core engine (REST API + WebSocket)' + #13#10 +
-    '  - Web UI for dashboards and operations' + #13#10 +
-    '  - AI Gateway for natural-language interaction' + #13#10 + #13#10 +
-    'Click Next to continue.';
-
-  WizardForm.WelcomeLabel2.Caption := Summary;
-
+  // Create all pages first (detection results are not needed yet --
+  // the distro page populates later, and ShouldSkipPage handles it).
   CreateLegalPage();
   CreateDistroPage();
   CreateRegistryPage();
