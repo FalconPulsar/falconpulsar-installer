@@ -1,0 +1,34 @@
+name: cleanup-runs
+
+on:
+  workflow_run:
+    workflows: [build-windows, lint, test-linux]
+    types: [completed]
+
+permissions:
+  actions: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  cleanup:
+    name: delete old workflow runs
+    runs-on: ubuntu-latest
+    steps:
+      - name: Keep only the latest run per workflow
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          REPO="${{ github.repository }}"
+          for WORKFLOW in build-windows lint test-linux; do
+            echo "=== $WORKFLOW ==="
+            # List all runs for this workflow, skip the first (latest), delete the rest
+            gh run list --repo "$REPO" --workflow "$WORKFLOW" --limit 50 --json databaseId \
+              | jq -r '.[1:][].databaseId' \
+              | while read -r ID; do
+                  echo "  Deleting run $ID"
+                  gh run delete "$ID" --repo "$REPO" 2>/dev/null || true
+                done
+          done
+          echo "Cleanup complete"
