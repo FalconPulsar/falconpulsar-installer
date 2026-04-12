@@ -492,7 +492,7 @@ begin
   UserLabel.Parent  := RegistryPage.Surface;
   UserLabel.Top     := Y;
   UserLabel.Left    := 0;
-  UserLabel.Caption := 'Username (leave blank for public / anonymous):';
+  UserLabel.Caption := 'Username or org name (leave blank for public / anonymous):';
   Y := Y + UserLabel.Height + ScaleY(2);
 
   RegistryUserEdit := TNewEdit.Create(RegistryPage);

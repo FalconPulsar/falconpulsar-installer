@@ -2,9 +2,9 @@
 # build-assets.ps1 — Generate Inno Setup wizard images from falcon-logo.png.
 #
 # Inno Setup wants:
-#   - WizardImageFile        : 192x386 24-bit BMP (large welcome side panel,
+#   - WizardImageFile        : 164x314 24-bit BMP (large welcome side panel,
 #                              shown on the welcome and finish pages)
-#   - WizardSmallImageFile   : 119x123 24-bit BMP (small header bitmap shown
+#   - WizardSmallImageFile   : 55x58 24-bit BMP (small header bitmap shown
 #                              on every other wizard page)
 #
 # We don't commit the BMPs to the repo (they're 100+ KB each and would
@@ -44,10 +44,11 @@ $png = [System.Drawing.Image]::FromFile($srcPng)
 try {
     Write-Host "  Source size: $($png.Width) x $($png.Height)"
 
-    # ── Header bitmap: 119 x 123 (small image shown on every page header) ──
+    # ── Header bitmap: 55 x 58 (Inno Setup default for WizardSmallImageFile) ──
+    # WizardSizePercent=120 in installer.iss auto-scales this to 66x70.
     $headerPath = Join-Path $assetsDir 'header.bmp'
-    Write-Host "Generating $headerPath (119x123)"
-    $headerBmp = New-Object System.Drawing.Bitmap 119, 123
+    Write-Host "Generating $headerPath (55x58)"
+    $headerBmp = New-Object System.Drawing.Bitmap 55, 58
     try {
         $g = [System.Drawing.Graphics]::FromImage($headerBmp)
         try {
@@ -59,9 +60,9 @@ try {
             $g.PixelOffsetMode      = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
             $g.CompositingQuality   = [System.Drawing.Drawing2D.CompositingQuality]::HighQuality
 
-            # Source is square; fit it as a 105x105 with 7px padding all around
-            $padding = 7
-            $size    = 105
+            # Source is square; fit it as 47x47 centered with 4px padding
+            $padding = 4
+            $size    = 47
             $x       = ($headerBmp.Width  - $size) / 2
             $y       = ($headerBmp.Height - $size) / 2
             $g.DrawImage($png, $x, $y, $size, $size)
@@ -73,10 +74,11 @@ try {
         $headerBmp.Dispose()
     }
 
-    # ── Welcome bitmap: 192 x 386 (large side panel on welcome + finish) ──
+    # ── Welcome bitmap: 164 x 314 (Inno Setup default for WizardImageFile) ──
+    # WizardSizePercent=120 in installer.iss auto-scales this to ~197x377.
     $welcomePath = Join-Path $assetsDir 'welcome.bmp'
-    Write-Host "Generating $welcomePath (192x386)"
-    $welcomeBmp = New-Object System.Drawing.Bitmap 192, 386
+    Write-Host "Generating $welcomePath (164x314)"
+    $welcomeBmp = New-Object System.Drawing.Bitmap 164, 314
     try {
         $g = [System.Drawing.Graphics]::FromImage($welcomeBmp)
         try {
@@ -89,16 +91,16 @@ try {
             $g.CompositingQuality   = [System.Drawing.Drawing2D.CompositingQuality]::HighQuality
             $g.TextRenderingHint    = [System.Drawing.Text.TextRenderingHint]::AntiAliasGridFit
 
-            # Logo centered horizontally, ~70px from the top
-            $logoSize = 150
+            # Logo centered horizontally, ~50px from the top
+            $logoSize = 120
             $logoX = ($welcomeBmp.Width - $logoSize) / 2
-            $logoY = 70
+            $logoY = 50
             $g.DrawImage($png, $logoX, $logoY, $logoSize, $logoSize)
 
             # "FalconPulsar" wordmark below the logo
-            $titleFont  = New-Object System.Drawing.Font('Segoe UI', 14, [System.Drawing.FontStyle]::Bold)
+            $titleFont  = New-Object System.Drawing.Font('Segoe UI', 12, [System.Drawing.FontStyle]::Bold)
             $titleBrush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::White)
-            $titleRect  = New-Object System.Drawing.RectangleF 0, 235, 192, 28
+            $titleRect  = New-Object System.Drawing.RectangleF 0, 185, 164, 24
             $fmt        = New-Object System.Drawing.StringFormat
             $fmt.Alignment     = [System.Drawing.StringAlignment]::Center
             $fmt.LineAlignment = [System.Drawing.StringAlignment]::Center
