@@ -1,35 +1,41 @@
 # =============================================================================
-# uninstall.ps1 -- Called by Inno Setup's [UninstallRun] section.
+# uninstall.ps1 -- Called by Inno Setup's CurUninstallStepChanged.
 #
-# Removes the WSL-side install:
+# Two modes:
 #
-#   1. Stops the docker stack inside the distro
-#   2. Calls the bash uninstaller (with --purge if the user confirmed)
-#   3. Removes the staged installer files at /opt/falconpulsar-installer
+#   Default (no -Purge):
+#     - Stop and remove Docker containers
+#     - Remove compose.yml and .env
+#     - Remove staged installer files at /opt/falconpulsar-installer
+#     - Remove Start Menu shortcuts
+#     - KEEP /home/falconpulsar/data (database preserved)
+#     - KEEP the falconpulsar user
+#     - KEEP the WSL distro
 #
-# Does NOT:
+#   With -Purge:
+#     - Everything above, plus:
+#     - Delete /home/falconpulsar entirely (database, config, all data)
+#     - Remove the falconpulsar system user
+#     - Remove Docker images
 #
-#   - Remove the WSL distro itself (it may be hosting other things)
-#   - Disable the WSL Windows feature
-#   - Delete the user's data directory by default -- they have to opt in
-#     via the Inno Setup uninstall confirmation dialog (which is shown by
-#     Inno Setup itself, not us)
-#
-# The Inno Setup uninstaller deletes the Windows-side files (assets,
-# helpers, bundled bash scripts) on its own after this script returns.
+# Never removes:
+#   - The WSL distro itself (it may host other things)
+#   - Docker Engine (other projects may use it)
+#   - The WSL Windows feature
 # =============================================================================
 
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory)] [string] $Distro
+    [Parameter(Mandatory)] [string] $Distro,
+    [switch] $Purge
 )
 
-$ErrorActionPreference = 'Continue'   # uninstall must be best-effort
+$ErrorActionPreference = 'Continue'
 . (Join-Path $PSScriptRoot 'lib.ps1')
 
 Write-Step 'Uninstalling FalconPulsar from WSL'
 
-# Honour the sentinel.
+# Honour the sentinel
 $sentinel = Join-Path $env:TEMP 'falconpulsar-distro.txt'
 if (Test-Path $sentinel) {
     $Distro = (Get-Content $sentinel -Raw).Trim()
@@ -40,28 +46,73 @@ if (-not (Test-WslDistroPresent -Name $Distro)) {
     exit 0
 }
 
-# Best-effort: run the bash uninstaller. We don't pass --purge so the
-# user's data directory survives. They can wipe it manually with
-# `wsl -d <distro> -u root -- rm -rf /home/falconpulsar` if they really
-# want to.
-$uninstallScript = @'
-set +e
-if [ -x /opt/falconpulsar-installer/linux/uninstall.sh ]; then
-    bash /opt/falconpulsar-installer/linux/uninstall.sh --yes
-elif command -v docker >/dev/null 2>&1 && [ -f /home/falconpulsar/compose.yml ]; then
-    sudo -u falconpulsar -H sg docker -c "cd /home/falconpulsar && docker compose down --remove-orphans"
-fi
-rm -rf /opt/falconpulsar-installer
-echo "[info] WSL-side uninstall complete (data preserved at /home/falconpulsar)"
-'@
-
-$rc = Invoke-WslBash -Distro $Distro -Script $uninstallScript -User root
-if ($rc -ne 0) {
-    Write-Warn "Bash uninstaller returned non-zero ($rc) -- Windows-side files will still be removed"
+if ($Purge) {
+    Write-Info 'Mode: FULL REMOVAL (containers + data + user)'
+} else {
+    Write-Info 'Mode: keep data (containers removed, database preserved)'
 }
 
-# Clean up the Start Menu shortcuts (Inno Setup [Files] only deletes files
-# it placed itself, not the .lnk files we wrote in 50-register-shortcuts).
+# Step 1: Stop and remove containers
+Write-Info 'Stopping FalconPulsar containers...'
+$stopScript = @'
+set +e
+if command -v docker >/dev/null 2>&1; then
+    if [ -f /home/falconpulsar/compose.yml ]; then
+        cd /home/falconpulsar
+        sudo -u falconpulsar -H sg docker -c "docker compose down --remove-orphans" 2>/dev/null
+        echo "[info] Containers stopped and removed"
+    else
+        echo "[info] No compose.yml found -- skipping container stop"
+    fi
+else
+    echo "[info] Docker not available -- skipping container stop"
+fi
+'@
+$null = Invoke-WslBash -Distro $Distro -Script $stopScript -User root
+Write-Info 'Containers stopped'
+
+# Step 2: Remove Docker images + stack files
+Write-Info 'Removing Docker images and stack files...'
+$cleanScript = @'
+set +e
+if command -v docker >/dev/null 2>&1; then
+    docker rmi falconpulsar/core falconpulsar/ui falconpulsar/ai-gateway 2>/dev/null
+    echo "[info] Docker images removed"
+fi
+rm -f /home/falconpulsar/compose.yml 2>/dev/null
+rm -f /home/falconpulsar/.env 2>/dev/null
+rm -rf /opt/falconpulsar-installer 2>/dev/null
+echo "[info] Stack files removed"
+'@
+$null = Invoke-WslBash -Distro $Distro -Script $cleanScript -User root
+Write-Info 'Stack files removed'
+
+# Step 3: If purge, remove everything
+if ($Purge) {
+    Write-Info 'Removing all data, database, and user...'
+    $purgeScript = @'
+set +e
+# Remove the home directory (contains database)
+rm -rf /home/falconpulsar 2>/dev/null
+echo "[info] /home/falconpulsar removed (database deleted)"
+# Remove the system user
+if id falconpulsar >/dev/null 2>&1; then
+    userdel falconpulsar 2>/dev/null
+    echo "[info] falconpulsar user removed"
+fi
+# Remove systemd unit if present
+rm -f /home/falconpulsar/.config/systemd/user/falconpulsar.service 2>/dev/null
+loginctl disable-linger falconpulsar 2>/dev/null
+echo "[info] Purge complete"
+'@
+    $null = Invoke-WslBash -Distro $Distro -Script $purgeScript -User root
+    Write-Info 'Full purge complete'
+} else {
+    Write-Info 'Data preserved at /home/falconpulsar/data'
+    Write-Info "To access: wsl -d $Distro -u root -- ls /home/falconpulsar/data"
+}
+
+# Step 4: Remove Start Menu shortcuts
 $startMenu = [Environment]::GetFolderPath('CommonPrograms')
 $groupDir  = Join-Path $startMenu 'FalconPulsar'
 if (Test-Path $groupDir) {
@@ -69,8 +120,13 @@ if (Test-Path $groupDir) {
     Write-Info "Removed Start Menu group: $groupDir"
 }
 
-# Sentinel file cleanup
+# Sentinel cleanup
 Remove-Item -Path $sentinel -Force -ErrorAction SilentlyContinue
 
+Write-Output ''
 Write-Output '[ok] Uninstall complete'
+if (-not $Purge) {
+    Write-Output '  Your database is preserved at /home/falconpulsar/data'
+    Write-Output '  Reinstall FalconPulsar to resume using your existing data.'
+}
 exit 0

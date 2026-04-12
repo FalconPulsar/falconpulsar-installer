@@ -146,8 +146,8 @@ Filename: "notepad.exe"; Parameters: "{code:GetLogPath}"; \
 Type: filesandordirs; Name: "{commonprograms}\FalconPulsar"
 
 [UninstallRun]
-Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\helpers\uninstall.ps1"" -Distro {#WslDistroName}"; \
-    Flags: runhidden waituntilterminated
+; Uninstall is now handled by CurUninstallStepChanged in [Code]
+; which shows options to the user before calling uninstall.ps1.
 
 [Code]
 // =============================================================================
@@ -1674,5 +1674,50 @@ begin
       Result := True;
     if (CredentialsPage <> nil) and (PageID = CredentialsPage.ID) then
       Result := True;
+  end;
+end;
+
+// ── Uninstall: ask user what to remove, then run uninstall.ps1 ──────────
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  Choice: Integer;
+  PurgeFlag: String;
+  HelperPath: String;
+  FullArgs: String;
+  ResultCode: Integer;
+begin
+  if CurUninstallStep = usUninstall then
+  begin
+    // Ask the user what they want to remove
+    Choice := MsgBox(
+      'What would you like to remove?' + #13#10 + #13#10 +
+      'Click YES to remove everything (containers, data, configuration, ' +
+      'database, Start Menu shortcuts). This cannot be undone.' + #13#10 + #13#10 +
+      'Click NO to keep your data and database but remove the application ' +
+      'files, containers, and shortcuts. You can reinstall later and your ' +
+      'data will be preserved.' + #13#10 + #13#10 +
+      'Click CANCEL to abort the uninstall.',
+      mbConfirmation, MB_YESNOCANCEL);
+
+    if Choice = IDCANCEL then
+      Abort;
+
+    if Choice = IDYES then
+      PurgeFlag := '-Purge'
+    else
+      PurgeFlag := '';
+
+    // Run the PowerShell uninstall helper
+    HelperPath := ExpandConstant('{app}\helpers\uninstall.ps1');
+    if FileExists(HelperPath) then
+    begin
+      FullArgs := '-NoProfile -ExecutionPolicy Bypass -File "' + HelperPath +
+        '" -Distro {#WslDistroName}';
+      if Length(PurgeFlag) > 0 then
+        FullArgs := FullArgs + ' ' + PurgeFlag;
+
+      Exec('powershell.exe', FullArgs,
+        ExpandConstant('{app}\helpers'), SW_HIDE, ewWaitUntilTerminated, ResultCode);
+    end;
   end;
 end;
