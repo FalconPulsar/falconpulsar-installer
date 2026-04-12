@@ -570,6 +570,9 @@ var
   RegistrySkipArg: String;
   Distro: String;
   DistroArg: String;
+  DockerExePath: String;
+  DockerCheckRC: Integer;
+  DockerLive: Boolean;
 begin
   if CurStep = ssPostInstall then
   begin
@@ -630,9 +633,6 @@ begin
     // Live-check Docker Desktop state (user may have started it since the
     // wizard opened). The cached DetectedDockerDesktop from startup is stale.
     begin
-      var DockerExePath: String;
-      var DockerCheckRC: Integer;
-      var DockerLive: Boolean;
       DockerLive := False;
       DockerExePath := ExpandConstant('{pf}\Docker\Docker\resources\bin\docker.exe');
       if FileExists(DockerExePath) then
