@@ -462,12 +462,21 @@ function GetSelectedDistro(): String;
 var
   I: Integer;
 begin
-  // Check radio buttons if the page was shown
+  // If 0 or 1 distros, the distro page was skipped -- use auto-selected.
+  // Don't check radio buttons because they weren't populated (the page
+  // was created before detection ran).
+  if DistroCount <= 1 then
+  begin
+    Result := SelectedDistro;
+    Exit;
+  end;
+
+  // Multi-distro: check radio buttons
   if DistroPage <> nil then
   begin
     for I := 0 to DistroCount - 1 do
     begin
-      if DistroRadios[I].Checked then
+      if (DistroRadios[I] <> nil) and DistroRadios[I].Checked then
       begin
         Result := DistroNames[I];
         NeedDistroInstall := False;
@@ -475,7 +484,7 @@ begin
       end;
     end;
     // Last radio = "Install fresh Ubuntu 24.04"
-    if DistroRadios[DistroCount].Checked then
+    if (DistroRadios[DistroCount] <> nil) and DistroRadios[DistroCount].Checked then
     begin
       Result := '{#WslDistroName}';
       NeedDistroInstall := True;
