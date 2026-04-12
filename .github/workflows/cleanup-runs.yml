@@ -16,16 +16,16 @@ jobs:
     name: delete old workflow runs
     runs-on: ubuntu-latest
     steps:
-      - name: Keep only the latest run per workflow
+      - name: Keep latest 3 runs per workflow
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           REPO="${{ github.repository }}"
-          for WORKFLOW in build-windows lint test-linux; do
+          for WORKFLOW in build-windows lint test-linux cleanup-runs; do
             echo "=== $WORKFLOW ==="
-            # List all runs for this workflow, skip the first (latest), delete the rest
+            # List all runs, skip the first 3 (latest), delete the rest
             gh run list --repo "$REPO" --workflow "$WORKFLOW" --limit 50 --json databaseId \
-              | jq -r '.[1:][].databaseId' \
+              | jq -r '.[3:][].databaseId' \
               | while read -r ID; do
                   echo "  Deleting run $ID"
                   gh run delete "$ID" --repo "$REPO" 2>/dev/null || true
