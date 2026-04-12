@@ -60,6 +60,7 @@ OutputDir=.\Output
 OutputBaseFilename=FalconPulsar-Setup-{#MyAppVersion}
 SetupIconFile=assets\falcon.ico
 WizardStyle=modern
+DisableWelcomePage=no
 WizardSizePercent=120
 WizardImageFile=assets\welcome.bmp
 WizardSmallImageFile=assets\header.bmp
@@ -220,9 +221,12 @@ begin
   StepNames[5] := 'Verify installation';
   StepNames[6] := 'Start Menu shortcuts';
 
-  // Position the checklist below Inno Setup's built-in progress bar
-  // and status label. The progress bar + status take roughly 50px.
-  Y := WizardForm.ProgressGauge.Top + WizardForm.ProgressGauge.Height + ScaleY(16);
+  // Hide the built-in progress bar and status label -- the checklist
+  // provides better feedback.
+  WizardForm.ProgressGauge.Visible := False;
+  WizardForm.StatusLabel.Visible := False;
+
+  Y := ScaleY(10);
   for I := 0 to STEP_COUNT - 1 do
   begin
     StepLabels[I] := TNewStaticText.Create(WizardForm);

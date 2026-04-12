@@ -1,12 +1,11 @@
 # =============================================================================
 # 45-verify-health.ps1 -- Verify FalconPulsar containers are running.
 #
-# Called after 40-run-fp-installer.ps1 to confirm the installation
-# actually worked. Checks each container individually with retries
-# (containers may still be starting after the compose up).
+# Called after 40-run-fp-installer.ps1. Checks each container with retries
+# using exit codes (not temp file parsing).
 #
 # Exit codes:
-#   0 -- all containers healthy
+#   0 -- core container is running
 #   1 -- core container not running after retries
 # =============================================================================
 
@@ -41,7 +40,7 @@ if (-not (Test-WslDistroPresent -Name $Distro)) {
     exit 1
 }
 
-# Check each container individually with status reporting
+# Check each container using exit codes -- no temp file parsing.
 $containers = @(
     @{ Name = 'falconpulsar-core';       Label = 'Core (database + REST API)'; Required = $true },
     @{ Name = 'falconpulsar-ui';         Label = 'Web UI';                     Required = $false },
@@ -61,28 +60,12 @@ foreach ($c in $containers) {
     Write-Info "Checking $label ($name)..."
 
     for ($attempt = 1; $attempt -le $maxRetries; $attempt++) {
-        $checkScript = "docker ps --filter name=$name --filter status=running -q 2>/dev/null | wc -l"
+        # Exit 0 if running, exit 1 if not. grep -q returns 0/1 cleanly.
+        $checkScript = "docker ps --filter name=$name --filter status=running -q 2>/dev/null | grep -q ."
         $rc = Invoke-WslBash -Distro $Distro -Script $checkScript -User root
 
-        # Read the count from the last line of output in the log
-        $countFile = Join-Path $env:TEMP 'fp-wsl-stdout.txt'
-        $count = 0
-        if (Test-Path $countFile) {
-            $lastLine = (Get-Content $countFile -Tail 1).Trim()
-            if ($lastLine -match '^\d+$') {
-                $count = [int]$lastLine
-            }
-        }
-
-        if ($count -ge 1) {
-            # Get the container status details
-            $statusScript = "docker ps --filter name=$name --format '{{.Status}}' 2>/dev/null"
-            $null = Invoke-WslBash -Distro $Distro -Script $statusScript -User root
-            $status = ''
-            if (Test-Path $countFile) {
-                $status = (Get-Content $countFile -Tail 1).Trim()
-            }
-            Write-Info "  $label : RUNNING ($status)"
+        if ($rc -eq 0) {
+            Write-Info "  $label : RUNNING"
             $found = $true
             break
         }
@@ -105,21 +88,9 @@ foreach ($c in $containers) {
 
 # Check Core REST API health endpoint
 Write-Info 'Checking Core REST API health...'
-$apiScript = @'
-if curl -sf http://localhost:7433/api/v1/health >/dev/null 2>&1; then
-    echo "ok"
-else
-    echo "fail"
-fi
-'@
-$null = Invoke-WslBash -Distro $Distro -Script $apiScript -User root
-$apiResult = ''
-$apiFile = Join-Path $env:TEMP 'fp-wsl-stdout.txt'
-if (Test-Path $apiFile) {
-    $apiResult = (Get-Content $apiFile -Tail 1).Trim()
-}
-
-if ($apiResult -eq 'ok') {
+$apiScript = 'curl -sf http://localhost:7433/api/v1/health >/dev/null 2>&1'
+$apiRc = Invoke-WslBash -Distro $Distro -Script $apiScript -User root
+if ($apiRc -eq 0) {
     Write-Info '  REST API: responding on port 7433'
 } else {
     Write-Warn '  REST API: not responding yet (core may still be initializing)'
@@ -127,20 +98,9 @@ if ($apiResult -eq 'ok') {
 
 # Check Web UI
 Write-Info 'Checking Web UI...'
-$uiScript = @'
-if curl -sf http://localhost:8080 >/dev/null 2>&1; then
-    echo "ok"
-else
-    echo "fail"
-fi
-'@
-$null = Invoke-WslBash -Distro $Distro -Script $uiScript -User root
-$uiResult = ''
-if (Test-Path $apiFile) {
-    $uiResult = (Get-Content $apiFile -Tail 1).Trim()
-}
-
-if ($uiResult -eq 'ok') {
+$uiScript = 'curl -sf http://localhost:8080 >/dev/null 2>&1'
+$uiRc = Invoke-WslBash -Distro $Distro -Script $uiScript -User root
+if ($uiRc -eq 0) {
     Write-Info '  Web UI: responding on port 8080'
 } else {
     Write-Warn '  Web UI: not responding yet (may still be starting)'
