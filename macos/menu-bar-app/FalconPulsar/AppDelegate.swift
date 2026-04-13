@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import UserNotifications
 
 enum StackStatus {
     case unknown, running, partiallyRunning, stopped
@@ -271,20 +272,23 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Notifications
 
     private func showNotification() {
-        let notification = NSUserNotification()
+        let content = UNMutableNotificationContent()
+        content.title = "FalconPulsar"
         switch status {
         case .running:
-            notification.title = "FalconPulsar"
-            notification.informativeText = "All containers are running."
+            content.body = "All containers are running."
         case .stopped:
-            notification.title = "FalconPulsar"
-            notification.informativeText = "All containers have stopped."
+            content.body = "All containers have stopped."
         case .partiallyRunning:
-            notification.title = "FalconPulsar"
-            notification.informativeText = "Some containers are not running."
+            content.body = "Some containers are not running."
         default: return
         }
-        NSUserNotificationCenter.default.deliver(notification)
+        let request = UNNotificationRequest(
+            identifier: UUID().uuidString,
+            content: content,
+            trigger: nil
+        )
+        UNUserNotificationCenter.current().add(request)
     }
 
     // MARK: - Shell
