@@ -37,7 +37,7 @@ export FP_ASSUME_YES=1
 export FP_LEGAL_ACCEPTED=1
 
 cd "$INSTALL_DIR"
-bash "$INSTALL_DIR/macos/install.sh" --mode docker --yes 2>&1 | tee -a "$LOG_FILE"
+bash "$INSTALL_DIR/macos/install.sh" --yes 2>&1 | tee -a "$LOG_FILE"
 
 EXIT_CODE=${PIPESTATUS[0]}
 
