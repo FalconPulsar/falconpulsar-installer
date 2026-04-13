@@ -65,6 +65,7 @@ trap 'on_error $LINENO' ERR
 FP_USER="${FP_USER:-falconpulsar}"
 FP_HOME="${FP_HOME:-/home/${FP_USER}}"
 FP_DATA_DIR="${FP_DATA_DIR:-${FP_HOME}/data}"
+FP_GATEWAY_DATA_DIR="${FP_GATEWAY_DATA_DIR:-${FP_HOME}/ai-gateway-data}"
 FP_INSTALL_MODE="${FP_INSTALL_MODE:-}"        # docker | systemd
 FP_REST_PORT="${FP_REST_PORT:-7433}"
 FP_WS_PORT="${FP_WS_PORT:-7434}"
@@ -181,7 +182,7 @@ fi
 
 # Ensure all required directories exist with correct ownership.
 # A previous uninstall may have deleted some but not all.
-for dir in "$FP_HOME" "$FP_DATA_DIR" "${FP_HOME}/.docker"; do
+for dir in "$FP_HOME" "$FP_DATA_DIR" "$FP_GATEWAY_DATA_DIR" "${FP_HOME}/.docker"; do
     if [ ! -d "$dir" ]; then
         mkdir -p "$dir"
         log_info "created missing directory: ${dir}"
@@ -280,6 +281,7 @@ cat >"${FP_HOME}/.env" <<EOF
 # It is now hashed inside the database and never exits the core process.
 FP_ADMIN_USER=${FP_ADMIN_USER}
 FP_DATA_DIR=${FP_DATA_DIR}
+FP_GATEWAY_DATA_DIR=${FP_GATEWAY_DATA_DIR}
 FP_UID=${FP_UID}
 FP_GID=${FP_GID}
 FP_REGISTRY=${FP_REGISTRY}
@@ -374,6 +376,28 @@ if [ "$FP_INSTALL_MODE" = "systemd" ]; then
 else
     log_info "no systemd unit installed (mode: docker)"
     log_info "to start/stop manually: sudo -u ${FP_USER} -H sg docker -c 'cd ${FP_HOME} && docker compose <up -d|down>'"
+fi
+
+# ── Post-install health check ───────────────────────────────────────────────
+log_step "verifying installation health"
+HEALTH_OK=true
+for svc in falconpulsar-core falconpulsar-ui falconpulsar-ai-gateway; do
+    if docker ps --filter "name=$svc" --filter "status=running" -q 2>/dev/null | grep -q .; then
+        log_success "$svc: running"
+    else
+        log_warn "$svc: not running yet (may still be starting)"
+        HEALTH_OK=false
+    fi
+done
+
+if curl -sf "http://localhost:${FP_REST_PORT}/api/v1/health" >/dev/null 2>&1; then
+    log_success "REST API: responding on port ${FP_REST_PORT}"
+else
+    log_warn "REST API: not responding yet (core may still be initializing)"
+fi
+
+if [ "$HEALTH_OK" = "false" ]; then
+    log_warn "some containers are still starting — they may need a few more seconds"
 fi
 
 # ── Done ────────────────────────────────────────────────────────────────────

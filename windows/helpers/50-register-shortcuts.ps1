@@ -78,6 +78,11 @@ function New-WslShortcut {
         $sc.Arguments = "-d $Distro -u falconpulsar -- bash -ilc `"$BashCommand`""
     }
     $sc.Description  = $Name
+    # Use the falcon icon if available
+    $icoPath = Join-Path $InstallDir 'assets\falcon.ico'
+    if (Test-Path $icoPath) {
+        $sc.IconLocation = "$icoPath,0"
+    }
     $sc.Save()
     Write-Info "Created shortcut: $Name"
 }
@@ -108,6 +113,10 @@ $sc = $shell.CreateShortcut($linkPath)
 $sc.TargetPath   = 'explorer.exe'
 $sc.Arguments    = "\\wsl.localhost\$Distro\home\falconpulsar"
 $sc.Description  = 'Open the FalconPulsar stack folder in Windows Explorer'
+$icoPath = Join-Path $InstallDir 'assets\falcon.ico'
+if (Test-Path $icoPath) {
+    $sc.IconLocation = "$icoPath,0"
+}
 $sc.Save()
 Write-Info 'Created shortcut: Open Stack Folder'
 

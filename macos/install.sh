@@ -60,6 +60,7 @@ trap 'on_error $LINENO' ERR
 # ── Defaults ────────────────────────────────────────────────────────────────
 FP_HOME="${FP_HOME:-${HOME}/falconpulsar}"
 FP_DATA_DIR="${FP_DATA_DIR:-${FP_HOME}/data}"
+FP_GATEWAY_DATA_DIR="${FP_GATEWAY_DATA_DIR:-${FP_HOME}/ai-gateway-data}"
 FP_REST_PORT="${FP_REST_PORT:-7433}"
 FP_WS_PORT="${FP_WS_PORT:-7434}"
 FP_PUBSUB_PORT="${FP_PUBSUB_PORT:-7435}"
@@ -203,7 +204,7 @@ fp_registry_ensure_access
 
 # ── Step 3: Stack directory ─────────────────────────────────────────────────
 log_step "step 3/6 — stack directory"
-mkdir -p "$FP_HOME" "$FP_DATA_DIR"
+mkdir -p "$FP_HOME" "$FP_DATA_DIR" "$FP_GATEWAY_DATA_DIR"
 log_success "${FP_HOME} ready"
 
 # ── Step 4: compose.yml + .env ──────────────────────────────────────────────
@@ -234,6 +235,7 @@ cat >"${FP_HOME}/.env" <<EOF
 # It is now hashed inside the database and never exits the core process.
 FP_ADMIN_USER=${FP_ADMIN_USER}
 FP_DATA_DIR=${FP_DATA_DIR}
+FP_GATEWAY_DATA_DIR=${FP_GATEWAY_DATA_DIR}
 FP_UID=${FP_UID}
 FP_GID=${FP_GID}
 FP_REGISTRY=${FP_REGISTRY}
@@ -285,7 +287,28 @@ log_info "starting ui and ai-gateway"
 ( cd "$FP_HOME" && docker compose up -d )
 
 # ── Step 6: Done ────────────────────────────────────────────────────────────
-log_step "step 6/6 — all done"
+log_step "verifying installation health"
+HEALTH_OK=true
+for svc in falconpulsar-core falconpulsar-ui falconpulsar-ai-gateway; do
+    if docker ps --filter "name=$svc" --filter "status=running" -q 2>/dev/null | grep -q .; then
+        log_success "$svc: running"
+    else
+        log_warn "$svc: not running yet (may still be starting)"
+        HEALTH_OK=false
+    fi
+done
+
+if curl -sf "http://localhost:${FP_REST_PORT}/api/v1/health" >/dev/null 2>&1; then
+    log_success "REST API: responding on port ${FP_REST_PORT}"
+else
+    log_warn "REST API: not responding yet (core may still be initializing)"
+fi
+
+if [ "$HEALTH_OK" = "false" ]; then
+    log_warn "some containers are still starting — they may need a few more seconds"
+fi
+
+log_step "all done"
 
 cat >&2 <<EOF
 

@@ -112,8 +112,14 @@ services:
     image: ${FP_REGISTRY:-falconpulsar}/ai-gateway:${FP_VERSION:-latest}
     container_name: falconpulsar-ai-gateway
     restart: unless-stopped
+    user: "${FP_UID}:${FP_GID}"
     ports:
       - "${FP_GATEWAY_PORT:-7436}:7436"
+    volumes:
+      # Persistent storage for conversations, user memory, and knowledge
+      # embeddings. Without this mount, all AI Gateway state is lost on
+      # container restart.
+      - "${FP_GATEWAY_DATA_DIR:-${FP_DATA_DIR}/../ai-gateway-data}:/app/data"
     depends_on:
       core:
         condition: service_healthy

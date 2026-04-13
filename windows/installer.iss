@@ -65,6 +65,7 @@ WizardSizePercent=120
 WizardImageFile=assets\welcome.bmp
 WizardSmallImageFile=assets\header.bmp
 WizardImageStretch=no
+UninstallDisplayIcon={app}\assets\falcon.ico
 Compression=lzma2/max
 SolidCompression=yes
 LicenseFile=assets\license.rtf
@@ -130,6 +131,7 @@ Source: "tray-app\publish\FalconPulsarTray.exe";            DestDir: "{app}";   
 
 ; ── Assets + reference files ────────────────────────────────────────────────
 Source: "assets\license.rtf";                               DestDir: "{app}\assets";         Flags: ignoreversion
+Source: "assets\falcon.ico";                                DestDir: "{app}\assets";         Flags: ignoreversion
 Source: "..\REQUIREMENTS.md";                               DestDir: "{app}";                Flags: ignoreversion
 Source: "..\README.md";                                     DestDir: "{app}";                Flags: ignoreversion
 
