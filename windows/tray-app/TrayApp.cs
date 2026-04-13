@@ -135,6 +135,20 @@ namespace FalconPulsar.Tray
                 (s, e) => OpenDataFolder()));
             menu.Items.Add(new ToolStripMenuItem("Open Install Log", null,
                 (s, e) => OpenInstallLog()));
+
+            // Config Files submenu
+            var configMenu = new ToolStripMenuItem("Config Files");
+            configMenu.DropDownItems.Add(new ToolStripMenuItem("Core (falconpulsar.toml)", null,
+                (s, e) => EditConfigFile("data/falconpulsar.toml")));
+            configMenu.DropDownItems.Add(new ToolStripMenuItem("AI Gateway (gateway.yaml)", null,
+                (s, e) => EditConfigFile("gateway.yaml")));
+            configMenu.DropDownItems.Add(new ToolStripMenuItem("Docker Compose (compose.yml)", null,
+                (s, e) => EditConfigFile("compose.yml")));
+            configMenu.DropDownItems.Add(new ToolStripSeparator());
+            configMenu.DropDownItems.Add(new ToolStripMenuItem("Open Config Folder", null,
+                (s, e) => OpenDataFolder()));
+            menu.Items.Add(configMenu);
+
             menu.Items.Add(new ToolStripSeparator());
 
             // Settings
@@ -324,6 +338,22 @@ namespace FalconPulsar.Tray
             Process.Start(new ProcessStartInfo("explorer.exe",
                 $@"\\wsl.localhost\{_distro}\home\falconpulsar")
             { UseShellExecute = true });
+        }
+
+        private void EditConfigFile(string filename)
+        {
+            // Config files are inside the WSL distro at /home/falconpulsar/
+            var wslPath = $@"\\wsl.localhost\{_distro}\home\falconpulsar\{filename}";
+            if (File.Exists(wslPath))
+            {
+                Process.Start(new ProcessStartInfo("notepad.exe", wslPath)
+                { UseShellExecute = true });
+            }
+            else
+            {
+                ShowNotification("File not found",
+                    $"{filename} not found at {wslPath}", ToolTipIcon.Warning);
+            }
         }
 
         private void OpenInstallLog()

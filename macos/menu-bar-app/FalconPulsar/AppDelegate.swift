@@ -83,6 +83,26 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let installLog = NSMenuItem(title: "Open Install Log", action: #selector(openInstallLog), keyEquivalent: "")
         installLog.target = self
         menu.addItem(installLog)
+
+        // Config Files submenu
+        let configMenu = NSMenu()
+        let coreConfig = NSMenuItem(title: "Core (falconpulsar.toml)", action: #selector(editCoreConfig), keyEquivalent: "")
+        coreConfig.target = self
+        configMenu.addItem(coreConfig)
+        let gwConfig = NSMenuItem(title: "AI Gateway (gateway.yaml)", action: #selector(editGatewayConfig), keyEquivalent: "")
+        gwConfig.target = self
+        configMenu.addItem(gwConfig)
+        let composeConfig = NSMenuItem(title: "Docker Compose (compose.yml)", action: #selector(editComposeConfig), keyEquivalent: "")
+        composeConfig.target = self
+        configMenu.addItem(composeConfig)
+        configMenu.addItem(.separator())
+        let openConfigDir = NSMenuItem(title: "Open Config Folder", action: #selector(openDataFolder), keyEquivalent: "")
+        openConfigDir.target = self
+        configMenu.addItem(openConfigDir)
+        let configItem = NSMenuItem(title: "Config Files", action: nil, keyEquivalent: "")
+        configItem.submenu = configMenu
+        menu.addItem(configItem)
+
         menu.addItem(.separator())
 
         let autoStart = NSMenuItem(title: "Start at Login", action: #selector(toggleAutoStart), keyEquivalent: "")
@@ -303,6 +323,32 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func openDataFolder() {
         NSWorkspace.shared.open(URL(fileURLWithPath: homeDir))
+    }
+
+    @objc func editCoreConfig() {
+        openFileInEditor("\(homeDir)/data/falconpulsar.toml")
+    }
+
+    @objc func editGatewayConfig() {
+        openFileInEditor("\(homeDir)/gateway.yaml")
+    }
+
+    @objc func editComposeConfig() {
+        openFileInEditor("\(homeDir)/compose.yml")
+    }
+
+    private func openFileInEditor(_ path: String) {
+        let url = URL(fileURLWithPath: path)
+        if FileManager.default.fileExists(atPath: path) {
+            NSWorkspace.shared.open(url)
+        } else {
+            let alert = NSAlert()
+            alert.messageText = "File not found"
+            alert.informativeText = "The file \(path) does not exist. FalconPulsar may not be installed."
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
+        }
     }
 
     @objc func openInstallLog() {
