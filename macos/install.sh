@@ -214,6 +214,12 @@ prompt_admin_credentials
 
 cp "${REPO_ROOT}/shared/compose.yml" "${FP_HOME}/compose.yml"
 
+# Copy the AI Gateway config if it doesn't already exist
+if [ ! -f "${FP_HOME}/gateway.yaml" ] && [ -f "${REPO_ROOT}/shared/gateway.yaml" ]; then
+    cp "${REPO_ROOT}/shared/gateway.yaml" "${FP_HOME}/gateway.yaml"
+    log_info "copied default gateway.yaml"
+fi
+
 # On macOS, FP_UID = the current user's UID. The compose.yml uses this to set
 # the container's process UID so bind-mounted files are owned correctly on
 # the host side.

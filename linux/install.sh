@@ -252,6 +252,15 @@ install -m 0644 -o "$FP_USER" -g "$FP_USER" \
     "${REPO_ROOT}/shared/compose.yml" \
     "${FP_HOME}/compose.yml"
 
+# Copy the AI Gateway config if it doesn't already exist (don't overwrite
+# user edits on re-install).
+if [ ! -f "${FP_HOME}/gateway.yaml" ] && [ -f "${REPO_ROOT}/shared/gateway.yaml" ]; then
+    install -m 0644 -o "$FP_USER" -g "$FP_USER" \
+        "${REPO_ROOT}/shared/gateway.yaml" \
+        "${FP_HOME}/gateway.yaml"
+    log_info "copied default gateway.yaml"
+fi
+
 install -d -m 0750 -o "$FP_USER" -g "$FP_USER" "$FP_DATA_DIR"
 
 # Copy root's Docker Hub credentials into the falconpulsar user's home so

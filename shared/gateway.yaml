@@ -1,0 +1,64 @@
+# FalconPulsar AI Gateway — Standard Configuration
+#
+# This is the in-tree default configuration shipped with the gateway.
+# Server-level settings only. Environment variables override these
+# settings. Providers, API keys, models, and tuning are managed via
+# the UI (stored in SQLite).
+#
+# *** NEVER PUT REAL CREDENTIALS IN THIS FILE. ***
+# Credentials are read exclusively from environment variables at
+# startup, via the Settings/EnvOverrides mechanism in
+# fp_ai_gateway/config.py. The fields below intentionally have no
+# defaults — if neither FP_API_KEY nor (FP_USERNAME + FP_PASSWORD)
+# is set in the environment, the gateway will fail to authenticate
+# against Core on its first request. (A startup-time precondition
+# check would be a sensible follow-up; not added here to keep this
+# change scoped to credential removal.)
+
+server:
+  host: "0.0.0.0"
+  port: 7436
+
+falconpulsar:
+  url: "http://localhost:7433"
+  # Authentication is provided exclusively via environment variables:
+  #   FP_API_KEY                   — bearer/API token (preferred)
+  #   FP_USERNAME + FP_PASSWORD    — username/password fallback
+  # Do not add literal credentials to this file. See the gateway
+  # startup script or your container/orchestration secrets store.
+  timeout: 30
+
+# Context configuration
+context:
+  schema_cache_ttl: 300  # Cache schema for 5 minutes
+  max_conversation_tokens: 100000
+  include_fpq_examples: true
+
+# Knowledge base (RAG)
+knowledge:
+  enabled: true
+  path: "./knowledge"
+  embedding_model: "snowflake/snowflake-arctic-embed-l"
+  vector_store: "chroma"
+  data_path: "./data/chromadb"
+
+# Conversation memory
+memory:
+  enabled: true
+  db_path: "./data/conversations.db"
+  max_messages: 100
+
+# User adaptive memory (per-user learning)
+user_memory:
+  enabled: true
+  db_path: "./data/user_memory.db"
+  score_half_life_hours: 168
+  max_context_series: 8
+  max_context_assets: 5
+  max_context_tools: 5
+  decay_interval_minutes: 60
+
+# Logging
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"

@@ -120,6 +120,10 @@ services:
       # embeddings. Without this mount, all AI Gateway state is lost on
       # container restart.
       - "${FP_GATEWAY_DATA_DIR:-${FP_DATA_DIR}/../ai-gateway-data}:/app/data"
+      # Gateway configuration file — mounted from the host so users can
+      # edit it without rebuilding the image. The default is copied by
+      # the installer; edits take effect after `docker compose restart`.
+      - "${FP_GATEWAY_CONFIG:-${FP_DATA_DIR}/../gateway.yaml}:/app/config/gateway.yaml:ro"
     depends_on:
       core:
         condition: service_healthy

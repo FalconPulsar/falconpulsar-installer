@@ -101,6 +101,7 @@ Source: "..\linux\install.sh";                              DestDir: "{app}\linu
 Source: "..\linux\uninstall.sh";                            DestDir: "{app}\linux";          Flags: ignoreversion
 Source: "..\linux\systemd\falconpulsar.service.template";   DestDir: "{app}\linux\systemd";  Flags: ignoreversion
 Source: "..\shared\compose.yml";                            DestDir: "{app}\shared";         Flags: ignoreversion
+Source: "..\shared\gateway.yaml";                           DestDir: "{app}\shared";         Flags: ignoreversion
 Source: "..\shared\init.example.json";                      DestDir: "{app}\shared";         Flags: ignoreversion
 Source: "..\shared\lib\common.sh";                          DestDir: "{app}\shared\lib";     Flags: ignoreversion
 Source: "..\shared\lib\checks.sh";                          DestDir: "{app}\shared\lib";     Flags: ignoreversion
