@@ -1,0 +1,117 @@
+name: build-macos
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+    paths-ignore:
+      - '**/*.md'
+      - 'LICENSE'
+      - '.gitignore'
+      - 'windows/**'
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - 'LICENSE'
+      - '.gitignore'
+      - 'windows/**'
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  build:
+    name: build macOS installer + menu bar app
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build installer app
+        run: |
+          cd macos/installer-app
+          swift build -c release 2>&1
+          echo "Installer app built"
+
+      - name: Build menu bar app
+        run: |
+          cd macos/menu-bar-app
+          # Build with swiftc directly (SPM has caching issues with menu bar apps)
+          swiftc FalconPulsar/main.swift FalconPulsar/AppDelegate.swift FalconPulsar/Logo.swift \
+            -o .build/FalconPulsarMenuBar \
+            -framework AppKit \
+            -framework UserNotifications \
+            -O
+          echo "Menu bar app built"
+
+      - name: Create installer .app bundle
+        run: |
+          APP_DIR="dist/FalconPulsar Installer.app"
+          mkdir -p "$APP_DIR/Contents/MacOS"
+          mkdir -p "$APP_DIR/Contents/Resources"
+          cp macos/installer-app/.build/release/FalconPulsarInstaller "$APP_DIR/Contents/MacOS/"
+          cat > "$APP_DIR/Contents/Info.plist" << 'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>CFBundleExecutable</key>
+              <string>FalconPulsarInstaller</string>
+              <key>CFBundleIdentifier</key>
+              <string>com.falconpulsar.installer</string>
+              <key>CFBundleName</key>
+              <string>FalconPulsar Installer</string>
+              <key>CFBundleVersion</key>
+              <string>0.1.0</string>
+              <key>NSHighResolutionCapable</key>
+              <true/>
+          </dict>
+          </plist>
+          PLIST
+
+      - name: Create menu bar .app bundle
+        run: |
+          APP_DIR="dist/FalconPulsar Menu Bar.app"
+          mkdir -p "$APP_DIR/Contents/MacOS"
+          cp macos/menu-bar-app/.build/FalconPulsarMenuBar "$APP_DIR/Contents/MacOS/"
+          cat > "$APP_DIR/Contents/Info.plist" << 'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>CFBundleExecutable</key>
+              <string>FalconPulsarMenuBar</string>
+              <key>CFBundleIdentifier</key>
+              <string>com.falconpulsar.menubar</string>
+              <key>CFBundleName</key>
+              <string>FalconPulsar</string>
+              <key>CFBundleVersion</key>
+              <string>0.1.0</string>
+              <key>LSUIElement</key>
+              <true/>
+          </dict>
+          </plist>
+          PLIST
+
+      - name: Create DMG
+        run: |
+          # Create a DMG containing both apps
+          mkdir -p dist/dmg-staging
+          cp -R "dist/FalconPulsar Installer.app" dist/dmg-staging/
+          cp -R "dist/FalconPulsar Menu Bar.app" dist/dmg-staging/
+          hdiutil create -volname "FalconPulsar" \
+            -srcfolder dist/dmg-staging \
+            -ov -format UDZO \
+            "dist/FalconPulsar-Setup.dmg"
+          ls -lh dist/FalconPulsar-Setup.dmg
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v5
+        with:
+          name: FalconPulsar-macOS
+          path: dist/FalconPulsar-Setup.dmg
+          retention-days: 30
+          if-no-files-found: error

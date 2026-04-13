@@ -2,7 +2,7 @@ name: cleanup-runs
 
 on:
   workflow_run:
-    workflows: [build-windows, lint, test-linux]
+    workflows: [build-windows, build-macos, lint, test-linux]
     types: [completed]
 
 permissions:
@@ -21,7 +21,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           REPO="${{ github.repository }}"
-          for WORKFLOW in build-windows lint test-linux cleanup-runs; do
+          for WORKFLOW in build-windows build-macos lint test-linux cleanup-runs; do
             echo "=== $WORKFLOW ==="
             # List all runs, skip the first 3 (latest), delete the rest
             gh run list --repo "$REPO" --workflow "$WORKFLOW" --limit 50 --json databaseId \
