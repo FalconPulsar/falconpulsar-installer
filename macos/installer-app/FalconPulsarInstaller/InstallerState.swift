@@ -54,6 +54,9 @@ class InstallerState: ObservableObject {
 
     // Conclusion
     @Published var generatedPassword = ""
+    @Published var openWebUI = true
+    @Published var launchMenuBar = true
+    @Published var viewLog = false
 
     func detectEnvironment() {
         detecting = true

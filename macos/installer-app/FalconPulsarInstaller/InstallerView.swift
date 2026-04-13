@@ -27,7 +27,7 @@ struct InstallerView: View {
                 }
                 Spacer()
                 if state.currentPage == .conclusion {
-                    Button("Close") { NSApp.terminate(nil) }
+                    Button("Close") { executeConclusionActions() }
                         .keyboardShortcut(.defaultAction)
                 } else if state.currentPage == .installing {
                     // No buttons during install
@@ -62,6 +62,27 @@ struct InstallerView: View {
     func runInstall() {
         DispatchQueue.global(qos: .userInitiated).async {
             InstallRunner.run(state: state)
+        }
+    }
+
+    func executeConclusionActions() {
+        if state.installSuccess {
+            if state.openWebUI {
+                NSWorkspace.shared.open(URL(string: "http://localhost:8080")!)
+            }
+            if state.launchMenuBar {
+                let appPath = "\(NSHomeDirectory())/Applications/FalconPulsar Menu Bar.app"
+                if FileManager.default.fileExists(atPath: appPath) {
+                    NSWorkspace.shared.open(URL(fileURLWithPath: appPath))
+                }
+            }
+            if state.viewLog {
+                NSWorkspace.shared.open(URL(fileURLWithPath: "/tmp/falconpulsar-install.log"))
+            }
+        }
+        // Give a moment for actions to execute before quitting
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            NSApp.terminate(nil)
         }
     }
 }
@@ -434,18 +455,28 @@ struct ConclusionPage: View {
                     ServiceRow(name: "AI Gateway", url: "http://localhost:7436")
                 }
 
-                Button("Open Web UI") {
-                    NSWorkspace.shared.open(URL(string: "http://localhost:8080")!)
+                Divider().padding(.horizontal, 40)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Toggle("Open Web UI in browser", isOn: $state.openWebUI)
+                        .toggleStyle(.checkbox)
+                    Toggle("Launch FalconPulsar Menu Bar", isOn: $state.launchMenuBar)
+                        .toggleStyle(.checkbox)
+                    Toggle("View install log", isOn: $state.viewLog)
+                        .toggleStyle(.checkbox)
                 }
-                .controlSize(.large)
+                .font(.callout)
+                .padding(.horizontal, 20)
             }
 
             Spacer()
 
-            Button("View Install Log") {
-                NSWorkspace.shared.open(URL(fileURLWithPath: "/tmp/falconpulsar-install.log"))
+            if !state.installSuccess {
+                Button("View Install Log") {
+                    NSWorkspace.shared.open(URL(fileURLWithPath: "/tmp/falconpulsar-install.log"))
+                }
+                .font(.caption)
             }
-            .font(.caption)
         }
         .padding(30)
     }

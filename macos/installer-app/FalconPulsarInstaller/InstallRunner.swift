@@ -211,6 +211,8 @@ enum InstallRunner {
             for i in 3...6 {
                 updateStep(i, .passed)
             }
+            log("[info] Installing menu bar app...")
+            installMenuBarApp(log: log)
             finish(state: state, success: true, error: "")
         } else {
             // Mark remaining steps as failed
@@ -223,12 +225,171 @@ enum InstallRunner {
         }
     }
 
+    private static func installMenuBarApp(log: (String) -> Void) {
+        // Look for the menu bar app binary in known locations
+        let bundlePath = Bundle.main.bundlePath
+        let possiblePaths = [
+            "\(bundlePath)/../menu-bar-app/.build/debug/FalconPulsarMenuBar",
+            "\(bundlePath)/../menu-bar-app/.build/release/FalconPulsarMenuBar",
+            "\(bundlePath)/Contents/Resources/FalconPulsarMenuBar",
+            "\(NSHomeDirectory())/dev/falconpulsar-workspace/falconpulsar-installer/macos/menu-bar-app/.build/debug/FalconPulsarMenuBar"
+        ]
+
+        var menuBarBinary: String?
+        for p in possiblePaths {
+            let resolved = (p as NSString).standardizingPath
+            if FileManager.default.fileExists(atPath: resolved) {
+                menuBarBinary = resolved
+                break
+            }
+        }
+
+        guard let binary = menuBarBinary else {
+            log("[warn] Menu bar app binary not found — skipping auto-install")
+            return
+        }
+        log("[info] Found menu bar app at: \(binary)")
+
+        // Create .app bundle in ~/Applications/
+        let appDir = "\(NSHomeDirectory())/Applications/FalconPulsar Menu Bar.app"
+        let macosDir = "\(appDir)/Contents/MacOS"
+        let fm = FileManager.default
+
+        do {
+            try fm.createDirectory(atPath: macosDir, withIntermediateDirectories: true)
+            let destBinary = "\(macosDir)/FalconPulsarMenuBar"
+            if fm.fileExists(atPath: destBinary) {
+                try fm.removeItem(atPath: destBinary)
+            }
+            try fm.copyItem(atPath: binary, toPath: destBinary)
+
+            // Create app icon from embedded logo
+            let resourcesDir = "\(appDir)/Contents/Resources"
+            try fm.createDirectory(atPath: resourcesDir, withIntermediateDirectories: true)
+            createAppIcon(at: "\(resourcesDir)/AppIcon.icns")
+
+            // Create Info.plist
+            let plist = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+            <plist version="1.0">
+            <dict>
+                <key>CFBundleExecutable</key>
+                <string>FalconPulsarMenuBar</string>
+                <key>CFBundleIdentifier</key>
+                <string>com.falconpulsar.menubar</string>
+                <key>CFBundleName</key>
+                <string>FalconPulsar</string>
+                <key>CFBundleVersion</key>
+                <string>0.1.0</string>
+                <key>CFBundleIconFile</key>
+                <string>AppIcon</string>
+                <key>LSUIElement</key>
+                <true/>
+            </dict>
+            </plist>
+            """
+            try plist.write(toFile: "\(appDir)/Contents/Info.plist", atomically: true, encoding: .utf8)
+            log("[info] Menu bar app installed to \(appDir)")
+        } catch {
+            log("[warn] Failed to install menu bar app: \(error)")
+            return
+        }
+
+        // Create LaunchAgent for auto-start on login
+        let launchAgentDir = "\(NSHomeDirectory())/Library/LaunchAgents"
+        let launchAgentPath = "\(launchAgentDir)/com.falconpulsar.menubar.plist"
+        do {
+            try fm.createDirectory(atPath: launchAgentDir, withIntermediateDirectories: true)
+            let agentPlist = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+            <plist version="1.0">
+            <dict>
+                <key>Label</key>
+                <string>com.falconpulsar.menubar</string>
+                <key>ProgramArguments</key>
+                <array>
+                    <string>\(NSHomeDirectory())/Applications/FalconPulsar Menu Bar.app/Contents/MacOS/FalconPulsarMenuBar</string>
+                </array>
+                <key>RunAtLoad</key>
+                <true/>
+                <key>KeepAlive</key>
+                <false/>
+            </dict>
+            </plist>
+            """
+            try agentPlist.write(toFile: launchAgentPath, atomically: true, encoding: .utf8)
+            log("[info] LaunchAgent created (auto-start on login)")
+        } catch {
+            log("[warn] Failed to create LaunchAgent: \(error)")
+        }
+
+        // Register the .app bundle with macOS LaunchServices so the
+        // icon appears in Login Items, Finder, and Spotlight.
+        let (_, _) = ShellRunner.run("/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f '\(appDir)'")
+        log("[info] Registered app with LaunchServices")
+        log("[info] Menu bar app ready at \(appDir) (will launch after user confirms)")
+    }
+
     private static func finish(state: InstallerState, success: Bool, error: String) {
         DispatchQueue.main.async {
             state.installSuccess = success
             state.installError = error
             state.currentPage = .conclusion
         }
+    }
+
+    private static func createAppIcon(at path: String) {
+        // Save the embedded logo as a PNG, then use sips + iconutil to
+        // create a proper .icns file that macOS uses for Login Items etc.
+        guard let logoData = Data(base64Encoded: LogoData.base64) else { return }
+
+        let tmpDir = "/tmp/falconpulsar-iconset"
+        let iconsetDir = "\(tmpDir)/AppIcon.iconset"
+        let fm = FileManager.default
+        try? fm.removeItem(atPath: tmpDir)
+        try? fm.createDirectory(atPath: iconsetDir, withIntermediateDirectories: true)
+
+        // Write the source PNG
+        let srcPng = "\(tmpDir)/icon-src.png"
+        try? logoData.write(to: URL(fileURLWithPath: srcPng))
+
+        // Generate all required sizes for .icns
+        let sizes: [(String, Int)] = [
+            ("icon_16x16.png", 16),
+            ("icon_16x16@2x.png", 32),
+            ("icon_32x32.png", 32),
+            ("icon_32x32@2x.png", 64),
+            ("icon_128x128.png", 128),
+            ("icon_128x128@2x.png", 256),
+            ("icon_256x256.png", 256),
+            ("icon_256x256@2x.png", 512),
+            ("icon_512x512.png", 512)
+        ]
+
+        for (name, size) in sizes {
+            let dest = "\(iconsetDir)/\(name)"
+            let proc = Process()
+            proc.launchPath = "/usr/bin/sips"
+            proc.arguments = ["-z", "\(size)", "\(size)", srcPng, "--out", dest]
+            proc.standardOutput = FileHandle.nullDevice
+            proc.standardError = FileHandle.nullDevice
+            try? proc.run()
+            proc.waitUntilExit()
+        }
+
+        // Convert iconset to icns
+        let proc = Process()
+        proc.launchPath = "/usr/bin/iconutil"
+        proc.arguments = ["-c", "icns", iconsetDir, "-o", path]
+        proc.standardOutput = FileHandle.nullDevice
+        proc.standardError = FileHandle.nullDevice
+        try? proc.run()
+        proc.waitUntilExit()
+
+        // Cleanup
+        try? fm.removeItem(atPath: tmpDir)
     }
 
     private static func machineArch() -> String {

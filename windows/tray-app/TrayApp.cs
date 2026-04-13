@@ -143,8 +143,16 @@ namespace FalconPulsar.Tray
             _autoStartItem.Checked = IsAutoStartEnabled();
             menu.Items.Add(_autoStartItem);
 
+            menu.Items.Add(new ToolStripMenuItem("Documentation", null,
+                (s, e) => Process.Start(new ProcessStartInfo("https://falconpulsar.com/docs")
+                { UseShellExecute = true })));
             menu.Items.Add(new ToolStripMenuItem("Refresh Status", null,
                 async (s, e) => await PollHealth()));
+            menu.Items.Add(new ToolStripMenuItem("About FalconPulsar", null,
+                (s, e) => ShowAbout()));
+            menu.Items.Add(new ToolStripSeparator());
+            menu.Items.Add(new ToolStripMenuItem("Uninstall FalconPulsar...", null,
+                (s, e) => UninstallFalconPulsar()));
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(new ToolStripMenuItem("Exit", null,
                 (s, e) => ExitApp()));
@@ -430,6 +438,211 @@ namespace FalconPulsar.Tray
                 g.FillEllipse(brush, 1, 1, 10, 10);
             }
             return bmp;
+        }
+
+        private void ShowAbout()
+        {
+            var aboutForm = new Form
+            {
+                Text = "About FalconPulsar",
+                ClientSize = new Size(540, 480),
+                StartPosition = FormStartPosition.CenterScreen,
+                FormBorderStyle = FormBorderStyle.FixedDialog,
+                MaximizeBox = false,
+                MinimizeBox = false,
+                BackColor = Color.FromArgb(8, 18, 36)
+            };
+
+            // Gradient panel
+            var panel = new Panel
+            {
+                Dock = DockStyle.Fill,
+                BackColor = Color.Transparent
+            };
+            panel.Paint += (s, e) =>
+            {
+                using var brush = new System.Drawing.Drawing2D.LinearGradientBrush(
+                    panel.ClientRectangle,
+                    Color.FromArgb(16, 38, 76),
+                    Color.FromArgb(8, 18, 36),
+                    System.Drawing.Drawing2D.LinearGradientMode.Vertical);
+                e.Graphics.FillRectangle(brush, panel.ClientRectangle);
+            };
+            aboutForm.Controls.Add(panel);
+
+            // Logo — large hero
+            var logo = GetFalconLogo();
+            if (logo != null)
+            {
+                var imgBox = new PictureBox
+                {
+                    Image = new Bitmap(logo, new Size(140, 140)),
+                    Size = new Size(140, 140),
+                    Location = new Point(200, 20),
+                    BackColor = Color.Transparent,
+                    SizeMode = PictureBoxSizeMode.Zoom
+                };
+                panel.Controls.Add(imgBox);
+            }
+
+            // Title
+            panel.Controls.Add(new Label
+            {
+                Text = "FalconPulsar",
+                Font = new Font("Segoe UI", 26, FontStyle.Bold),
+                ForeColor = Color.White,
+                BackColor = Color.Transparent,
+                AutoSize = false,
+                Size = new Size(540, 40),
+                Location = new Point(0, 170),
+                TextAlign = ContentAlignment.MiddleCenter
+            });
+
+            // Version pill
+            var verPanel = new Panel
+            {
+                Size = new Size(150, 26),
+                Location = new Point(195, 215),
+                BackColor = Color.FromArgb(30, 255, 255, 255)
+            };
+            verPanel.Paint += (s, e) =>
+            {
+                e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                using var brush = new SolidBrush(Color.FromArgb(25, 255, 255, 255));
+                e.Graphics.FillRectangle(brush, 0, 0, 150, 26);
+            };
+            panel.Controls.Add(verPanel);
+            verPanel.Controls.Add(new Label
+            {
+                Text = "Version  0.1.0",
+                Font = new Font("Consolas", 10),
+                ForeColor = Color.FromArgb(200, 200, 200),
+                BackColor = Color.Transparent,
+                AutoSize = false,
+                Size = new Size(150, 26),
+                TextAlign = ContentAlignment.MiddleCenter
+            });
+
+            // Component grid with checkmarks
+            string[] names = { "Core Engine", "Compose", "Web UI", "AI Gateway" };
+            string[] vers = { "latest", "v2", "latest", "latest" };
+            bool[] oks = { _coreRunning, true, _uiRunning, _gatewayRunning };
+
+            int gridY = 260;
+            for (int i = 0; i < 4; i++)
+            {
+                int col = i % 2;
+                int row = i / 2;
+                int cx = 45 + col * 240;
+                int cy = gridY + row * 30;
+
+                panel.Controls.Add(new Label
+                {
+                    Text = oks[i] ? "\u2713" : "\u2717",
+                    Font = new Font("Segoe UI", 12, FontStyle.Bold),
+                    ForeColor = oks[i] ? Color.FromArgb(34, 197, 94) : Color.FromArgb(239, 68, 68),
+                    BackColor = Color.Transparent,
+                    AutoSize = false,
+                    Size = new Size(20, 20),
+                    Location = new Point(cx, cy)
+                });
+
+                panel.Controls.Add(new Label
+                {
+                    Text = $"{names[i]}:",
+                    Font = new Font("Segoe UI", 10),
+                    ForeColor = Color.FromArgb(170, 170, 170),
+                    BackColor = Color.Transparent,
+                    AutoSize = false,
+                    Size = new Size(110, 20),
+                    Location = new Point(cx + 22, cy)
+                });
+
+                panel.Controls.Add(new Label
+                {
+                    Text = vers[i],
+                    Font = new Font("Consolas", 10),
+                    ForeColor = Color.FromArgb(220, 220, 220),
+                    BackColor = Color.Transparent,
+                    AutoSize = false,
+                    Size = new Size(80, 20),
+                    Location = new Point(cx + 135, cy)
+                });
+            }
+
+            // Links
+            int linksY = 340;
+            var linkData = new[] {
+                ("Documentation", "https://falconpulsar.com/docs"),
+                ("Release Notes", "https://github.com/FalconPulsar/falconpulsar-installer/releases"),
+                ("License", "https://github.com/FalconPulsar/falconpulsar-installer/blob/main/LICENSE")
+            };
+            for (int i = 0; i < linkData.Length; i++)
+            {
+                var (text, url) = linkData[i];
+                var link = new LinkLabel
+                {
+                    Text = text,
+                    Font = new Font("Segoe UI", 10),
+                    LinkColor = Color.FromArgb(90, 165, 255),
+                    ActiveLinkColor = Color.FromArgb(130, 190, 255),
+                    BackColor = Color.Transparent,
+                    AutoSize = true,
+                    Location = new Point(60 + i * 165, linksY)
+                };
+                var u = url;
+                link.Click += (s, e) => Process.Start(new ProcessStartInfo(u) { UseShellExecute = true });
+                panel.Controls.Add(link);
+            }
+
+            // Copyright
+            panel.Controls.Add(new Label
+            {
+                Text = "Copyright (c) 2026 FalconPulsar Contributors. All rights reserved.",
+                Font = new Font("Segoe UI", 9),
+                ForeColor = Color.FromArgb(100, 100, 100),
+                BackColor = Color.Transparent,
+                AutoSize = false,
+                Size = new Size(540, 18),
+                Location = new Point(0, 390),
+                TextAlign = ContentAlignment.MiddleCenter
+            });
+
+            panel.Controls.Add(new Label
+            {
+                Text = "Self-host in 3 minutes. Your infrastructure, your data.",
+                Font = new Font("Segoe UI", 9),
+                ForeColor = Color.FromArgb(90, 90, 90),
+                BackColor = Color.Transparent,
+                AutoSize = false,
+                Size = new Size(540, 18),
+                Location = new Point(0, 410),
+                TextAlign = ContentAlignment.MiddleCenter
+            });
+
+            aboutForm.ShowDialog();
+        }
+
+        private void UninstallFalconPulsar()
+        {
+            // Find the Inno Setup uninstaller
+            var uninstExe = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+                "FalconPulsar", "unins000.exe");
+
+            if (File.Exists(uninstExe))
+            {
+                Process.Start(new ProcessStartInfo(uninstExe) { UseShellExecute = true });
+            }
+            else
+            {
+                MessageBox.Show(
+                    "Uninstaller not found at:\n" + uninstExe + "\n\n" +
+                    "You can uninstall from Windows Settings > Apps > FalconPulsar.",
+                    "Uninstall FalconPulsar",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+            }
         }
 
         private void ExitApp()

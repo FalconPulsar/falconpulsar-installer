@@ -252,6 +252,12 @@ EOF
 chmod 0600 "${FP_HOME}/.env"
 umask 022
 
+# Copy uninstall script to the stack directory for easy access
+if [ -f "${SCRIPT_DIR}/uninstall.sh" ]; then
+    cp "${SCRIPT_DIR}/uninstall.sh" "${FP_HOME}/uninstall.sh"
+    chmod +x "${FP_HOME}/uninstall.sh"
+fi
+
 log_success "wrote ${FP_HOME}/compose.yml and ${FP_HOME}/.env (admin password NOT stored)"
 
 # ── Step 5: Pull, start core, bootstrap token, start the rest ──────────────
