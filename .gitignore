@@ -14,9 +14,11 @@ windows/assets/header.bmp
 windows/assets/welcome.bmp
 windows/assets/falcon.ico
 
-# macOS .pkg build output
+# macOS build output
 macos/pkg/output/
 macos/pkg/staging/
+macos/installer-app/.build/
+macos/menu-bar-app/.build/
 
 # Local test artifacts
 *.log

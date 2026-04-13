@@ -109,8 +109,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         for (i, (running, name)) in statuses.enumerated() {
             let item = menu.item(at: i + 2)!
             let dot = running ? "●" : "○"
+            let dotColor: NSColor = running ? .systemGreen : .systemRed
             let statusText = running ? (name == "REST API" ? "Healthy" : "Running") : "Stopped"
-            item.title = "\(dot) \(name): \(statusText)"
+
+            let attributed = NSMutableAttributedString()
+            attributed.append(NSAttributedString(
+                string: "\(dot) ",
+                attributes: [.foregroundColor: dotColor, .font: NSFont.systemFont(ofSize: 14)]
+            ))
+            attributed.append(NSAttributedString(
+                string: "\(name): \(statusText)",
+                attributes: [.font: NSFont.systemFont(ofSize: 13)]
+            ))
+            item.attributedTitle = attributed
         }
 
         // Enable/disable Start/Stop/Restart (indices 8, 9, 10 — after separator + Open Web UI)
@@ -149,22 +160,36 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let image = NSImage(size: size)
         image.lockFocus()
 
-        // Draw "F" on a colored circle
-        let rect = NSRect(origin: .zero, size: size)
-        color.setFill()
-        NSBezierPath(ovalIn: rect.insetBy(dx: 1, dy: 1)).fill()
+        // Draw the falcon logo scaled to fit
+        if let logo = LogoData.image {
+            logo.draw(in: NSRect(origin: .zero, size: size),
+                     from: NSRect(origin: .zero, size: logo.size),
+                     operation: .sourceOver, fraction: 1.0)
+        } else {
+            // Fallback: "F" on dark circle
+            let rect = NSRect(origin: .zero, size: size)
+            NSColor(red: 0.05, green: 0.10, blue: 0.19, alpha: 1).setFill()
+            NSBezierPath(ovalIn: rect.insetBy(dx: 1, dy: 1)).fill()
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.boldSystemFont(ofSize: 11),
+                .foregroundColor: NSColor.white
+            ]
+            let str = NSAttributedString(string: "F", attributes: attrs)
+            let strSize = str.size()
+            str.draw(at: NSPoint(
+                x: (size.width - strSize.width) / 2,
+                y: (size.height - strSize.height) / 2
+            ))
+        }
 
-        let attrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.boldSystemFont(ofSize: 11),
-            .foregroundColor: NSColor.white
-        ]
-        let str = NSAttributedString(string: "F", attributes: attrs)
-        let strSize = str.size()
-        let strPoint = NSPoint(
-            x: (size.width - strSize.width) / 2,
-            y: (size.height - strSize.height) / 2
-        )
-        str.draw(at: strPoint)
+        // Status dot in bottom-right corner
+        let dotSize: CGFloat = 6
+        let dotX = size.width - dotSize - 1
+        let dotY: CGFloat = 1
+        NSColor.white.setFill()
+        NSBezierPath(ovalIn: NSRect(x: dotX - 1, y: dotY - 1, width: dotSize + 2, height: dotSize + 2)).fill()
+        color.setFill()
+        NSBezierPath(ovalIn: NSRect(x: dotX, y: dotY, width: dotSize, height: dotSize)).fill()
 
         image.unlockFocus()
         image.isTemplate = false
@@ -299,7 +324,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = pipe
-        process.arguments = ["-c", command]
+        let pathExport = "export PATH=\"/Applications/Docker.app/Contents/Resources/bin:/usr/local/bin:/opt/homebrew/bin:$PATH\""
+        process.arguments = ["-c", "\(pathExport); \(command)"]
         process.launchPath = "/bin/bash"
         process.launch()
         process.waitUntilExit()

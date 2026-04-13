@@ -7,8 +7,7 @@
 # then this script runs install.sh with the user's environment.
 #
 # Note: postinstall runs as root (Apple Installer requirement).
-# The bash installer handles privilege separation (creates the
-# falconpulsar user or uses the current user on macOS).
+# We drop privileges to the actual user before running install.sh.
 # =============================================================================
 
 set -e
@@ -16,41 +15,103 @@ set -e
 INSTALL_DIR="/tmp/falconpulsar-installer"
 LOG_FILE="/tmp/falconpulsar-install.log"
 
-echo "FalconPulsar postinstall starting at $(date)" >> "$LOG_FILE"
+# Initialize the log file
+cat > "$LOG_FILE" <<LOGHEADER
+================================================================
+  FalconPulsar macOS Installer Log
+  Version: 0.1.0
+  Date: $(date '+%Y-%m-%d %H:%M:%S')
+================================================================
 
-# The .pkg payload copies the installer tree to $INSTALL_DIR
+LOGHEADER
+
+log_info() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [info] $1" >> "$LOG_FILE"; }
+log_error() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [error] $1" >> "$LOG_FILE"; }
+
+log_info "Postinstall starting"
+log_info "macOS: $(sw_vers -productVersion)"
+log_info "Architecture: $(uname -m)"
+log_info "User: $(whoami) (running as root via .pkg)"
+
+# Detect the real user who launched the installer
+REAL_USER="${SUDO_USER:-${USER}}"
+if [ "$REAL_USER" = "root" ]; then
+    REAL_USER=$(stat -f '%Su' /dev/console 2>/dev/null || echo "$USER")
+fi
+log_info "Actual user: $REAL_USER"
+log_info "Home: $(eval echo ~$REAL_USER)"
+
+# Verify installer files exist
 if [ ! -f "$INSTALL_DIR/macos/install.sh" ]; then
-    echo "[error] install.sh not found at $INSTALL_DIR/macos/install.sh" >> "$LOG_FILE"
+    log_error "install.sh not found at $INSTALL_DIR/macos/install.sh"
     exit 1
 fi
 
-# Make scripts executable (pkg might strip execute bits)
+# Make scripts executable
 chmod +x "$INSTALL_DIR/macos/install.sh"
 chmod +x "$INSTALL_DIR/macos/uninstall.sh"
 chmod +x "$INSTALL_DIR/shared/lib/"*.sh
 
-# Run the macOS installer in non-interactive mode.
-# FP_ASSUME_YES=1 skips all prompts (the .pkg already got legal consent).
-# FP_LEGAL_ACCEPTED=1 skips the legal prompt.
-#
-# The .pkg postinstall runs as root (Apple requirement), but
-# macos/install.sh expects to run as the current user (not root)
-# because it uses ~/falconpulsar as the stack directory and needs
-# Docker access via the user's credentials. We drop privileges to
-# the user who invoked the installer.
-REAL_USER="${SUDO_USER:-${USER}}"
-if [ "$REAL_USER" = "root" ]; then
-    # Fallback: find the console user
-    REAL_USER=$(stat -f '%Su' /dev/console 2>/dev/null || echo "$USER")
+# Check if Docker is available before running the installer.
+# sudo -u runs a non-login shell with minimal PATH, so we must
+# either use -i (login shell) or check known paths explicitly.
+log_info "Checking container runtime..."
+
+# Check known Docker install locations
+DOCKER_PATH=""
+for candidate in \
+    /usr/local/bin/docker \
+    /opt/homebrew/bin/docker \
+    /Applications/Docker.app/Contents/Resources/bin/docker \
+    "$(eval echo ~$REAL_USER)/.docker/bin/docker" \
+    "$(eval echo ~$REAL_USER)/.orbstack/bin/docker"; do
+    if [ -x "$candidate" ]; then
+        DOCKER_PATH="$candidate"
+        break
+    fi
+done
+
+# Fallback: try the user's login shell PATH
+if [ -z "$DOCKER_PATH" ]; then
+    DOCKER_PATH=$(sudo -u "$REAL_USER" -i bash -c 'which docker 2>/dev/null || echo ""')
 fi
 
-export FP_ASSUME_YES=1
-export FP_LEGAL_ACCEPTED=1
+if [ -z "$DOCKER_PATH" ]; then
+    log_error "Docker not found for user $REAL_USER"
+    log_error "Checked: /usr/local/bin, /opt/homebrew/bin, Docker.app, .orbstack"
+    log_error "Install Docker Desktop, Colima, OrbStack, or Rancher Desktop first"
+    echo "Docker is not installed. Please install Docker Desktop (or Colima/OrbStack/Rancher Desktop) and run the installer again." > /tmp/falconpulsar-install-error.txt
+    exit 1
+fi
+log_info "Found Docker at: $DOCKER_PATH"
 
-echo "[info] Running as user: $REAL_USER" >> "$LOG_FILE"
+# Docker commands must run as the actual user (not root) because
+# Docker Desktop's socket is user-specific.
+DOCKER_RUNNING=$(sudo -u "$REAL_USER" "$DOCKER_PATH" info >/dev/null 2>&1 && echo yes || echo no)
+if [ "$DOCKER_RUNNING" = "no" ]; then
+    log_error "Docker is installed but not running"
+    log_info "Attempting to wait for Docker to start (30 seconds)..."
+    for i in 1 2 3 4 5 6; do
+        sleep 5
+        DOCKER_RUNNING=$(sudo -u "$REAL_USER" "$DOCKER_PATH" info >/dev/null 2>&1 && echo yes || echo no)
+        if [ "$DOCKER_RUNNING" = "yes" ]; then
+            log_info "Docker is now running (waited $((i * 5))s)"
+            break
+        fi
+        log_info "Docker not ready yet (attempt $i/6)..."
+    done
+    if [ "$DOCKER_RUNNING" = "no" ]; then
+        log_error "Docker is not running after 30 seconds"
+        echo "Docker is installed but not running. Please start Docker Desktop and run the installer again." > /tmp/falconpulsar-install-error.txt
+        exit 1
+    fi
+fi
+log_info "Docker is available and running"
 
+# Run the macOS installer as the actual user
+log_info "Running install.sh as $REAL_USER"
 cd "$INSTALL_DIR"
-sudo -u "$REAL_USER" -H \
+sudo -u "$REAL_USER" -i \
     FP_ASSUME_YES=1 \
     FP_LEGAL_ACCEPTED=1 \
     bash "$INSTALL_DIR/macos/install.sh" --yes 2>&1 | tee -a "$LOG_FILE"
@@ -58,9 +119,11 @@ sudo -u "$REAL_USER" -H \
 EXIT_CODE=${PIPESTATUS[0]}
 
 if [ "$EXIT_CODE" -eq 0 ]; then
-    echo "[ok] FalconPulsar installed successfully" >> "$LOG_FILE"
+    log_info "Installation completed successfully"
+    log_info "Web UI: http://localhost:8080"
+    log_info "Log file: $LOG_FILE"
 else
-    echo "[error] Installation failed with exit code $EXIT_CODE" >> "$LOG_FILE"
+    log_error "Installation failed with exit code $EXIT_CODE"
 fi
 
 # Clean up the staging area
