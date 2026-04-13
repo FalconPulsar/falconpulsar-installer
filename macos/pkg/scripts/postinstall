@@ -30,14 +30,30 @@ chmod +x "$INSTALL_DIR/macos/uninstall.sh"
 chmod +x "$INSTALL_DIR/shared/lib/"*.sh
 
 # Run the macOS installer in non-interactive mode.
-# The admin password will be auto-generated and shown in the summary.
 # FP_ASSUME_YES=1 skips all prompts (the .pkg already got legal consent).
 # FP_LEGAL_ACCEPTED=1 skips the legal prompt.
+#
+# The .pkg postinstall runs as root (Apple requirement), but
+# macos/install.sh expects to run as the current user (not root)
+# because it uses ~/falconpulsar as the stack directory and needs
+# Docker access via the user's credentials. We drop privileges to
+# the user who invoked the installer.
+REAL_USER="${SUDO_USER:-${USER}}"
+if [ "$REAL_USER" = "root" ]; then
+    # Fallback: find the console user
+    REAL_USER=$(stat -f '%Su' /dev/console 2>/dev/null || echo "$USER")
+fi
+
 export FP_ASSUME_YES=1
 export FP_LEGAL_ACCEPTED=1
 
+echo "[info] Running as user: $REAL_USER" >> "$LOG_FILE"
+
 cd "$INSTALL_DIR"
-bash "$INSTALL_DIR/macos/install.sh" --yes 2>&1 | tee -a "$LOG_FILE"
+sudo -u "$REAL_USER" -H \
+    FP_ASSUME_YES=1 \
+    FP_LEGAL_ACCEPTED=1 \
+    bash "$INSTALL_DIR/macos/install.sh" --yes 2>&1 | tee -a "$LOG_FILE"
 
 EXIT_CODE=${PIPESTATUS[0]}
 

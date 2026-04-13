@@ -67,6 +67,7 @@ cat > "$OUTPUT_DIR/distribution.xml" <<DISTXML
 <installer-gui-script minSpecVersion="2">
     <title>FalconPulsar</title>
     <organization>com.falconpulsar</organization>
+    <background file="background.png" alignment="bottomleft" scaling="proportional" />
     <welcome file="welcome.html" />
     <license file="license.html" />
     <conclusion file="conclusion.html" />
