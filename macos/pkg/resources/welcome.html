@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    font-size: 13px;
+    line-height: 1.6;
+    color: #333;
+    padding: 20px;
+}
+h1 {
+    font-size: 24px;
+    font-weight: 700;
+    margin-bottom: 4px;
+    color: #0E1A31;
+}
+.version {
+    color: #888;
+    font-size: 12px;
+    margin-bottom: 16px;
+}
+.tagline {
+    font-size: 14px;
+    color: #555;
+    margin-bottom: 20px;
+}
+.section {
+    margin-bottom: 16px;
+}
+.section h2 {
+    font-size: 13px;
+    font-weight: 600;
+    margin-bottom: 6px;
+    color: #0E1A31;
+}
+ul {
+    margin: 0;
+    padding-left: 20px;
+}
+li {
+    margin-bottom: 4px;
+}
+.url {
+    color: #007AFF;
+}
+.footer {
+    margin-top: 24px;
+    font-size: 11px;
+    color: #999;
+}
+</style>
+</head>
+<body>
+<h1>FalconPulsar</h1>
+<div class="version">Version 0.1.0</div>
+<div class="tagline">Self-host in 3 minutes. Your infrastructure, your data.</div>
+
+<div class="section">
+<h2>This installer will set up:</h2>
+<ul>
+<li>Core engine (REST API + WebSocket) on port 7433</li>
+<li>Web UI for dashboards and operations on port 8080</li>
+<li>AI Gateway for natural-language interaction on port 7436</li>
+</ul>
+</div>
+
+<div class="section">
+<h2>Requirements:</h2>
+<ul>
+<li>macOS 14 Sonoma or newer</li>
+<li>8 GB RAM minimum</li>
+<li>A container runtime: Docker Desktop, Colima, OrbStack, or Rancher Desktop</li>
+</ul>
+</div>
+
+<div class="section">
+<h2>After the install:</h2>
+<p>Open <span class="url">http://localhost:8080</span> in your browser to access the Web UI.</p>
+</div>
+
+<div class="footer">
+<a href="https://falconpulsar.com" class="url">falconpulsar.com</a><br>
+&copy; 2026 FalconPulsar Contributors. Apache 2.0 License.
+</div>
+</body>
+</html>

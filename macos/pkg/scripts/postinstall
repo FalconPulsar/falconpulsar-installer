@@ -1,0 +1,53 @@
+#!/bin/bash
+# =============================================================================
+# postinstall — runs after the .pkg copies files to the staging area.
+#
+# This is the bridge between the macOS .pkg GUI and the bash installer.
+# The .pkg copies the installer files to /tmp/falconpulsar-installer,
+# then this script runs install.sh with the user's environment.
+#
+# Note: postinstall runs as root (Apple Installer requirement).
+# The bash installer handles privilege separation (creates the
+# falconpulsar user or uses the current user on macOS).
+# =============================================================================
+
+set -e
+
+INSTALL_DIR="/tmp/falconpulsar-installer"
+LOG_FILE="/tmp/falconpulsar-install.log"
+
+echo "FalconPulsar postinstall starting at $(date)" >> "$LOG_FILE"
+
+# The .pkg payload copies the installer tree to $INSTALL_DIR
+if [ ! -f "$INSTALL_DIR/macos/install.sh" ]; then
+    echo "[error] install.sh not found at $INSTALL_DIR/macos/install.sh" >> "$LOG_FILE"
+    exit 1
+fi
+
+# Make scripts executable (pkg might strip execute bits)
+chmod +x "$INSTALL_DIR/macos/install.sh"
+chmod +x "$INSTALL_DIR/macos/uninstall.sh"
+chmod +x "$INSTALL_DIR/shared/lib/"*.sh
+
+# Run the macOS installer in non-interactive mode.
+# The admin password will be auto-generated and shown in the summary.
+# FP_ASSUME_YES=1 skips all prompts (the .pkg already got legal consent).
+# FP_LEGAL_ACCEPTED=1 skips the legal prompt.
+export FP_ASSUME_YES=1
+export FP_LEGAL_ACCEPTED=1
+
+cd "$INSTALL_DIR"
+bash "$INSTALL_DIR/macos/install.sh" --mode docker --yes 2>&1 | tee -a "$LOG_FILE"
+
+EXIT_CODE=${PIPESTATUS[0]}
+
+if [ "$EXIT_CODE" -eq 0 ]; then
+    echo "[ok] FalconPulsar installed successfully" >> "$LOG_FILE"
+else
+    echo "[error] Installation failed with exit code $EXIT_CODE" >> "$LOG_FILE"
+fi
+
+# Clean up the staging area
+rm -rf "$INSTALL_DIR"
+
+exit "$EXIT_CODE"
