@@ -112,6 +112,7 @@ jobs:
       - name: Build menu bar app
         run: |
           cd macos/menu-bar-app
+          mkdir -p .build
           swiftc FalconPulsar/main.swift FalconPulsar/AppDelegate.swift FalconPulsar/Logo.swift \
             -o .build/FalconPulsarMenuBar \
             -framework AppKit -framework UserNotifications -O

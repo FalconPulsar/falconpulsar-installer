@@ -39,6 +39,7 @@ jobs:
       - name: Build menu bar app
         run: |
           cd macos/menu-bar-app
+          mkdir -p .build
           # Build with swiftc directly (SPM has caching issues with menu bar apps)
           swiftc FalconPulsar/main.swift FalconPulsar/AppDelegate.swift FalconPulsar/Logo.swift \
             -o .build/FalconPulsarMenuBar \
