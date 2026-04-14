@@ -97,6 +97,13 @@ jobs:
           #!/bin/bash
           /usr/bin/xattr -dr com.apple.quarantine "/Applications/FalconPulsar Installer.app" 2>/dev/null || true
           /usr/bin/xattr -dr com.apple.quarantine "/Applications/FalconPulsar Menu Bar.app" 2>/dev/null || true
+          if [ -n "$USER" ] && [ "$USER" != "root" ]; then
+            TARGET_USER="$USER"
+          else
+            TARGET_USER="$(/usr/bin/stat -f %Su /dev/console)"
+          fi
+          TARGET_UID="$(/usr/bin/id -u "$TARGET_USER")"
+          /bin/launchctl asuser "$TARGET_UID" /usr/bin/open -a "/Applications/FalconPulsar Installer.app" || true
           exit 0
           SH
           chmod +x dist/scripts/postinstall
