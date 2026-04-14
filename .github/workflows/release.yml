@@ -98,8 +98,8 @@ jobs:
           name: bundles-windows
           path: windows/Output/*.exe
 
-  build-macos:
-    name: build macOS installer + menu bar app
+  build-macos-pkg:
+    name: build macOS .pkg
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v5
@@ -117,56 +117,64 @@ jobs:
             -o .build/FalconPulsarMenuBar \
             -framework AppKit -framework UserNotifications -O
 
-      - name: Create .app bundles + DMG
+      - name: Stage .app bundles
         run: |
-          mkdir -p dist/dmg-staging
+          VERSION="${GITHUB_REF_NAME#v}"
+          ROOT=dist/pkg-root/Applications
+          mkdir -p "$ROOT"
 
           # Installer .app
-          APP="dist/dmg-staging/FalconPulsar Installer.app"
+          APP="$ROOT/FalconPulsar Installer.app"
           mkdir -p "$APP/Contents/MacOS"
           cp macos/installer-app/.build/release/FalconPulsarInstaller "$APP/Contents/MacOS/"
-          cat > "$APP/Contents/Info.plist" << 'PLIST'
+          cat > "$APP/Contents/Info.plist" <<PLIST
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0"><dict>
             <key>CFBundleExecutable</key><string>FalconPulsarInstaller</string>
             <key>CFBundleIdentifier</key><string>com.falconpulsar.installer</string>
             <key>CFBundleName</key><string>FalconPulsar Installer</string>
-            <key>CFBundleVersion</key><string>${GITHUB_REF_NAME#v}</string>
+            <key>CFBundleVersion</key><string>${VERSION}</string>
+            <key>CFBundleShortVersionString</key><string>${VERSION}</string>
             <key>NSHighResolutionCapable</key><true/>
           </dict></plist>
           PLIST
 
           # Menu bar .app
-          APP="dist/dmg-staging/FalconPulsar Menu Bar.app"
+          APP="$ROOT/FalconPulsar Menu Bar.app"
           mkdir -p "$APP/Contents/MacOS"
           cp macos/menu-bar-app/.build/FalconPulsarMenuBar "$APP/Contents/MacOS/"
-          cat > "$APP/Contents/Info.plist" << 'PLIST'
+          cat > "$APP/Contents/Info.plist" <<PLIST
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0"><dict>
             <key>CFBundleExecutable</key><string>FalconPulsarMenuBar</string>
             <key>CFBundleIdentifier</key><string>com.falconpulsar.menubar</string>
             <key>CFBundleName</key><string>FalconPulsar</string>
-            <key>CFBundleVersion</key><string>${GITHUB_REF_NAME#v}</string>
+            <key>CFBundleVersion</key><string>${VERSION}</string>
+            <key>CFBundleShortVersionString</key><string>${VERSION}</string>
             <key>LSUIElement</key><true/>
           </dict></plist>
           PLIST
 
-          # Create DMG
-          hdiutil create -volname "FalconPulsar" \
-            -srcfolder dist/dmg-staging \
-            -ov -format UDZO \
-            "dist/FalconPulsar-Setup.dmg"
+      - name: Build .pkg
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          mkdir -p dist
+          pkgbuild \
+            --root dist/pkg-root \
+            --identifier com.falconpulsar.installer.pkg \
+            --version "${VERSION}" \
+            --install-location / \
+            "dist/FalconPulsar-Setup-${GITHUB_REF_NAME}.pkg"
+          cp "dist/FalconPulsar-Setup-${GITHUB_REF_NAME}.pkg" dist/FalconPulsar-Setup.pkg
+          ls -lh dist/*.pkg
 
-          # Also versioned copy
-          cp "dist/FalconPulsar-Setup.dmg" "dist/FalconPulsar-Setup-${GITHUB_REF_NAME}.dmg"
-
-      - name: Upload DMG
+      - name: Upload .pkg
         uses: actions/upload-artifact@v5
         with:
           name: bundles-macos
-          path: dist/FalconPulsar-Setup*.dmg
+          path: dist/FalconPulsar-Setup*.pkg
 
   publish:
     name: create github release

@@ -48,71 +48,58 @@ jobs:
             -O
           echo "Menu bar app built"
 
-      - name: Create installer .app bundle
+      - name: Stage .app bundles under Applications/
         run: |
-          APP_DIR="dist/FalconPulsar Installer.app"
-          mkdir -p "$APP_DIR/Contents/MacOS"
-          mkdir -p "$APP_DIR/Contents/Resources"
-          cp macos/installer-app/.build/release/FalconPulsarInstaller "$APP_DIR/Contents/MacOS/"
-          cat > "$APP_DIR/Contents/Info.plist" << 'PLIST'
+          ROOT=dist/pkg-root/Applications
+          mkdir -p "$ROOT"
+
+          APP="$ROOT/FalconPulsar Installer.app"
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          cp macos/installer-app/.build/release/FalconPulsarInstaller "$APP/Contents/MacOS/"
+          cat > "$APP/Contents/Info.plist" << 'PLIST'
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-              <key>CFBundleExecutable</key>
-              <string>FalconPulsarInstaller</string>
-              <key>CFBundleIdentifier</key>
-              <string>com.falconpulsar.installer</string>
-              <key>CFBundleName</key>
-              <string>FalconPulsar Installer</string>
-              <key>CFBundleVersion</key>
-              <string>0.1.0</string>
-              <key>NSHighResolutionCapable</key>
-              <true/>
-          </dict>
-          </plist>
+          <plist version="1.0"><dict>
+            <key>CFBundleExecutable</key><string>FalconPulsarInstaller</string>
+            <key>CFBundleIdentifier</key><string>com.falconpulsar.installer</string>
+            <key>CFBundleName</key><string>FalconPulsar Installer</string>
+            <key>CFBundleVersion</key><string>0.1.0</string>
+            <key>CFBundleShortVersionString</key><string>0.1.0</string>
+            <key>NSHighResolutionCapable</key><true/>
+          </dict></plist>
           PLIST
 
-      - name: Create menu bar .app bundle
-        run: |
-          APP_DIR="dist/FalconPulsar Menu Bar.app"
-          mkdir -p "$APP_DIR/Contents/MacOS"
-          cp macos/menu-bar-app/.build/FalconPulsarMenuBar "$APP_DIR/Contents/MacOS/"
-          cat > "$APP_DIR/Contents/Info.plist" << 'PLIST'
+          APP="$ROOT/FalconPulsar Menu Bar.app"
+          mkdir -p "$APP/Contents/MacOS"
+          cp macos/menu-bar-app/.build/FalconPulsarMenuBar "$APP/Contents/MacOS/"
+          cat > "$APP/Contents/Info.plist" << 'PLIST'
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-              <key>CFBundleExecutable</key>
-              <string>FalconPulsarMenuBar</string>
-              <key>CFBundleIdentifier</key>
-              <string>com.falconpulsar.menubar</string>
-              <key>CFBundleName</key>
-              <string>FalconPulsar</string>
-              <key>CFBundleVersion</key>
-              <string>0.1.0</string>
-              <key>LSUIElement</key>
-              <true/>
-          </dict>
-          </plist>
+          <plist version="1.0"><dict>
+            <key>CFBundleExecutable</key><string>FalconPulsarMenuBar</string>
+            <key>CFBundleIdentifier</key><string>com.falconpulsar.menubar</string>
+            <key>CFBundleName</key><string>FalconPulsar</string>
+            <key>CFBundleVersion</key><string>0.1.0</string>
+            <key>CFBundleShortVersionString</key><string>0.1.0</string>
+            <key>LSUIElement</key><true/>
+          </dict></plist>
           PLIST
 
-      - name: Create DMG
+      - name: Build .pkg
         run: |
-          # Create a DMG containing both apps
-          mkdir -p dist/dmg-staging
-          cp -R "dist/FalconPulsar Installer.app" dist/dmg-staging/
-          cp -R "dist/FalconPulsar Menu Bar.app" dist/dmg-staging/
-          hdiutil create -volname "FalconPulsar" \
-            -srcfolder dist/dmg-staging \
-            -ov -format UDZO \
-            "dist/FalconPulsar-Setup.dmg"
-          ls -lh dist/FalconPulsar-Setup.dmg
+          mkdir -p dist
+          pkgbuild \
+            --root dist/pkg-root \
+            --identifier com.falconpulsar.installer.pkg \
+            --version 0.1.0 \
+            --install-location / \
+            dist/FalconPulsar-Setup.pkg
+          ls -lh dist/FalconPulsar-Setup.pkg
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v5
         with:
           name: FalconPulsar-macOS
-          path: dist/FalconPulsar-Setup.dmg
+          path: dist/FalconPulsar-Setup.pkg
           retention-days: 30
           if-no-files-found: error
