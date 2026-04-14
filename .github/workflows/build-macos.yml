@@ -85,11 +85,28 @@ jobs:
           </dict></plist>
           PLIST
 
+      - name: Ad-hoc codesign apps
+        run: |
+          codesign --force --deep --sign - "dist/pkg-root/Applications/FalconPulsar Installer.app"
+          codesign --force --deep --sign - "dist/pkg-root/Applications/FalconPulsar Menu Bar.app"
+
+      - name: Create postinstall scripts
+        run: |
+          mkdir -p dist/scripts
+          cat > dist/scripts/postinstall <<'SH'
+          #!/bin/bash
+          /usr/bin/xattr -dr com.apple.quarantine "/Applications/FalconPulsar Installer.app" 2>/dev/null || true
+          /usr/bin/xattr -dr com.apple.quarantine "/Applications/FalconPulsar Menu Bar.app" 2>/dev/null || true
+          exit 0
+          SH
+          chmod +x dist/scripts/postinstall
+
       - name: Build .pkg
         run: |
           mkdir -p dist
           pkgbuild \
             --root dist/pkg-root \
+            --scripts dist/scripts \
             --identifier com.falconpulsar.installer.pkg \
             --version 0.1.0 \
             --install-location / \

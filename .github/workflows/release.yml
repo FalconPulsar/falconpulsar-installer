@@ -157,12 +157,31 @@ jobs:
           </dict></plist>
           PLIST
 
+      - name: Ad-hoc codesign apps
+        run: |
+          codesign --force --deep --sign - "dist/pkg-root/Applications/FalconPulsar Installer.app"
+          codesign --force --deep --sign - "dist/pkg-root/Applications/FalconPulsar Menu Bar.app"
+          codesign -dv "dist/pkg-root/Applications/FalconPulsar Installer.app" || true
+
+      - name: Create postinstall scripts
+        run: |
+          mkdir -p dist/scripts
+          cat > dist/scripts/postinstall <<'SH'
+          #!/bin/bash
+          # Strip macOS quarantine so Gatekeeper doesn't block first launch.
+          /usr/bin/xattr -dr com.apple.quarantine "/Applications/FalconPulsar Installer.app" 2>/dev/null || true
+          /usr/bin/xattr -dr com.apple.quarantine "/Applications/FalconPulsar Menu Bar.app" 2>/dev/null || true
+          exit 0
+          SH
+          chmod +x dist/scripts/postinstall
+
       - name: Build .pkg
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           mkdir -p dist
           pkgbuild \
             --root dist/pkg-root \
+            --scripts dist/scripts \
             --identifier com.falconpulsar.installer.pkg \
             --version "${VERSION}" \
             --install-location / \
