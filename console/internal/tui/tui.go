@@ -4,6 +4,8 @@ package tui
 import (
 	"context"
 	"fmt"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"time"
 
@@ -17,79 +19,139 @@ import (
 	"github.com/rivo/tview"
 )
 
-type App struct {
-	tv         *tview.Application
-	pages      *tview.Pages
-	layout     *tview.Flex
-	menuBar    *tview.TextView
-	services   *tview.Table
-	details    *tview.TextView
-	fkeys      *tview.TextView
-	status     actions.Status
-	stopPoll   chan struct{}
+// ─── Menu structure ─────────────────────────────────────────────────────────
+
+type menuItem struct {
+	label  string
+	accel  string // displayed on the right, e.g. "F2"
+	action func(*App)
+	sep    bool
 }
 
-// Run launches the TUI event loop.
+type menuSection struct {
+	title string
+	items []menuItem
+}
+
+func buildSections() []menuSection {
+	return []menuSection{
+		{"Stack", []menuItem{
+			{label: "Start", accel: "F2", action: func(a *App) { a.runAction("Starting stack…", "start") }},
+			{label: "Stop", accel: "F3", action: func(a *App) { a.runAction("Stopping stack…", "stop") }},
+			{label: "Restart", accel: "F4", action: func(a *App) { a.runAction("Restarting stack…", "restart") }},
+			{sep: true},
+			{label: "Refresh status", action: func(a *App) {
+				a.status = actions.Poll(context.Background())
+				a.refreshServices()
+			}},
+		}},
+		{"Logs", []menuItem{
+			{label: "View all logs", accel: "F5", action: func(a *App) { a.showLogsPickerExec("") }},
+			{label: "Core only", action: func(a *App) { a.showLogsPickerExec("core") }},
+			{label: "Web UI only", action: func(a *App) { a.showLogsPickerExec("ui") }},
+			{label: "AI Gateway only", action: func(a *App) { a.showLogsPickerExec("ai-gateway") }},
+			{sep: true},
+			{label: "Open install log", action: func(a *App) { a.openInstallLog() }},
+		}},
+		{"Config", []menuItem{
+			{label: "Edit core (falconpulsar.toml)", action: func(a *App) {
+				a.editConfig(filepath.Join("data", "falconpulsar.toml"))
+			}},
+			{label: "Edit AI Gateway (gateway.yaml)", action: func(a *App) {
+				a.editConfig("gateway.yaml")
+			}},
+			{label: "Edit Docker Compose (compose.yml)", action: func(a *App) {
+				a.editConfig("compose.yml")
+			}},
+			{sep: true},
+			{label: "Open data folder", action: func(a *App) {
+				_ = actions.OpenFolder(filepath.Join(actions.HomeDir(), "data"))
+			}},
+			{label: "Open stack folder", action: func(a *App) {
+				_ = actions.OpenFolder(actions.HomeDir())
+			}},
+		}},
+		{"Backup", []menuItem{
+			{label: "Export configuration…", accel: "F7", action: func(a *App) { a.doExport() }},
+			{label: "Import configuration…", accel: "F8", action: func(a *App) { a.doImport() }},
+		}},
+		{"Help", []menuItem{
+			{label: "Keyboard shortcuts", accel: "F1", action: func(a *App) { a.showHelp() }},
+			{label: "About FalconPulsar", action: func(a *App) { a.showAbout() }},
+			{label: "Documentation", action: func(a *App) {
+				_ = actions.OpenURL("https://falconpulsar.com/docs")
+			}},
+			{label: "Request a feature", action: func(a *App) {
+				_ = actions.OpenURL("https://falconpulsar.com/roadmap#request-form")
+			}},
+			{sep: true},
+			{label: "Uninstall FalconPulsar…", action: func(a *App) { a.confirmUninstall() }},
+			{label: "Quit", accel: "F10", action: func(a *App) { a.tv.Stop() }},
+		}},
+	}
+}
+
+// ─── App ────────────────────────────────────────────────────────────────────
+
+type App struct {
+	tv       *tview.Application
+	pages    *tview.Pages
+	menuBar  *tview.TextView
+	services *tview.Table
+	details  *tview.TextView
+	fkeys    *tview.TextView
+	status   actions.Status
+	sections []menuSection
+	stopPoll chan struct{}
+}
+
 func Run() error {
-	app := &App{
+	a := &App{
 		tv:       tview.NewApplication(),
+		sections: buildSections(),
 		stopPoll: make(chan struct{}),
 	}
-	app.build()
-	app.startPolling()
-	defer close(app.stopPoll)
-	return app.tv.Run()
+	a.build()
+	a.startPolling()
+	defer close(a.stopPoll)
+	return a.tv.Run()
 }
 
 func (a *App) build() {
 	a.menuBar = tview.NewTextView().
 		SetDynamicColors(true).
-		SetRegions(true).
 		SetWrap(false)
-	a.menuBar.SetText(renderMenuBar(-1))
 	a.menuBar.SetBackgroundColor(theme.Surface)
+	a.menuBar.SetText(a.renderMenuBar(-1))
 
-	a.services = tview.NewTable().
-		SetSelectable(true, false).
-		SetSeparator(' ').
-		SetBorders(false)
-	a.services.SetBorder(true).
-		SetTitle(" Services ").
-		SetTitleColor(theme.Accent).
-		SetBorderColor(theme.Border).
-		SetBackgroundColor(theme.Panel)
-	a.services.SetSelectedStyle(tcell.StyleDefault.Background(theme.SelectedBg).Foreground(theme.SelectedFg))
-	a.services.SetSelectionChangedFunc(func(row, col int) {
-		a.refreshDetails(row)
-	})
+	a.services = tview.NewTable().SetSelectable(true, false).SetSeparator(' ')
+	a.services.SetBorder(true).SetTitle(" Services ").
+		SetTitleColor(theme.Accent).SetBorderColor(theme.Border)
+	a.services.SetBackgroundColor(theme.Panel)
+	a.services.SetSelectedStyle(tcell.StyleDefault.
+		Background(theme.SelectedBg).Foreground(theme.SelectedFg))
+	a.services.SetSelectionChangedFunc(func(row, col int) { a.refreshDetails(row) })
 
-	a.details = tview.NewTextView().
-		SetDynamicColors(true).
-		SetWrap(true)
-	a.details.SetBorder(true).
-		SetTitle(" Details ").
-		SetTitleColor(theme.Accent).
-		SetBorderColor(theme.Border).
-		SetBackgroundColor(theme.Panel)
+	a.details = tview.NewTextView().SetDynamicColors(true).SetWrap(true)
+	a.details.SetBorder(true).SetTitle(" Details ").
+		SetTitleColor(theme.Accent).SetBorderColor(theme.Border)
+	a.details.SetBackgroundColor(theme.Panel)
 
-	a.fkeys = tview.NewTextView().
-		SetDynamicColors(true).
-		SetWrap(false)
-	a.fkeys.SetText(fkeyBar()).
-		SetBackgroundColor(theme.Surface)
+	a.fkeys = tview.NewTextView().SetDynamicColors(true).SetWrap(false)
+	a.fkeys.SetText(fkeyBar())
+	a.fkeys.SetBackgroundColor(theme.Surface)
 
 	content := tview.NewFlex().SetDirection(tview.FlexColumn).
 		AddItem(a.services, 0, 1, true).
 		AddItem(a.details, 0, 1, false)
 
-	a.layout = tview.NewFlex().SetDirection(tview.FlexRow).
+	layout := tview.NewFlex().SetDirection(tview.FlexRow).
 		AddItem(a.menuBar, 1, 0, false).
 		AddItem(content, 0, 1, true).
 		AddItem(a.fkeys, 1, 0, false)
-	a.layout.SetBackgroundColor(theme.Background)
+	layout.SetBackgroundColor(theme.Background)
 
-	a.pages = tview.NewPages().
-		AddPage("main", a.layout, true, true)
+	a.pages = tview.NewPages().AddPage("main", layout, true, true)
 
 	a.tv.SetRoot(a.pages, true).EnableMouse(false)
 	a.tv.SetInputCapture(a.handleKey)
@@ -97,26 +159,26 @@ func (a *App) build() {
 	a.refreshServices()
 }
 
-// ── Layout helpers ──────────────────────────────────────────────────────────
+// ─── Rendering ──────────────────────────────────────────────────────────────
 
-func renderMenuBar(active int) string {
-	labels := []string{"Stack", "Logs", "Config", "Backup", "Help"}
+func (a *App) renderMenuBar(active int) string {
 	out := " "
-	for i, l := range labels {
+	for i, s := range a.sections {
 		if i == active {
-			out += fmt.Sprintf("[#0A0A19:#00AAFF] %s [-:-:-] ", l)
+			out += fmt.Sprintf("[#0A0A19:#00AAFF] %s [-:-:-] ", s.title)
 		} else {
-			out += fmt.Sprintf("[#E5E7EB] %s [-] ", l)
+			out += fmt.Sprintf("[#E5E7EB] %s [-] ", s.title)
 		}
 	}
+	out += "  [#6B7280](F9: menu  F10: quit)[-]"
 	return out
 }
 
 func fkeyBar() string {
 	keys := []struct{ k, l string }{
-		{"F1", "Help"}, {"F2", "Start"}, {"F3", "Stop"},
-		{"F4", "Restart"}, {"F5", "Logs"}, {"F6", "Edit"},
-		{"F7", "Export"}, {"F8", "Import"}, {"F10", "Quit"},
+		{"F1", "Help"}, {"F2", "Start"}, {"F3", "Stop"}, {"F4", "Restart"},
+		{"F5", "Logs"}, {"F7", "Export"}, {"F8", "Import"},
+		{"F9", "Menu"}, {"F10", "Quit"},
 	}
 	out := ""
 	for _, k := range keys {
@@ -125,19 +187,20 @@ func fkeyBar() string {
 	return out
 }
 
-// ── Data refresh ────────────────────────────────────────────────────────────
+// ─── Polling ────────────────────────────────────────────────────────────────
 
 func (a *App) startPolling() {
 	go func() {
-		ticker := time.NewTicker(3 * time.Second)
-		defer ticker.Stop()
+		t := time.NewTicker(3 * time.Second)
+		defer t.Stop()
 		for {
 			select {
 			case <-a.stopPoll:
 				return
-			case <-ticker.C:
-				a.status = actions.Poll(context.Background())
+			case <-t.C:
+				st := actions.Poll(context.Background())
 				a.tv.QueueUpdateDraw(func() {
+					a.status = st
 					a.refreshServices()
 				})
 			}
@@ -180,7 +243,7 @@ func (a *App) refreshServices() {
 }
 
 func (a *App) refreshDetails(row ...int) {
-	var r int
+	r := 0
 	if len(row) > 0 {
 		r = row[0]
 	}
@@ -188,8 +251,6 @@ func (a *App) refreshDetails(row ...int) {
 	if r < 0 || r >= len(labels) {
 		r = 0
 	}
-	title := labels[r]
-	agg := a.status.Aggregate()
 	s := fmt.Sprintf(
 		"[::b]%s[-:-:-]\n\n"+
 			"Stack aggregate: [#00AAFF]%s[-]\n\n"+
@@ -198,13 +259,10 @@ func (a *App) refreshDetails(row ...int) {
 			"AI Gateway   %s\n"+
 			"REST API     %s\n\n"+
 			"[#9CA3AF]Version %s — %s[-]",
-		title, agg,
-		stateLabel(a.status.Core),
-		stateLabel(a.status.UI),
-		stateLabel(a.status.Gateway),
-		stateLabel(a.status.APIHealthy),
-		cli.Version,
-		actions.HomeDir(),
+		labels[r], a.status.Aggregate(),
+		stateLabel(a.status.Core), stateLabel(a.status.UI),
+		stateLabel(a.status.Gateway), stateLabel(a.status.APIHealthy),
+		cli.Version, actions.HomeDir(),
 	)
 	a.details.SetText(s)
 }
@@ -216,7 +274,7 @@ func stateLabel(on bool) string {
 	return "[#EF4444]stopped[-]"
 }
 
-// ── Key handling ────────────────────────────────────────────────────────────
+// ─── Key handling ───────────────────────────────────────────────────────────
 
 func (a *App) handleKey(ev *tcell.EventKey) *tcell.EventKey {
 	switch ev.Key() {
@@ -233,10 +291,7 @@ func (a *App) handleKey(ev *tcell.EventKey) *tcell.EventKey {
 		a.runAction("Restarting stack…", "restart")
 		return nil
 	case tcell.KeyF5:
-		a.showLogsPicker()
-		return nil
-	case tcell.KeyF6:
-		a.showConfigPicker()
+		a.showLogsPickerExec("")
 		return nil
 	case tcell.KeyF7:
 		a.doExport()
@@ -244,10 +299,10 @@ func (a *App) handleKey(ev *tcell.EventKey) *tcell.EventKey {
 	case tcell.KeyF8:
 		a.doImport()
 		return nil
-	case tcell.KeyF10:
-		a.tv.Stop()
+	case tcell.KeyF9:
+		a.openMenu(0)
 		return nil
-	case tcell.KeyCtrlC:
+	case tcell.KeyF10, tcell.KeyCtrlC:
 		a.tv.Stop()
 		return nil
 	}
@@ -259,7 +314,104 @@ func (a *App) handleKey(ev *tcell.EventKey) *tcell.EventKey {
 	return ev
 }
 
-// ── Actions ─────────────────────────────────────────────────────────────────
+// ─── Pull-down menu (F9) ────────────────────────────────────────────────────
+
+func (a *App) openMenu(index int) {
+	if index < 0 {
+		index = len(a.sections) - 1
+	}
+	if index >= len(a.sections) {
+		index = 0
+	}
+	a.menuBar.SetText(a.renderMenuBar(index))
+
+	section := a.sections[index]
+	list := tview.NewList().ShowSecondaryText(false)
+	// Use explicit Style (fg+bg) for every row so tview doesn't leave
+	// each item's background at the terminal default (which renders as
+	// gray). Selected row uses its own style via SetSelectedFocusStyle.
+	itemStyle := tcell.StyleDefault.
+		Foreground(theme.Text).
+		Background(theme.MenuBg)
+	selectedStyle := tcell.StyleDefault.
+		Foreground(theme.SelectedFg).
+		Background(theme.SelectedBg)
+	list.SetMainTextStyle(itemStyle)
+	list.SetSecondaryTextStyle(itemStyle)
+	list.SetShortcutStyle(itemStyle)
+	list.SetSelectedStyle(selectedStyle)
+	list.SetBackgroundColor(theme.MenuBg)
+	list.SetBorder(true).
+		SetTitle(fmt.Sprintf(" %s ", section.title)).
+		SetTitleColor(theme.Accent).
+		SetBorderColor(theme.BorderFocus)
+
+	// Every row is now a plain label — no right-aligned accelerator
+	// column (F-keys are in the bottom bar only).
+	for _, item := range section.items {
+		if item.sep {
+			// Plain dashes as visual separator (List doesn't render color
+			// tags in items without extra setup).
+			list.AddItem("──────────────────────────", "", 0, nil)
+			continue
+		}
+		act := item.action
+		list.AddItem(item.label, "", 0, func() {
+			a.pages.RemovePage("menu")
+			a.menuBar.SetText(a.renderMenuBar(-1))
+			if act != nil {
+				act(a)
+			}
+		})
+	}
+	// Navigation between sections and close
+	list.SetInputCapture(func(ev *tcell.EventKey) *tcell.EventKey {
+		switch ev.Key() {
+		case tcell.KeyEscape:
+			a.pages.RemovePage("menu")
+			a.menuBar.SetText(a.renderMenuBar(-1))
+			return nil
+		case tcell.KeyLeft:
+			a.pages.RemovePage("menu")
+			a.openMenu(index - 1)
+			return nil
+		case tcell.KeyRight:
+			a.pages.RemovePage("menu")
+			a.openMenu(index + 1)
+			return nil
+		}
+		return ev
+	})
+
+	// Position under the selected top-menu label. Use a Grid so the
+	// dropdown sits exactly where we want and the area around it is
+	// transparent (the main page keeps rendering behind without color
+	// bleed into the dropdown).
+	x := menuOffsetFor(a.sections, index)
+	width := 50
+	height := len(section.items) + 2
+	grid := tview.NewGrid().
+		SetRows(1, height, 0).
+		SetColumns(x, width, 0).
+		AddItem(list, 1, 1, 1, 1, 0, 0, true)
+	grid.SetBackgroundColor(tcell.ColorDefault) // let main page show through
+	a.pages.AddPage("menu", grid, true, true)
+}
+
+// menuOffsetFor returns the rough horizontal column where the given top-menu
+// label starts (so the dropdown aligns under it). Heuristic — good enough.
+func menuOffsetFor(sections []menuSection, index int) int {
+	x := 1
+	for i, s := range sections {
+		if i == index {
+			return x
+		}
+		x += len(s.title) + 2
+	}
+	return x
+}
+
+// ─── Actions ────────────────────────────────────────────────────────────────
 
 func (a *App) runAction(title string, kind string) {
 	a.showMessage(title, "Please wait…", false)
@@ -285,49 +437,153 @@ func (a *App) runAction(title string, kind string) {
 	}()
 }
 
-func (a *App) showLogsPicker() {
-	services := []string{"All", "core", "ui", "ai-gateway"}
-	list := tview.NewList().ShowSecondaryText(false)
-	for _, s := range services {
-		s := s
-		list.AddItem(s, "", 0, func() {
-			a.pages.RemovePage("modal")
-			a.tv.Suspend(func() {
-				if s == "All" {
-					_ = actions.Compose(context.Background(), nil, nil, "logs", "-f", "--tail", "100")
-				} else {
-					_ = actions.Compose(context.Background(), nil, nil, "logs", "-f", "--tail", "100", s)
-				}
-			})
-		})
-	}
-	list.AddItem("Cancel", "", 0, func() { a.pages.RemovePage("modal") })
-	a.pushModal("View Logs", list, 40, 8)
+func (a *App) showLogsPickerExec(service string) {
+	a.tv.Suspend(func() {
+		args := []string{"logs", "-f", "--tail", "200"}
+		if service != "" {
+			args = append(args, service)
+		}
+		_ = actions.Compose(context.Background(), nil, nil, args...)
+	})
 }
 
-func (a *App) showConfigPicker() {
-	list := tview.NewList().ShowSecondaryText(false)
-	opts := []struct{ label, rel string }{
-		{"Core (falconpulsar.toml)", filepath.Join("data", "falconpulsar.toml")},
-		{"AI Gateway (gateway.yaml)", "gateway.yaml"},
-		{"Docker Compose (compose.yml)", "compose.yml"},
-	}
-	for _, o := range opts {
-		o := o
-		list.AddItem(o.label, "", 0, func() {
+func (a *App) editConfig(rel string) {
+	a.openEditor(filepath.Join(actions.HomeDir(), rel))
+}
+
+func (a *App) openInstallLog() {
+	a.openViewer("/tmp/falconpulsar-install.log")
+}
+
+// confirmUninstall runs the same multi-step flow as the macOS / Windows
+// trays: pick "Keep data" or "Remove everything", then (for the
+// destructive option) require typing DELETE, then execute uninstall.sh
+// with the matching flag.
+func (a *App) confirmUninstall() {
+	list := tview.NewList().ShowSecondaryText(true)
+	list.SetMainTextStyle(tcell.StyleDefault.
+		Foreground(theme.Text).Background(theme.MenuBg))
+	list.SetSecondaryTextStyle(tcell.StyleDefault.
+		Foreground(theme.TextDim).Background(theme.MenuBg))
+	list.SetSelectedStyle(tcell.StyleDefault.
+		Foreground(theme.SelectedFg).Background(theme.SelectedBg))
+	list.SetBackgroundColor(theme.MenuBg)
+	list.SetBorder(true).
+		SetTitle(" Uninstall FalconPulsar ").
+		SetTitleColor(theme.Accent).
+		SetBorderColor(theme.BorderFocus)
+
+	list.AddItem("Keep my data",
+		"Remove the application; keep ~/falconpulsar/data so you can reinstall later.",
+		0, func() {
 			a.pages.RemovePage("modal")
-			a.tv.Suspend(func() {
-				_ = actions.EditFile(filepath.Join(actions.HomeDir(), o.rel))
-			})
+			a.runUninstall(false)
 		})
-	}
+	list.AddItem("Remove everything (DELETE ALL DATA)",
+		"Stops the stack, removes ~/falconpulsar completely — irreversible.",
+		0, func() {
+			a.pages.RemovePage("modal")
+			a.confirmPurge()
+		})
 	list.AddItem("Cancel", "", 0, func() { a.pages.RemovePage("modal") })
-	a.pushModal("Edit Configuration", list, 50, 8)
+
+	a.pushModal("Uninstall FalconPulsar", list, 72, 9)
+}
+
+// confirmPurge demands the word DELETE before wiping everything.
+func (a *App) confirmPurge() {
+	form := tview.NewForm().
+		AddInputField(`Type "DELETE" to confirm (case-sensitive)`, "", 20, nil, nil)
+	form.SetFieldBackgroundColor(theme.Surface).
+		SetButtonBackgroundColor(theme.AccentDim).
+		SetLabelColor(theme.Text)
+	form.SetBackgroundColor(theme.Panel)
+	form.AddButton("Cancel", func() { a.pages.RemovePage("modal") })
+	form.AddButton("Delete everything", func() {
+		typed := form.GetFormItem(0).(*tview.InputField).GetText()
+		a.pages.RemovePage("modal")
+		if typed != "DELETE" {
+			a.showMessage("Uninstall cancelled",
+				"The confirmation word did not match. Nothing was removed.", true)
+			return
+		}
+		a.runUninstall(true)
+	})
+	a.pushModal("Confirm total removal", form, 64, 7)
+	a.tv.SetFocus(form)
+}
+
+func (a *App) runUninstall(purge bool) {
+	// Find uninstall.sh (installer drops it into ~/falconpulsar).
+	home := actions.HomeDir()
+	script := filepath.Join(home, "uninstall.sh")
+	if _, err := os.Stat(script); err != nil {
+		a.showMessage("Uninstaller not found",
+			"Expected at "+script+". Re-run the installer to get it back.",
+			true)
+		return
+	}
+
+	// Copy the script to /tmp BEFORE running it — when the script deletes
+	// its parent directory, bash won't lose the file it's reading from.
+	// Also copies uninstall.sh's siblings (common.sh library loads).
+	tmp := fmt.Sprintf("/tmp/fp-uninstall-%d.sh", os.Getpid())
+	if data, err := os.ReadFile(script); err == nil {
+		_ = os.WriteFile(tmp, data, 0700)
+	}
+
+	flag := "--keep"
+	if purge {
+		flag = "--purge"
+	}
+	a.showMessage("Uninstalling…",
+		"Running uninstall.sh "+flag+" --yes\nPlease wait — this may take up to a minute.",
+		false)
+
+	go func() {
+		// Run the /tmp copy so bash doesn't die when $FP_HOME is deleted.
+		runPath := script
+		if _, err := os.Stat(tmp); err == nil {
+			runPath = tmp
+		}
+		cmd := exec.Command("bash", runPath, flag, "--yes")
+		cmd.Dir = "/" // cwd outside $FP_HOME
+		out, err := cmd.CombinedOutput()
+		_ = os.Remove(tmp) // best-effort cleanup
+		a.tv.QueueUpdateDraw(func() {
+			a.pages.RemovePage("modal")
+			if err != nil {
+				a.showMessage("Uninstall failed",
+					fmt.Sprintf("%v\n\n%s", err, truncate(string(out), 1500)),
+					true)
+				return
+			}
+			finalMsg := "FalconPulsar has been removed. Your data at ~/falconpulsar/data is preserved."
+			if purge {
+				finalMsg = "FalconPulsar has been completely removed, including your data directory."
+			}
+			a.showMessage("Uninstall complete",
+				finalMsg+"\n\nThe console will now exit.",
+				true)
+			// Give the user a moment to read, then terminate.
+			go func() {
+				time.Sleep(3 * time.Second)
+				a.tv.QueueUpdateDraw(func() { a.tv.Stop() })
+			}()
+		})
+	}()
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "\n…(truncated)"
 }
 
 func (a *App) doExport() {
 	a.askAdminThen("Export Configuration", func(cli *api.Client, user, pass string) {
-		a.askPathThen("Save as…", "falconpulsar-config.fpconfig", func(path string) {
+		a.askPathThen("Save backup as…", "falconpulsar-config.fpconfig", func(path string) {
 			a.showMessage("Exporting…", "Please wait", false)
 			go func() {
 				err := configbackup.Export(context.Background(), path, cli, user, pass)
@@ -345,7 +601,7 @@ func (a *App) doExport() {
 }
 
 func (a *App) doImport() {
-	a.askPathThen("Import from file…", "", func(path string) {
+	a.askPathThen("Import backup file…", "", func(path string) {
 		a.askAdminThen("Import Configuration", func(cli *api.Client, user, pass string) {
 			a.showMessage("Importing…", "Please wait", false)
 			go func() {
@@ -364,7 +620,7 @@ func (a *App) doImport() {
 	})
 }
 
-// ── Modal helpers ───────────────────────────────────────────────────────────
+// ─── Dialogs ────────────────────────────────────────────────────────────────
 
 func (a *App) showMessage(title, body string, dismissable bool) {
 	m := tview.NewModal().
@@ -381,7 +637,8 @@ func (a *App) pushModal(title string, content tview.Primitive, w, h int) {
 	frame := tview.NewFrame(content).
 		SetBorders(1, 1, 1, 1, 2, 2).
 		AddText(title, true, tview.AlignCenter, theme.Accent)
-	frame.SetBackgroundColor(theme.Panel).SetBorder(true).SetBorderColor(theme.BorderFocus)
+	frame.SetBackgroundColor(theme.Panel)
+	frame.SetBorder(true).SetBorderColor(theme.BorderFocus)
 	flex := tview.NewFlex().
 		AddItem(nil, 0, 1, false).
 		AddItem(tview.NewFlex().SetDirection(tview.FlexRow).
@@ -425,6 +682,7 @@ func (a *App) askAdminThen(purpose string, then func(*api.Client, string, string
 	})
 	form.AddButton("Cancel", func() { a.pages.RemovePage("modal") })
 	a.pushModal(purpose, form, 52, 8)
+	a.tv.SetFocus(form)
 }
 
 func (a *App) askPathThen(title, suggestion string, then func(string)) {
@@ -443,36 +701,70 @@ func (a *App) askPathThen(title, suggestion string, then func(string)) {
 	})
 	form.AddButton("Cancel", func() { a.pages.RemovePage("modal") })
 	a.pushModal(title, form, 72, 5)
+	a.tv.SetFocus(form)
 }
+
+// ─── Help & About (left-aligned, not Modal) ────────────────────────────────
 
 func (a *App) showHelp() {
-	text := `[::b]FalconPulsar Console — Keyboard Shortcuts[-:-:-]
-
-  F1   Help
-  F2   Start stack
-  F3   Stop stack
-  F4   Restart stack
-  F5   View logs
-  F6   Edit config file
-  F7   Export configuration (admin)
-  F8   Import configuration (admin)
-  F10  Quit
-  Q    Quit
-  ↑/↓  Navigate services
-
-For automation use plain subcommands:
-  fp status --json
-  fp start | stop | restart
-  fp logs [service]
-  fp config export <file>
-  fp config import <file>
-
-https://falconpulsar.com/docs`
-	m := tview.NewModal().
-		SetText(text).
-		AddButtons([]string{"OK"}).
-		SetDoneFunc(func(int, string) { a.pages.RemovePage("modal") }).
-		SetBackgroundColor(theme.Panel)
-	a.pages.AddPage("modal", m, true, true)
+	tv := tview.NewTextView().SetDynamicColors(true).SetWrap(false)
+	tv.SetBackgroundColor(theme.Panel)
+	tv.SetText(
+		"[::b]Keyboard Shortcuts[-:-:-]\n\n" +
+			"  [#00AAFF]F1[-]    Help\n" +
+			"  [#00AAFF]F2[-]    Start stack\n" +
+			"  [#00AAFF]F3[-]    Stop stack\n" +
+			"  [#00AAFF]F4[-]    Restart stack\n" +
+			"  [#00AAFF]F5[-]    View logs (all services)\n" +
+			"  [#00AAFF]F6[-]    Edit core config\n" +
+			"  [#00AAFF]F7[-]    Export configuration (admin)\n" +
+			"  [#00AAFF]F8[-]    Import configuration (admin)\n" +
+			"  [#00AAFF]F9[-]    Open menu bar\n" +
+			"  [#00AAFF]F10[-]   Quit\n" +
+			"  [#00AAFF]Q[-]     Quit\n" +
+			"  [#00AAFF]↑/↓[-]   Navigate services\n\n" +
+			"[::b]CLI mode (for scripts)[-:-:-]\n\n" +
+			"  fp status [--json]\n" +
+			"  fp start | stop | restart\n" +
+			"  fp logs [service]\n" +
+			"  fp open\n" +
+			"  fp config edit [core|gateway|compose]\n" +
+			"  fp config export <file>\n" +
+			"  fp config import <file>\n\n" +
+			"  https://falconpulsar.com/docs\n\n" +
+			"[#6B7280]Press Esc or Enter to close.[-]")
+	tv.SetInputCapture(func(ev *tcell.EventKey) *tcell.EventKey {
+		if ev.Key() == tcell.KeyEscape || ev.Key() == tcell.KeyEnter {
+			a.pages.RemovePage("modal")
+			return nil
+		}
+		return ev
+	})
+	a.pushModal("Keyboard Shortcuts", tv, 64, 24)
 }
 
+func (a *App) showAbout() {
+	tv := tview.NewTextView().SetDynamicColors(true).SetWrap(true)
+	tv.SetBackgroundColor(theme.Panel)
+	tv.SetText(fmt.Sprintf(
+		"[::b]FalconPulsar[-:-:-]\n\n"+
+			"Version:     %s\n"+
+			"Stack dir:   %s\n"+
+			"Web UI:      http://localhost:8080\n"+
+			"REST API:    http://localhost:7433\n"+
+			"AI Gateway:  http://localhost:7436\n\n"+
+			"Website:     https://falconpulsar.com\n"+
+			"Docs:        https://falconpulsar.com/docs\n"+
+			"Roadmap:     https://falconpulsar.com/roadmap\n\n"+
+			"(c) 2026 FalconPulsar Contributors — Apache 2.0\n\n"+
+			"[#6B7280]Press Esc or Enter to close.[-]",
+		cli.Version, actions.HomeDir()))
+	tv.SetInputCapture(func(ev *tcell.EventKey) *tcell.EventKey {
+		if ev.Key() == tcell.KeyEscape || ev.Key() == tcell.KeyEnter {
+			a.pages.RemovePage("modal")
+			return nil
+		}
+		return ev
+	})
+	a.pushModal("About FalconPulsar", tv, 60, 14)
+}

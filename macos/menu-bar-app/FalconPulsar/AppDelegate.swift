@@ -836,11 +836,28 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             if let scriptPath = script {
                 self?.shell("bash '\(scriptPath)' \(purgeFlag) --yes 2>&1")
             } else {
-                // Inline uninstall if script not found
+                // Inline uninstall if script not found. On purge, use
+                // `compose down --volumes` and prune any orphan volumes +
+                // images so NOTHING is left behind.
+                let composeDown = purge
+                    ? "cd ~/falconpulsar 2>/dev/null && docker compose down --remove-orphans --volumes 2>/dev/null || true"
+                    : "cd ~/falconpulsar 2>/dev/null && docker compose down --remove-orphans 2>/dev/null || true"
+                let removeImages = """
+                    IMAGES="$(cd ~/falconpulsar 2>/dev/null && docker compose config --images 2>/dev/null | sort -u)"
+                    if [ -n "$IMAGES" ]; then echo "$IMAGES" | xargs docker rmi -f 2>/dev/null || true; fi
+                    docker images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | grep -E '^falconpulsar/' | xargs -r docker rmi -f 2>/dev/null || true
+                    """
+                let pruneVolumes = purge
+                    ? "docker volume ls --format '{{.Name}}' 2>/dev/null | grep -E '^falconpulsar' | xargs -r docker volume rm -f 2>/dev/null || true"
+                    : ""
+                let removeHome = purge
+                    ? "rm -rf ~/falconpulsar"
+                    : "rm -f ~/falconpulsar/compose.yml ~/falconpulsar/.env"
                 self?.shell("""
-                    cd ~/falconpulsar 2>/dev/null && docker compose down --remove-orphans 2>/dev/null || true
-                    docker rmi falconpulsar/core falconpulsar/ui falconpulsar/ai-gateway 2>/dev/null || true
-                    \(purge ? "rm -rf ~/falconpulsar" : "rm -f ~/falconpulsar/compose.yml ~/falconpulsar/.env")
+                    \(composeDown)
+                    \(removeImages)
+                    \(pruneVolumes)
+                    \(removeHome)
                     rm -rf /Applications/FalconPulsar\\ Menu\\ Bar.app 2>/dev/null || true
                     rm -rf ~/Applications/FalconPulsar\\ Menu\\ Bar.app 2>/dev/null || true
                     launchctl bootout gui/$(id -u)/com.falconpulsar.menubar 2>/dev/null || true

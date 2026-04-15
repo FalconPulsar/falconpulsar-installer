@@ -52,38 +52,58 @@ if ($Purge) {
     Write-Info 'Mode: keep data (containers removed, database preserved)'
 }
 
-# Step 1: Stop and remove containers
+# Step 1: Stop and remove containers (+ volumes if purging)
 Write-Info 'Stopping FalconPulsar containers...'
-$stopScript = @'
+$purgeFlag = if ($Purge) { '1' } else { '0' }
+$stopScript = @"
 set +e
+PURGE=$purgeFlag
 if command -v docker >/dev/null 2>&1; then
     if [ -f /home/falconpulsar/compose.yml ]; then
         cd /home/falconpulsar
-        sudo -u falconpulsar -H sg docker -c "docker compose down --remove-orphans" 2>/dev/null
-        echo "[info] Containers stopped and removed"
+        if [ "`$PURGE" = "1" ]; then
+            sudo -u falconpulsar -H sg docker -c "docker compose down --remove-orphans --volumes" 2>/dev/null
+            echo "[info] Containers and named volumes removed"
+        else
+            sudo -u falconpulsar -H sg docker -c "docker compose down --remove-orphans" 2>/dev/null
+            echo "[info] Containers stopped and removed (volumes preserved)"
+        fi
     else
         echo "[info] No compose.yml found -- skipping container stop"
     fi
 else
     echo "[info] Docker not available -- skipping container stop"
 fi
-'@
+"@
 $null = Invoke-WslBash -Distro $Distro -Script $stopScript -User root
 Write-Info 'Containers stopped'
 
-# Step 2: Remove Docker images + stack files
+# Step 2: Remove Docker images + stack files (+ orphan volumes on purge)
 Write-Info 'Removing Docker images and stack files...'
-$cleanScript = @'
+$cleanScript = @"
 set +e
+PURGE=$purgeFlag
 if command -v docker >/dev/null 2>&1; then
-    docker rmi falconpulsar/core falconpulsar/ui falconpulsar/ai-gateway 2>/dev/null
+    # Harvest images referenced by compose.yml first (catches custom registries)
+    if [ -f /home/falconpulsar/compose.yml ]; then
+        IMAGES="`$(cd /home/falconpulsar && sudo -u falconpulsar -H sg docker -c 'docker compose config --images' 2>/dev/null | sort -u)"
+        if [ -n "`$IMAGES" ]; then
+            echo "`$IMAGES" | xargs -r sudo -u falconpulsar -H sg docker -c 'docker rmi -f `"`$@`"' _ 2>/dev/null
+        fi
+    fi
+    # Fallback to known names (older installs)
+    sudo -u falconpulsar -H sg docker -c "docker images --format '{{.Repository}}:{{.Tag}}' | grep -E '^falconpulsar/' | xargs -r docker rmi -f" 2>/dev/null
+    # Orphan volumes on purge
+    if [ "`$PURGE" = "1" ]; then
+        sudo -u falconpulsar -H sg docker -c "docker volume ls --format '{{.Name}}' | grep -E '^falconpulsar' | xargs -r docker volume rm -f" 2>/dev/null
+    fi
     echo "[info] Docker images removed"
 fi
 rm -f /home/falconpulsar/compose.yml 2>/dev/null
 rm -f /home/falconpulsar/.env 2>/dev/null
 rm -rf /opt/falconpulsar-installer 2>/dev/null
 echo "[info] Stack files removed"
-'@
+"@
 $null = Invoke-WslBash -Distro $Distro -Script $cleanScript -User root
 Write-Info 'Stack files removed'
 

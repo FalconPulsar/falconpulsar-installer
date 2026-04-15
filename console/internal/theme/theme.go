@@ -15,9 +15,13 @@ var (
 	BorderFocus = tcell.NewRGBColor(0x00, 0xAA, 0xFF)
 	Accent      = tcell.NewRGBColor(0x00, 0xAA, 0xFF)
 	AccentDim   = tcell.NewRGBColor(0x00, 0x70, 0xB0)
-	Text        = tcell.NewRGBColor(0xE5, 0xE7, 0xEB)
-	TextDim     = tcell.NewRGBColor(0x9C, 0xA3, 0xAF)
+	Text        = tcell.NewRGBColor(0xFF, 0xFF, 0xFF) // pure white for menus / cards
+	TextDim     = tcell.NewRGBColor(0xB8, 0xBF, 0xCC)
 	TextMuted   = tcell.NewRGBColor(0x6B, 0x72, 0x80)
+	// Saturated blue so terminals can't quantize it into gray.
+	// This matches the FalconPulsar logo tone (darker sibling of Accent).
+	MenuBg      = tcell.NewRGBColor(0x08, 0x2F, 0x4F)
+	MenuItemBg  = tcell.NewRGBColor(0x08, 0x2F, 0x4F)
 	Running     = tcell.NewRGBColor(0x22, 0xC5, 0x5E)
 	Partial     = tcell.NewRGBColor(0xF5, 0x9E, 0x0B)
 	Stopped     = tcell.NewRGBColor(0xEF, 0x44, 0x44)

@@ -30,6 +30,11 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Setup Go (for fp console CLI bundled in the DMG)
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
       - name: Build DMG
         run: |
           chmod +x macos/build-dmg.sh

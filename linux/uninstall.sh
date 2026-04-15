@@ -26,8 +26,23 @@ set -o pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 
-# shellcheck source=../shared/lib/common.sh
-. "${REPO_ROOT}/shared/lib/common.sh"
+# Prefer the shared library; fall back to inline helpers if the script is
+# running standalone (e.g. copied to /tmp by `fp` before running, so the
+# stack-dir delete doesn't yank bash's own source file).
+if [ -f "${REPO_ROOT}/shared/lib/common.sh" ]; then
+    # shellcheck source=../shared/lib/common.sh
+    . "${REPO_ROOT}/shared/lib/common.sh"
+else
+    log_step()    { echo; echo "==> $1"; }
+    log_info()    { echo "[info] $1"; }
+    log_success() { echo "[ok] $1"; }
+    log_warn()    { echo "[warn] $1"; }
+    log_error()   { echo "[error] $1" >&2; }
+    die()         { log_error "$1"; exit 1; }
+    confirm()     { return 0; }
+    require_root() { [ "$(id -u)" -eq 0 ] || die "must run as root"; }
+    on_error()    { log_error "failed at line $1"; }
+fi
 
 trap 'on_error $LINENO' ERR
 
@@ -63,12 +78,51 @@ fi
 
 FP_UID="$(id -u "$FP_USER")"
 
+# Make sure our cwd is not inside $FP_HOME before rm happens — guards
+# against deleting-script-while-reading if bash was invoked from there.
+cd / 2>/dev/null
+
 log_step "stopping the stack"
 if [ -f "${FP_HOME}/compose.yml" ]; then
-    sudo -u "$FP_USER" -H sg docker -c "cd '${FP_HOME}' && docker compose down --remove-orphans" || \
-        log_warn "docker compose down failed — continuing anyway"
+    if [ "$FP_PURGE" -eq 1 ]; then
+        # --volumes removes named Docker volumes declared in compose.yml
+        sudo -u "$FP_USER" -H sg docker -c "cd '${FP_HOME}' && docker compose down --remove-orphans --volumes" || \
+            log_warn "docker compose down failed — continuing anyway"
+    else
+        sudo -u "$FP_USER" -H sg docker -c "cd '${FP_HOME}' && docker compose down --remove-orphans" || \
+            log_warn "docker compose down failed — continuing anyway"
+    fi
 else
     log_info "no compose.yml in ${FP_HOME}, skipping docker compose down"
+fi
+
+log_step "removing Docker images"
+# Wrap in `set +e` — failing image queries with errexit+pipefail abort the
+# whole script. GNU xargs does have -r but we use `while read` for parity.
+set +e
+if [ -f "${FP_HOME}/compose.yml" ]; then
+    IMAGES="$(sudo -u "$FP_USER" -H sg docker -c "cd '${FP_HOME}' && docker compose config --images" 2>/dev/null | sort -u)"
+    if [ -n "$IMAGES" ]; then
+        echo "$IMAGES" | while IFS= read -r img; do
+            [ -n "$img" ] && sudo -u "$FP_USER" -H sg docker -c "docker rmi -f '$img'" >/dev/null 2>&1
+        done
+    fi
+fi
+sudo -u "$FP_USER" -H sg docker -c \
+    "docker images --format '{{.Repository}}:{{.Tag}}'" 2>/dev/null | \
+    grep -E '^falconpulsar/' | while IFS= read -r img; do
+    [ -n "$img" ] && sudo -u "$FP_USER" -H sg docker -c "docker rmi -f '$img'" >/dev/null 2>&1
+done
+set -e
+
+if [ "$FP_PURGE" -eq 1 ]; then
+    log_step "pruning orphan volumes"
+    set +e
+    sudo -u "$FP_USER" -H sg docker -c "docker volume ls --format '{{.Name}}'" 2>/dev/null | \
+        grep -E '^falconpulsar' | while IFS= read -r vol; do
+        [ -n "$vol" ] && sudo -u "$FP_USER" -H sg docker -c "docker volume rm -f '$vol'" >/dev/null 2>&1
+    done
+    set -e
 fi
 
 log_step "removing systemd user unit (if any)"
@@ -83,8 +137,14 @@ else
     log_info "no systemd unit found"
 fi
 
+# IMPORTANT: rm -rf $FP_HOME is the LAST filesystem operation below.
+# This script may live at $FP_HOME/uninstall.sh; removing $FP_HOME while
+# bash is reading it line-by-line would cause premature EOF.
 if [ "$FP_PURGE" -eq 1 ] || confirm "delete ${FP_HOME} (including the time-series database)?" default-no; then
     log_step "removing ${FP_HOME}"
+    # Remove child directories first to shrink what the final rm has to do.
+    rm -rf "${FP_HOME}/bin" "${FP_HOME}/.docker" "${FP_HOME}/ai-gateway-data" 2>/dev/null || true
+    rm -f "${FP_HOME}/compose.yml" "${FP_HOME}/.env" 2>/dev/null || true
     rm -rf "${FP_HOME}"
     log_success "deleted ${FP_HOME}"
 

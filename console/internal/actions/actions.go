@@ -99,6 +99,11 @@ func containerRunning(ctx context.Context, name string) bool {
 	return err == nil && len(strings.TrimSpace(string(out))) > 0
 }
 
+// OpenFolder opens a local directory in the platform file manager.
+func OpenFolder(path string) error {
+	return OpenURL(path)
+}
+
 // OpenURL launches the platform-appropriate browser opener.
 func OpenURL(url string) error {
 	var cmd *exec.Cmd

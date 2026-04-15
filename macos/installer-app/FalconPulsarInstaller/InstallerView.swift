@@ -611,6 +611,23 @@ struct ConclusionPage: View {
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.horizontal, 30)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Console tool:")
+                        .font(.callout.bold())
+                    Text("\(NSHomeDirectory())/falconpulsar/bin/fp")
+                        .font(.system(.caption, design: .monospaced))
+                        .textSelection(.enabled)
+                    Text("Run it for the interactive console, or with subcommands for scripts: status · start · stop · logs · config export · config import")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.gray.opacity(0.08))
+                .cornerRadius(6)
+                .padding(.horizontal, 20)
             }
 
             Spacer()

@@ -54,6 +54,24 @@ enum InstallRunner {
         updateStep(0, .running)
         log("[info] Step 1/7: Pre-flight checks")
 
+        // Verify bundled assets are present BEFORE we touch anything on the
+        // user's system — all-or-nothing install policy.
+        if let resourcePath = Bundle.main.resourcePath {
+            let required = ["FalconPulsar Menu Bar.app", "fp"]
+            for name in required {
+                let p = "\(resourcePath)/\(name)"
+                if !FileManager.default.fileExists(atPath: p) {
+                    log("[error] Installer is incomplete: missing \(name) in Resources")
+                    updateStep(0, .failed)
+                    finish(state: state, success: false, error:
+                        "Installer is incomplete — missing bundled resource: \(name). " +
+                        "Re-download FalconPulsar-Setup.dmg and try again.")
+                    return
+                }
+            }
+            log("[info] Bundled resources verified")
+        }
+
         guard let dockerPath = ShellRunner.findDocker() else {
             log("[error] Docker not found")
             updateStep(0, .failed)
@@ -145,6 +163,8 @@ enum InstallRunner {
                 for i in 3...6 { updateStep(i, .passed) }
                 log("[info] Installing menu bar app...")
                 installMenuBarApp(log: log)
+                log("[info] Installing fp console CLI...")
+                installFpCli(log: log)
                 finish(state: state, success: true, error: "")
             } else {
                 finish(state: state, success: false, error: "docker compose up failed (exit \(code)). See /tmp/falconpulsar-install.log.")
@@ -258,6 +278,8 @@ enum InstallRunner {
             }
             log("[info] Installing menu bar app...")
             installMenuBarApp(log: log)
+            log("[info] Installing fp console CLI...")
+            installFpCli(log: log)
             finish(state: state, success: true, error: "")
         } else {
             // Mark remaining steps as failed
@@ -340,6 +362,35 @@ enum InstallRunner {
 
         let (_, _) = ShellRunner.run("/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f '\(destApp)'")
         log("[info] Registered app with LaunchServices")
+    }
+
+    /// Copies the bundled fp binary (Contents/Resources/fp) to
+    /// ~/falconpulsar/bin/fp. Strips quarantine so Gatekeeper doesn't block
+    /// first launch on the customer's machine.
+    private static func installFpCli(log: (String) -> Void) {
+        let fm = FileManager.default
+        guard let resourcePath = Bundle.main.resourcePath else {
+            log("[warn] fp CLI: no resource path, skipping install")
+            return
+        }
+        let source = "\(resourcePath)/fp"
+        guard fm.fileExists(atPath: source) else {
+            log("[warn] fp CLI not bundled in installer — skipping (users can still run docker compose)")
+            return
+        }
+        let home = "\(NSHomeDirectory())/falconpulsar"
+        let binDir = "\(home)/bin"
+        let dest = "\(binDir)/fp"
+        do {
+            try fm.createDirectory(atPath: binDir, withIntermediateDirectories: true)
+            if fm.fileExists(atPath: dest) { try fm.removeItem(atPath: dest) }
+            try fm.copyItem(atPath: source, toPath: dest)
+            _ = ShellRunner.run("/usr/bin/xattr -dr com.apple.quarantine '\(dest)' 2>/dev/null")
+            _ = ShellRunner.run("/bin/chmod +x '\(dest)' 2>/dev/null")
+            log("[info] fp CLI installed at \(dest)")
+        } catch {
+            log("[warn] fp CLI install failed: \(error)")
+        }
     }
 
     private static func finish(state: InstallerState, success: Bool, error: String) {

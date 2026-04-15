@@ -67,6 +67,23 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
+      - name: Setup Go (for fp console CLI)
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Build fp.exe (to be bundled by the installer)
+        shell: bash
+        env:
+          GOOS: windows
+          GOARCH: amd64
+          CGO_ENABLED: '0'
+        run: |
+          cd console
+          mkdir -p dist
+          go build -ldflags="-s -w" -o dist/fp-windows-amd64.exe ./cmd/fp
+          ls -lh dist/
+
       - name: Build tray app
         shell: powershell
         run: |
@@ -103,6 +120,11 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v5
+
+      - name: Setup Go (for fp console CLI bundled in the DMG)
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
 
       - name: Build DMG via build-dmg.sh
         run: |

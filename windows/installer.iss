@@ -90,7 +90,7 @@ WelcomeLabel1=FalconPulsar
 WelcomeLabel2=Version {#MyAppVersion}%n%nDetecting your environment...
 
 ; Finish page — point the user at the Web UI
-FinishedLabel=FalconPulsar is now installed and running on your computer.%n%nOpen %1 in any web browser to log in to the Web UI with the admin credentials you set during this install. The admin password is NOT stored on disk anywhere — make sure you saved it.%n%nClick Finish to exit Setup.
+FinishedLabel=FalconPulsar is now installed and running on your computer.%n%nOpen %1 in any web browser to log in to the Web UI with the admin credentials you set during this install. The admin password is NOT stored on disk anywhere — make sure you saved it.%n%nConsole tool:%n   %localappdata%\falconpulsar\bin\fp.exe%nRun it for the interactive console, or with subcommands for scripts: status · start · stop · logs · config export · config import.%n%nClick Finish to exit Setup.
 
 [Files]
 ; ── Bash installer + shared libs ────────────────────────────────────────────
@@ -130,11 +130,26 @@ Source: "helpers\uninstall.ps1";                            DestDir: "{app}\help
 ; ── Tray app ──────────────────────────────────────────────────────────────
 Source: "tray-app\publish\FalconPulsarTray.exe";            DestDir: "{app}";                Flags: ignoreversion
 
+; ── fp console CLI ────────────────────────────────────────────────────────
+; Cross-compiled by CI from console/ via `GOOS=windows GOARCH=amd64`.
+; Drops fp.exe into %LOCALAPPDATA%\falconpulsar\bin\ so everything stays
+; under the stack's own folder (user-level install, no admin needed).
+Source: "..\console\dist\fp-windows-amd64.exe"; \
+    DestDir: "{localappdata}\falconpulsar\bin"; \
+    DestName: "fp.exe"; \
+    Flags: ignoreversion
+
 ; ── Assets + reference files ────────────────────────────────────────────────
 Source: "assets\license.rtf";                               DestDir: "{app}\assets";         Flags: ignoreversion
 Source: "assets\falcon.ico";                                DestDir: "{app}\assets";         Flags: ignoreversion
 Source: "..\REQUIREMENTS.md";                               DestDir: "{app}";                Flags: ignoreversion
 Source: "..\README.md";                                     DestDir: "{app}";                Flags: ignoreversion
+
+[Tasks]
+Name: "addtopath"; \
+    Description: "Add fp console to my PATH (lets you run ""fp"" from PowerShell anywhere)"; \
+    GroupDescription: "fp console CLI:"; \
+    Flags: unchecked
 
 [Run]
 ; Open the Web UI in the default browser at the end (postinstall checkbox).
@@ -156,6 +171,13 @@ Filename: "notepad.exe"; Parameters: "{code:GetLogPath}"; \
 Root: HKCU; Subkey: "SOFTWARE\Microsoft\Windows\CurrentVersion\Run"; \
     ValueName: "FalconPulsar"; ValueType: string; \
     ValueData: """{app}\FalconPulsarTray.exe"""; Flags: uninsdeletevalue
+
+; Optional: append the fp console to the user PATH (opt-in via the Tasks page).
+; {olddata} preserves the existing PATH value so we don't clobber it.
+Root: HKCU; Subkey: "Environment"; \
+    ValueName: "Path"; ValueType: expandsz; \
+    ValueData: "{olddata};{localappdata}\falconpulsar\bin"; \
+    Tasks: addtopath; Flags: preservestringtype
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{commonprograms}\FalconPulsar"

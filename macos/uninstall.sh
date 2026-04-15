@@ -34,13 +34,15 @@ if [ -f "${REPO_ROOT}/shared/lib/common.sh" ]; then
     . "${REPO_ROOT}/shared/lib/common.sh"
 else
     # Standalone mode — minimal logging
-    log_step()    { echo ""; echo "==> $1"; }
-    log_info()    { echo "[info] $1"; }
-    log_success() { echo "[ok] $1"; }
-    log_warn()    { echo "[warn] $1"; }
-    log_error()   { echo "[error] $1"; }
-    die()         { log_error "$1"; exit 1; }
-    confirm()     { return 0; }
+    log_step()        { echo ""; echo "==> $1"; }
+    log_info()        { echo "[info] $1"; }
+    log_success()     { echo "[ok] $1"; }
+    log_warn()        { echo "[warn] $1"; }
+    log_error()       { echo "[error] $1" >&2; }
+    die()             { log_error "$1"; exit 1; }
+    confirm()         { return 0; }
+    require_not_root(){ [ "$(id -u)" -ne 0 ] || die "don't run as root"; }
+    on_error()        { log_error "failed at line $1"; }
 fi
 
 trap 'on_error $LINENO 2>/dev/null || true' ERR
@@ -105,47 +107,76 @@ if [ ! -d "$FP_HOME" ]; then
     log_warn "${FP_HOME} does not exist — nothing to uninstall"
 fi
 
+# Make sure our cwd is NOT inside $FP_HOME before any rm happens. Also guards
+# against deleting-script-while-reading when bash was invoked with a relative
+# path from inside $FP_HOME.
+cd "$HOME" 2>/dev/null || cd /
+
 # Step 1: Stop the menu bar app
 log_step "Stopping FalconPulsar Menu Bar"
 pkill -f FalconPulsarMenuBar 2>/dev/null || true
 log_info "Menu bar app stopped"
 
-# Step 2: Stop and remove containers
+# Step 2: Stop and remove containers (+ volumes on purge)
 log_step "Stopping containers"
 if [ -f "${FP_HOME}/compose.yml" ]; then
-    ( cd "$FP_HOME" && docker compose down --remove-orphans 2>/dev/null ) || \
-        log_warn "docker compose down failed — continuing anyway"
-    log_info "Containers stopped and removed"
+    if [ "$FP_PURGE" = "1" ]; then
+        # --volumes removes named volumes declared in compose.yml
+        ( cd "$FP_HOME" && docker compose down --remove-orphans --volumes 2>/dev/null ) || \
+            log_warn "docker compose down failed — continuing anyway"
+        log_info "Containers and named volumes removed"
+    else
+        ( cd "$FP_HOME" && docker compose down --remove-orphans 2>/dev/null ) || \
+            log_warn "docker compose down failed — continuing anyway"
+        log_info "Containers stopped and removed (volumes preserved)"
+    fi
 else
     log_info "No compose.yml found — skipping"
 fi
 
-# Step 3: Remove Docker images
+# Step 3: Remove Docker images (query compose first, then fall back to known names)
 log_step "Removing Docker images"
-docker rmi falconpulsar/core falconpulsar/ui falconpulsar/ai-gateway 2>/dev/null || true
+# Entire block is wrapped in `set +e` because Docker/compose edge cases
+# (no images, context switch, empty `xargs` input) return non-zero under
+# errexit+pipefail even when each result is fine. We re-enable errexit
+# after the block so later steps still abort on real errors.
+set +e
+if [ -f "${FP_HOME}/compose.yml" ]; then
+    IMAGES="$( cd "$FP_HOME" && docker compose config --images 2>/dev/null | sort -u )"
+    if [ -n "$IMAGES" ]; then
+        echo "$IMAGES" | while IFS= read -r img; do
+            [ -n "$img" ] && docker rmi -f "$img" >/dev/null 2>&1
+        done
+    fi
+fi
+# Fallback: remove any falconpulsar/* images left over from older installs.
+# No `xargs -r` here — BSD/macOS xargs doesn't support it; we loop instead.
+docker images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | \
+    grep -E '^falconpulsar/' | while IFS= read -r img; do
+    [ -n "$img" ] && docker rmi -f "$img" >/dev/null 2>&1
+done
+set -e
 log_info "Docker images removed"
 
-# Step 4: Remove stack files (but keep data if not purging)
-log_step "Removing application files"
+# Step 3b (purge only): prune any orphan volumes whose names match falconpulsar*
 if [ "$FP_PURGE" = "1" ]; then
-    rm -rf "$FP_HOME"
-    log_info "Deleted ${FP_HOME} (database removed)"
-else
-    rm -f "${FP_HOME}/compose.yml" 2>/dev/null || true
-    rm -f "${FP_HOME}/.env" 2>/dev/null || true
-    rm -rf "${FP_HOME}/.docker" 2>/dev/null || true
-    rm -rf "${FP_HOME}/ai-gateway-data" 2>/dev/null || true
-    log_info "Application files removed"
-    log_info "Database preserved at ${FP_HOME}/data"
+    log_step "Pruning orphan volumes"
+    set +e
+    docker volume ls --format '{{.Name}}' 2>/dev/null | \
+        grep -E '^falconpulsar' | while IFS= read -r vol; do
+        [ -n "$vol" ] && docker volume rm -f "$vol" >/dev/null 2>&1
+    done
+    set -e
+    log_info "Orphan volumes removed"
 fi
 
-# Step 5: Remove the menu bar app
+# Step 4: Remove the menu bar app
 log_step "Removing Menu Bar app"
 rm -rf "${HOME}/Applications/FalconPulsar Menu Bar.app" 2>/dev/null || true
 rm -rf "/Applications/FalconPulsar Menu Bar.app" 2>/dev/null || true
 log_info "Menu bar app removed"
 
-# Step 6: Remove LaunchAgent (auto-start)
+# Step 5: Remove LaunchAgent (auto-start)
 log_step "Removing auto-start"
 LAUNCH_AGENT="${HOME}/Library/LaunchAgents/com.falconpulsar.menubar.plist"
 if [ -f "$LAUNCH_AGENT" ]; then
@@ -156,9 +187,30 @@ else
     log_info "No LaunchAgent found"
 fi
 
-# Step 7: Remove installer staging
+# Step 6: Remove installer staging
 rm -rf /tmp/falconpulsar-installer 2>/dev/null || true
 rm -f /tmp/falconpulsar-install.log 2>/dev/null || true
+
+# Step 7 (LAST): stack-directory removal. This deletes this script file
+# itself when running from ~/falconpulsar, so it MUST be the final step —
+# any code after this may not execute if bash was reading line-by-line.
+log_step "Removing application files"
+if [ "$FP_PURGE" = "1" ]; then
+    # Partial cleanup first (files we know are safe) to minimize the amount
+    # of work `rm -rf` has to do on the doomed directory.
+    rm -f "${FP_HOME}/compose.yml" "${FP_HOME}/.env" 2>/dev/null || true
+    rm -rf "${FP_HOME}/.docker" "${FP_HOME}/ai-gateway-data" "${FP_HOME}/bin" 2>/dev/null || true
+    rm -rf "$FP_HOME"
+    log_info "Deleted ${FP_HOME} (database removed)"
+else
+    rm -f "${FP_HOME}/compose.yml" 2>/dev/null || true
+    rm -f "${FP_HOME}/.env" 2>/dev/null || true
+    rm -rf "${FP_HOME}/.docker" 2>/dev/null || true
+    rm -rf "${FP_HOME}/ai-gateway-data" 2>/dev/null || true
+    rm -rf "${FP_HOME}/bin" 2>/dev/null || true
+    log_info "Application files removed"
+    log_info "Database preserved at ${FP_HOME}/data"
+fi
 
 log_step "Uninstall complete"
 if [ "$FP_PURGE" = "0" ] && [ -d "${FP_HOME}/data" ]; then

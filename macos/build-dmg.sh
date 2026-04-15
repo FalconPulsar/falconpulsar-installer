@@ -44,6 +44,12 @@ log "compiling menu-bar-app"
        -o .build/FalconPulsarMenuBar \
        -framework AppKit -framework UserNotifications -O )
 
+log "compiling fp console CLI (for embed in installer)"
+( cd console && mkdir -p dist \
+  && GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 \
+     go build -ldflags="-s -w" -o dist/fp-macos-arm64 ./cmd/fp )
+# Apple Silicon Macs are all arm64; no x86_64 embed needed for Mx builds.
+
 # ── Step 2: Build AppIcon.icns ─────────────────────────────────────────────
 log "generating AppIcon.icns"
 rm -rf "$ICONSET_TMP"
@@ -67,6 +73,10 @@ mkdir -p "$INSTALLER_BUNDLE/Contents/MacOS" "$INSTALLER_BUNDLE/Contents/Resource
 cp macos/installer-app/.build/release/FalconPulsarInstaller \
    "$INSTALLER_BUNDLE/Contents/MacOS/"
 cp "$ICNS_TMP" "$INSTALLER_BUNDLE/Contents/Resources/AppIcon.icns"
+
+# Embed fp binary so the wizard can install it offline, no GitHub round-trip.
+cp console/dist/fp-macos-arm64 "$INSTALLER_BUNDLE/Contents/Resources/fp"
+chmod +x "$INSTALLER_BUNDLE/Contents/Resources/fp"
 cat > "$INSTALLER_BUNDLE/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
