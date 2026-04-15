@@ -58,6 +58,8 @@ REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 . "${REPO_ROOT}/shared/lib/bootstrap.sh"
 # shellcheck source=../shared/lib/registry_auth.sh
 . "${REPO_ROOT}/shared/lib/registry_auth.sh"
+# shellcheck source=../shared/lib/fpcli.sh
+. "${REPO_ROOT}/shared/lib/fpcli.sh"
 
 trap 'on_error $LINENO' ERR
 
@@ -361,6 +363,23 @@ fp_bootstrap_gateway_token "${FP_HOME}/.env"
 log_info "starting ui and ai-gateway"
 sudo -u "$FP_USER" -H sg docker -c "cd '${FP_HOME}' && docker compose up -d"
 
+# ── 7d. Install the fp CLI under ${FP_HOME}/bin/ (self-contained stack) ───
+fp_install_cli "$FP_HOME" "${FP_VERSION:-0.1.0}"
+# Fix ownership (install.sh runs as root via sudo on Linux)
+chown -R "${FP_USER}:${FP_USER}" "${FP_HOME}/bin" 2>/dev/null || true
+# PATH append targets the invoking user's shell rc, not root's
+if [ -n "${SUDO_USER:-}" ]; then
+    sudo -u "$SUDO_USER" -H bash -c "
+        export HOME=\"\$(getent passwd $SUDO_USER | cut -d: -f6)\"
+        source '${REPO_ROOT}/shared/lib/common.sh'
+        source '${REPO_ROOT}/shared/lib/fpcli.sh'
+        FP_ASSUME_YES='${FP_ASSUME_YES:-0}' FP_ADD_TO_PATH='${FP_ADD_TO_PATH:-}' \
+            fp_offer_path_append '$FP_HOME'
+    " || true
+else
+    fp_offer_path_append "$FP_HOME"
+fi
+
 # ── Step 8: systemd registration (optional) ─────────────────────────────────
 log_step "step 8/8 — lifecycle registration"
 if [ "$FP_INSTALL_MODE" = "systemd" ]; then
@@ -430,6 +449,13 @@ ${FP_C_GREEN}${FP_C_BOLD}╔═════════════════�
 
   Data dir:  ${FP_DATA_DIR}
   Stack dir: ${FP_HOME}
+
+  Control the stack with the fp CLI (${FP_HOME}/bin/fp):
+    fp                          # interactive console (TUI)
+    fp status                   # stack status
+    fp start | stop | restart   # control
+    fp logs [service]           # tail logs
+    fp config export <file>     # admin-only encrypted backup
 
   To uninstall: sudo bash ${SCRIPT_DIR}/uninstall.sh
 

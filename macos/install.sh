@@ -54,6 +54,8 @@ REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 . "${REPO_ROOT}/shared/lib/bootstrap.sh"
 # shellcheck source=../shared/lib/registry_auth.sh
 . "${REPO_ROOT}/shared/lib/registry_auth.sh"
+# shellcheck source=../shared/lib/fpcli.sh
+. "${REPO_ROOT}/shared/lib/fpcli.sh"
 
 trap 'on_error $LINENO' ERR
 
@@ -298,6 +300,10 @@ fp_bootstrap_gateway_token "${FP_HOME}/.env"
 log_info "starting ui and ai-gateway"
 ( cd "$FP_HOME" && docker compose up -d )
 
+# 5d. Install the fp CLI into ${FP_HOME}/bin/ and optionally add to PATH.
+fp_install_cli "$FP_HOME" "${FP_VERSION:-0.1.0}"
+fp_offer_path_append "$FP_HOME"
+
 # ── Step 6: Done ────────────────────────────────────────────────────────────
 log_step "verifying installation health"
 HEALTH_OK=true
@@ -340,12 +346,17 @@ ${FP_C_GREEN}${FP_C_BOLD}╔═════════════════�
   Stack dir: ${FP_HOME}
   Data dir:  ${FP_DATA_DIR}
 
-  Manage with:
+  Manage with the fp CLI (installed at ${FP_HOME}/bin/fp):
+    fp                          # interactive console (TUI)
+    fp status                   # stack status
+    fp start | stop | restart   # control the stack
+    fp logs [service]           # tail logs
+    fp config export <file>     # admin-only encrypted backup
+    fp config import <file>     # admin-only restore
+
+  Or use docker compose directly:
     cd ${FP_HOME}
-    docker compose ps           # status
-    docker compose logs -f core # follow logs
-    docker compose restart      # restart the stack
-    docker compose down         # stop the stack
+    docker compose ps | logs -f | restart | down
 
   The stack will auto-restart whenever your container runtime starts
   (because of \`restart: unless-stopped\` in compose.yml). To disable
