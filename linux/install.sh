@@ -60,6 +60,8 @@ REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 . "${REPO_ROOT}/shared/lib/registry_auth.sh"
 # shellcheck source=../shared/lib/fpcli.sh
 . "${REPO_ROOT}/shared/lib/fpcli.sh"
+# shellcheck source=../shared/lib/existing.sh
+. "${REPO_ROOT}/shared/lib/existing.sh"
 
 trap 'on_error $LINENO' ERR
 
@@ -150,6 +152,22 @@ fi
 if ! check_docker_daemon; then
     log_info "starting Docker daemon"
     systemctl enable --now docker || die "failed to start Docker daemon"
+fi
+
+# ── Existing installation detection + Upgrade/Reinstall/Fresh choice ──
+log_step "checking for existing installation"
+fp_detect_existing_install "$FP_HOME"
+if fp_has_existing_install; then
+    fp_prompt_existing_action "$FP_HOME"
+    fp_apply_existing_action "$FP_HOME"
+    if fp_try_upgrade_fastpath "$FP_HOME"; then
+        log_success "Upgrade complete."
+        fp_install_cli "$FP_HOME" "${FP_VERSION:-0.1.0}"
+        chown -R "${FP_USER}:${FP_USER}" "${FP_HOME}/bin" 2>/dev/null || true
+        exit 0
+    fi
+else
+    log_info "no existing install detected — proceeding with fresh install"
 fi
 
 # Verify we can pull images from the configured registry. If the registry

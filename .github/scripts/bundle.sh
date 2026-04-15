@@ -59,7 +59,7 @@ mkdir -p "${__FP_BUNDLE_DIR}/shared/lib" "${__FP_BUNDLE_DIR}/linux/systemd"
 BUNDLE_HEADER
 
 # ── Embed shared/lib/*.sh ────────────────────────────────────────────────────
-for libname in common.sh checks.sh prompts.sh bootstrap.sh; do
+for libname in common.sh checks.sh prompts.sh bootstrap.sh registry_auth.sh fpcli.sh existing.sh; do
     libfile="${LIB_DIR}/${libname}"
     [ -f "$libfile" ] || { echo "ERROR: missing $libfile" >&2; exit 1; }
     printf 'cat >"${__FP_BUNDLE_DIR}/shared/lib/%s" <<'\''__FP_EOF_%s__'\''\n' "$libname" "$libname"

@@ -28,6 +28,64 @@ fi
 # Minimum admin password length. Industrial-friendly but not insulting.
 FP_MIN_PASSWORD_LEN=10
 
+# Returns one of: weak | medium | strong. Same heuristic as the macOS GUI.
+fp_password_strength() {
+    local p="$1"
+    [ "${#p}" -lt 10 ] && { echo "weak"; return; }
+    local classes=0
+    [[ "$p" =~ [A-Z] ]]        && classes=$((classes+1))
+    [[ "$p" =~ [a-z] ]]        && classes=$((classes+1))
+    [[ "$p" =~ [0-9] ]]        && classes=$((classes+1))
+    [[ "$p" =~ [^A-Za-z0-9] ]] && classes=$((classes+1))
+    if [ "${#p}" -ge 12 ] && [ "$classes" -ge 3 ]; then
+        echo "strong"
+    elif [ "$classes" -ge 2 ]; then
+        echo "medium"
+    else
+        echo "weak"
+    fi
+}
+
+# Render "[XXXXXXXX    ] label" for the given strength/length.
+fp_password_strength_bar() {
+    local p="$1"
+    local strength color label width=14
+    strength="$(fp_password_strength "$p")"
+    case "$strength" in
+        strong) color="${FP_C_GREEN}";  label="Strong";  ;;
+        medium) color="${FP_C_YELLOW}"; label="Medium";  ;;
+        *)      color="${FP_C_RED}";    label="Weak";    ;;
+    esac
+    local filled=$(( ${#p} * width / 20 ))
+    [ "$filled" -gt "$width" ] && filled="$width"
+    local bar=""
+    local i=0
+    while [ "$i" -lt "$filled" ]; do bar="${bar}#"; i=$((i+1)); done
+    while [ "$i" -lt "$width" ]; do bar="${bar} "; i=$((i+1)); done
+    printf '  %s[%s]%s %s%s%s  (%s chars)\n' \
+        "${color}" "$bar" "${FP_C_RESET}" \
+        "${color}" "$label" "${FP_C_RESET}" "${#p}"
+}
+
+# Best-effort clipboard copy (pbcopy on macOS, xclip/xsel/wl-copy on Linux).
+# Returns 0 if something wrote to the clipboard, 1 otherwise.
+fp_clipboard_copy() {
+    local text="$1"
+    if command -v pbcopy >/dev/null 2>&1; then
+        printf '%s' "$text" | pbcopy; return 0
+    fi
+    if command -v wl-copy >/dev/null 2>&1; then
+        printf '%s' "$text" | wl-copy; return 0
+    fi
+    if command -v xclip >/dev/null 2>&1; then
+        printf '%s' "$text" | xclip -selection clipboard; return 0
+    fi
+    if command -v xsel >/dev/null 2>&1; then
+        printf '%s' "$text" | xsel --clipboard --input; return 0
+    fi
+    return 1
+}
+
 # ── Legal acknowledgement ───────────────────────────────────────────────────
 # Shows the four legal documents (Terms, Privacy, AUP, Security) as
 # clickable URLs and asks the user to confirm they have read and agree.
@@ -219,15 +277,22 @@ prompt_admin_credentials() {
     if confirm "generate a strong random admin password automatically?" default-yes; then
         FP_ADMIN_PASS="$(random_password 24)"
         export FP_ADMIN_PASS
-        printf '\n%sgenerated admin password:%s %s%s%s\n\n' \
+        printf '\n%sgenerated admin password:%s %s%s%s\n' \
             "${FP_C_YELLOW}" "${FP_C_RESET}" \
             "${FP_C_BOLD}" "$FP_ADMIN_PASS" "${FP_C_RESET}" >&2
+        fp_password_strength_bar "$FP_ADMIN_PASS" >&2
+        if fp_clipboard_copy "$FP_ADMIN_PASS" 2>/dev/null; then
+            printf '  %s✓ copied to clipboard%s\n\n' "${FP_C_GREEN}" "${FP_C_RESET}" >&2
+        else
+            printf '\n' >&2
+        fi
         log_warn "WRITE THIS DOWN — it will not be shown again, only stored in .env"
         if ! confirm "have you saved the password somewhere safe?" default-no; then
             die "aborting — please re-run when you are ready to save the password"
         fi
     else
         prompt_password "admin password" FP_ADMIN_PASS
+        fp_password_strength_bar "$FP_ADMIN_PASS" >&2
     fi
 
     export FP_ADMIN_USER FP_ADMIN_PASS
