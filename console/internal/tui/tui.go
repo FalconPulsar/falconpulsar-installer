@@ -397,10 +397,10 @@ func (a *App) askAdminThen(purpose string, then func(*api.Client, string, string
 	form := tview.NewForm().
 		AddInputField("Admin username", "admin", 30, nil, nil).
 		AddPasswordField("Admin password", "", 30, '*', nil)
-	form.SetBackgroundColor(theme.Panel).
-		SetFieldBackgroundColor(theme.Surface).
+	form.SetFieldBackgroundColor(theme.Surface).
 		SetButtonBackgroundColor(theme.AccentDim).
 		SetLabelColor(theme.Text)
+	form.SetBackgroundColor(theme.Panel)
 	form.AddButton("Continue", func() {
 		user := form.GetFormItem(0).(*tview.InputField).GetText()
 		pass := form.GetFormItem(1).(*tview.InputField).GetText()
@@ -430,10 +430,10 @@ func (a *App) askAdminThen(purpose string, then func(*api.Client, string, string
 func (a *App) askPathThen(title, suggestion string, then func(string)) {
 	form := tview.NewForm().
 		AddInputField("File path", suggestion, 60, nil, nil)
-	form.SetBackgroundColor(theme.Panel).
-		SetFieldBackgroundColor(theme.Surface).
+	form.SetFieldBackgroundColor(theme.Surface).
 		SetButtonBackgroundColor(theme.AccentDim).
 		SetLabelColor(theme.Text)
+	form.SetBackgroundColor(theme.Panel)
 	form.AddButton("OK", func() {
 		path := form.GetFormItem(0).(*tview.InputField).GetText()
 		a.pages.RemovePage("modal")
