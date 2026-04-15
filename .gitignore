@@ -49,5 +49,5 @@ __pycache__/
 .venv/
 venv/
 
-# Internal dev-only tools
-internal/
+# Internal dev-only tools (root only — Go's console/internal/ is meant to ship)
+/internal/

@@ -155,6 +155,14 @@ namespace FalconPulsar.Tray
                 (s, e) => OpenDataFolder()));
             menu.Items.Add(configMenu);
 
+            // Configuration Backup submenu (export / import)
+            var backupMenu = new ToolStripMenuItem("Configuration Backup");
+            backupMenu.DropDownItems.Add(new ToolStripMenuItem("Export Configuration...", null,
+                async (s, e) => await ExportConfigurationAsync()));
+            backupMenu.DropDownItems.Add(new ToolStripMenuItem("Import Configuration...", null,
+                async (s, e) => await ImportConfigurationAsync()));
+            menu.Items.Add(backupMenu);
+
             menu.Items.Add(new ToolStripSeparator());
 
             // Settings
@@ -693,6 +701,106 @@ namespace FalconPulsar.Tray
             _pollTimer.Stop();
             _trayIcon.Visible = false;
             Application.Exit();
+        }
+
+        // ────────────────────────── Configuration Backup ──────────────────────────
+
+        private static (string user, string pass)? PromptAdminCredentials(string title, string message)
+        {
+            using var form = new Form
+            {
+                Text = title,
+                Width = 380,
+                Height = 220,
+                FormBorderStyle = FormBorderStyle.FixedDialog,
+                StartPosition = FormStartPosition.CenterScreen,
+                MinimizeBox = false,
+                MaximizeBox = false,
+            };
+            var msg = new Label { Text = message, AutoSize = false, Width = 340, Height = 40, Top = 10, Left = 15 };
+            var userLabel = new Label { Text = "Admin username:", Width = 120, Top = 60, Left = 15 };
+            var userBox = new TextBox { Width = 220, Top = 58, Left = 140, Text = "admin" };
+            var passLabel = new Label { Text = "Admin password:", Width = 120, Top = 92, Left = 15 };
+            var passBox = new TextBox { Width = 220, Top = 90, Left = 140, UseSystemPasswordChar = true };
+            var okBtn = new Button { Text = "Continue", DialogResult = DialogResult.OK, Width = 90, Top = 135, Left = 175 };
+            var cancelBtn = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, Width = 90, Top = 135, Left = 270 };
+            form.Controls.AddRange(new Control[] { msg, userLabel, userBox, passLabel, passBox, okBtn, cancelBtn });
+            form.AcceptButton = okBtn;
+            form.CancelButton = cancelBtn;
+
+            return form.ShowDialog() == DialogResult.OK
+                ? (userBox.Text, passBox.Text)
+                : ((string, string)?)null;
+        }
+
+        private async Task ExportConfigurationAsync()
+        {
+            var creds = PromptAdminCredentials(
+                "Export Configuration",
+                "Enter admin credentials. They authorize the export and will also encrypt the backup file.");
+            if (creds is null) return;
+
+            try
+            {
+                var authed = await ConfigBackup.AuthenticateAsAdminAsync(creds.Value.user, creds.Value.pass);
+
+                using var dlg = new SaveFileDialog
+                {
+                    Filter = "FalconPulsar Config (*.fpconfig)|*.fpconfig",
+                    FileName = $"falconpulsar-config-{DateTime.Now:yyyyMMdd-HHmmss}.fpconfig",
+                    Title = "Save Configuration Backup",
+                };
+                if (dlg.ShowDialog() != DialogResult.OK) return;
+
+                await ConfigBackup.ExportAsync(dlg.FileName, authed);
+
+                MessageBox.Show(
+                    $"Saved to {dlg.FileName}\n\nKeep this file private — it contains your configuration, encrypted with your admin credentials.",
+                    "Export complete",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(ex.Message, "Configuration backup error",
+                                MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private async Task ImportConfigurationAsync()
+        {
+            using var dlg = new OpenFileDialog
+            {
+                Filter = "FalconPulsar Config (*.fpconfig)|*.fpconfig",
+                Title = "Choose Configuration Backup",
+            };
+            if (dlg.ShowDialog() != DialogResult.OK) return;
+
+            var confirm = MessageBox.Show(
+                "This will replace your current users, datasources, assets, and AI Gateway configuration with those from the backup file. Your time-series data is unaffected.\n\nContinue?",
+                "Replace current configuration?",
+                MessageBoxButtons.OKCancel, MessageBoxIcon.Warning);
+            if (confirm != DialogResult.OK) return;
+
+            var creds = PromptAdminCredentials(
+                "Import Configuration",
+                "Enter the admin credentials used when this backup was exported. They're required to decrypt the file and apply the changes.");
+            if (creds is null) return;
+
+            try
+            {
+                var authed = await ConfigBackup.AuthenticateAsAdminAsync(creds.Value.user, creds.Value.pass);
+                await ConfigBackup.ImportAsync(dlg.FileName, authed);
+
+                MessageBox.Show(
+                    "Restart the stack (Restart Stack) for all changes to take effect.",
+                    "Import complete",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(ex.Message, "Configuration backup error",
+                                MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
         }
 
         // Draws a filled square icon — used for Stop because Segoe MDL2 Assets

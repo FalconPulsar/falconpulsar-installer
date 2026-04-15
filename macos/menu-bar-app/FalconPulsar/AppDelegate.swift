@@ -125,6 +125,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         configItem.submenu = configMenu
         menu.addItem(configItem)
 
+        // Configuration backup submenu (export / import)
+        let backupMenu = NSMenu()
+        let exportCfg = NSMenuItem(title: "Export Configuration…", action: #selector(exportConfiguration), keyEquivalent: "")
+        exportCfg.target = self
+        backupMenu.addItem(exportCfg)
+        let importCfg = NSMenuItem(title: "Import Configuration…", action: #selector(importConfiguration), keyEquivalent: "")
+        importCfg.target = self
+        backupMenu.addItem(importCfg)
+        let backupItem = NSMenuItem(title: "Configuration Backup", action: nil, keyEquivalent: "")
+        backupItem.submenu = backupMenu
+        menu.addItem(backupItem)
+
         menu.addItem(.separator())
 
         let autoStart = NSMenuItem(title: "Start at Login", action: #selector(toggleAutoStart), keyEquivalent: "")
@@ -481,6 +493,110 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func openRequestFeature() {
         NSWorkspace.shared.open(URL(string: "https://falconpulsar.com/roadmap#request-form")!)
+    }
+
+    // MARK: - Configuration Backup
+
+    private func promptAdminCredentials(title: String, message: String) -> (user: String, pass: String)? {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Continue")
+        alert.addButton(withTitle: "Cancel")
+
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 64))
+        let userField = NSTextField(frame: NSRect(x: 0, y: 34, width: 300, height: 24))
+        userField.placeholderString = "Admin username"
+        userField.stringValue = "admin"
+        let passField = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 24))
+        passField.placeholderString = "Admin password"
+        container.addSubview(userField)
+        container.addSubview(passField)
+        alert.accessoryView = container
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+        return (userField.stringValue, passField.stringValue)
+    }
+
+    private func showError(_ err: Error) {
+        let alert = NSAlert()
+        alert.messageText = "Configuration backup error"
+        alert.informativeText = err.localizedDescription
+        alert.alertStyle = .critical
+        alert.runModal()
+    }
+
+    @objc func exportConfiguration() {
+        guard let creds = promptAdminCredentials(
+            title: "Export Configuration",
+            message: "Enter admin credentials. They authorize the export and will also encrypt the backup file."
+        ) else { return }
+
+        do {
+            let authed = try ConfigBackup.authenticateAsAdmin(username: creds.user, password: creds.pass)
+
+            let panel = NSSavePanel()
+            panel.title = "Save Configuration Backup"
+            panel.allowedContentTypes = []
+            panel.nameFieldStringValue = "falconpulsar-config-\(Self.timestampSlug()).fpconfig"
+            guard panel.runModal() == .OK, let url = panel.url else { return }
+
+            try ConfigBackup.export(to: url.path, creds: authed)
+
+            let ok = NSAlert()
+            ok.messageText = "Export complete"
+            ok.informativeText = "Saved to \(url.path)\n\nKeep this file private — it contains your configuration, encrypted with your admin credentials."
+            ok.addButton(withTitle: "Reveal in Finder")
+            ok.addButton(withTitle: "Done")
+            if ok.runModal() == .alertFirstButtonReturn {
+                NSWorkspace.shared.activateFileViewerSelecting([url])
+            }
+        } catch {
+            showError(error)
+        }
+    }
+
+    @objc func importConfiguration() {
+        let panel = NSOpenPanel()
+        panel.title = "Choose Configuration Backup"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedFileTypes = ["fpconfig"]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        let confirm = NSAlert()
+        confirm.messageText = "Replace current configuration?"
+        confirm.informativeText = "This will replace your current users, datasources, assets, and AI Gateway configuration with those from the backup file. Your time-series data is unaffected."
+        confirm.alertStyle = .warning
+        confirm.addButton(withTitle: "Replace")
+        confirm.addButton(withTitle: "Cancel")
+        guard confirm.runModal() == .alertFirstButtonReturn else { return }
+
+        guard let creds = promptAdminCredentials(
+            title: "Import Configuration",
+            message: "Enter the admin credentials used when this backup was exported. They're required to decrypt the file and apply the changes."
+        ) else { return }
+
+        do {
+            let authed = try ConfigBackup.authenticateAsAdmin(username: creds.user, password: creds.pass)
+            try ConfigBackup.importBackup(from: url.path, creds: authed)
+
+            let ok = NSAlert()
+            ok.messageText = "Import complete"
+            ok.informativeText = "Restart the stack (Restart Stack) for all changes to take effect."
+            ok.addButton(withTitle: "OK")
+            ok.runModal()
+        } catch {
+            showError(error)
+        }
+    }
+
+    private static func timestampSlug() -> String {
+        let f = DateFormatter()
+        f.dateFormat = "yyyyMMdd-HHmmss"
+        return f.string(from: Date())
     }
 
     @objc func refreshStatus() {

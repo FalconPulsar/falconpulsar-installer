@@ -40,6 +40,7 @@ log "compiling menu-bar-app"
   && swiftc FalconPulsar/main.swift \
             FalconPulsar/AppDelegate.swift \
             FalconPulsar/Logo.swift \
+            FalconPulsar/ConfigBackup.swift \
        -o .build/FalconPulsarMenuBar \
        -framework AppKit -framework UserNotifications -O )
 
