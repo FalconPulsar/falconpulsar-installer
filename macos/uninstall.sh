@@ -198,16 +198,16 @@ log_step "Removing application files"
 if [ "$FP_PURGE" = "1" ]; then
     # Partial cleanup first (files we know are safe) to minimize the amount
     # of work `rm -rf` has to do on the doomed directory.
-    rm -f "${FP_HOME}/compose.yml" "${FP_HOME}/.env" 2>/dev/null || true
-    rm -rf "${FP_HOME}/.docker" "${FP_HOME}/ai-gateway-data" "${FP_HOME}/bin" 2>/dev/null || true
-    rm -rf "$FP_HOME"
+    rm -f "${FP_HOME:?}/compose.yml" "${FP_HOME:?}/.env" 2>/dev/null || true
+    rm -rf "${FP_HOME:?}/.docker" "${FP_HOME:?}/ai-gateway-data" "${FP_HOME:?}/bin" 2>/dev/null || true
+    rm -rf "${FP_HOME:?}"
     log_info "Deleted ${FP_HOME} (database removed)"
 else
-    rm -f "${FP_HOME}/compose.yml" 2>/dev/null || true
-    rm -f "${FP_HOME}/.env" 2>/dev/null || true
-    rm -rf "${FP_HOME}/.docker" 2>/dev/null || true
-    rm -rf "${FP_HOME}/ai-gateway-data" 2>/dev/null || true
-    rm -rf "${FP_HOME}/bin" 2>/dev/null || true
+    rm -f "${FP_HOME:?}/compose.yml" 2>/dev/null || true
+    rm -f "${FP_HOME:?}/.env" 2>/dev/null || true
+    rm -rf "${FP_HOME:?}/.docker" 2>/dev/null || true
+    rm -rf "${FP_HOME:?}/ai-gateway-data" 2>/dev/null || true
+    rm -rf "${FP_HOME:?}/bin" 2>/dev/null || true
     log_info "Application files removed"
     log_info "Database preserved at ${FP_HOME}/data"
 fi

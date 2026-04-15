@@ -143,9 +143,10 @@ fi
 if [ "$FP_PURGE" -eq 1 ] || confirm "delete ${FP_HOME} (including the time-series database)?" default-no; then
     log_step "removing ${FP_HOME}"
     # Remove child directories first to shrink what the final rm has to do.
-    rm -rf "${FP_HOME}/bin" "${FP_HOME}/.docker" "${FP_HOME}/ai-gateway-data" 2>/dev/null || true
-    rm -f "${FP_HOME}/compose.yml" "${FP_HOME}/.env" 2>/dev/null || true
-    rm -rf "${FP_HOME}"
+    # :? guards against FP_HOME being unset/empty — would otherwise rm /bin.
+    rm -rf "${FP_HOME:?}/bin" "${FP_HOME:?}/.docker" "${FP_HOME:?}/ai-gateway-data" 2>/dev/null || true
+    rm -f "${FP_HOME:?}/compose.yml" "${FP_HOME:?}/.env" 2>/dev/null || true
+    rm -rf "${FP_HOME:?}"
     log_success "deleted ${FP_HOME}"
 
     if [ "$FP_PURGE" -eq 1 ] || confirm "remove the ${FP_USER} system user?" default-no; then
