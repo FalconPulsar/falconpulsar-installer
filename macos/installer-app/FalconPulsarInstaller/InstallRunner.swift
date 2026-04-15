@@ -107,6 +107,51 @@ enum InstallRunner {
             }
         }
 
+        // Pre-step: handle existing installation based on chosen action
+        if !state.existing.isEmpty {
+            log("[info] Install action: \(state.installAction.rawValue)")
+            switch state.installAction {
+            case .fresh:
+                log("[info] Fresh install — tearing down existing stack and deleting data")
+                let home = "\(NSHomeDirectory())/falconpulsar"
+                _ = ShellRunner.run("cd '\(home)' && \(dockerPath) compose down -v 2>&1", timeout: 60)
+                for c in state.existing.containers {
+                    _ = ShellRunner.run("\(dockerPath) rm -f '\(c)' 2>&1")
+                }
+                _ = ShellRunner.run("/bin/rm -rf '\(home)'")
+                log("[info] Stack and data removed")
+            case .reinstall:
+                log("[info] Reinstall — stopping containers (data preserved)")
+                let home = "\(NSHomeDirectory())/falconpulsar"
+                _ = ShellRunner.run("cd '\(home)' && \(dockerPath) compose down 2>&1", timeout: 60)
+            case .upgrade:
+                log("[info] Upgrade — stack files and data left untouched")
+            }
+            if state.removeCachedImages {
+                log("[info] Removing cached FalconPulsar images")
+                _ = ShellRunner.run("\(dockerPath) images --filter reference='*falconpulsar*' -q | xargs \(dockerPath) rmi -f 2>&1")
+            }
+        }
+
+        // Fast path: upgrade-in-place (existing stack dir is intact) — just pull + up -d.
+        if state.installAction == .upgrade && FileManager.default.fileExists(atPath: "\(NSHomeDirectory())/falconpulsar/compose.yml") {
+            log("[info] Running: docker compose pull && up -d")
+            let home = "\(NSHomeDirectory())/falconpulsar"
+            let (out1, _) = ShellRunner.run("cd '\(home)' && \(dockerPath) compose pull 2>&1", timeout: 600)
+            log(out1)
+            let (out2, code) = ShellRunner.run("cd '\(home)' && \(dockerPath) compose up -d 2>&1", timeout: 180)
+            log(out2)
+            if code == 0 {
+                for i in 3...6 { updateStep(i, .passed) }
+                log("[info] Installing menu bar app...")
+                installMenuBarApp(log: log)
+                finish(state: state, success: true, error: "")
+            } else {
+                finish(state: state, success: false, error: "docker compose up failed (exit \(code)). See /tmp/falconpulsar-install.log.")
+            }
+            return
+        }
+
         // Steps 3-6: Run the bash installer
         updateStep(3, .running)
         log("[info] Step 4/7: Running bash installer...")
@@ -226,77 +271,45 @@ enum InstallRunner {
     }
 
     private static func installMenuBarApp(log: (String) -> Void) {
-        // Look for the menu bar app binary in known locations
-        let bundlePath = Bundle.main.bundlePath
-        let possiblePaths = [
-            "\(bundlePath)/../menu-bar-app/.build/debug/FalconPulsarMenuBar",
-            "\(bundlePath)/../menu-bar-app/.build/release/FalconPulsarMenuBar",
-            "\(bundlePath)/Contents/Resources/FalconPulsarMenuBar",
-            "\(NSHomeDirectory())/dev/falconpulsar-workspace/falconpulsar-installer/macos/menu-bar-app/.build/debug/FalconPulsarMenuBar"
-        ]
-
-        var menuBarBinary: String?
-        for p in possiblePaths {
-            let resolved = (p as NSString).standardizingPath
-            if FileManager.default.fileExists(atPath: resolved) {
-                menuBarBinary = resolved
-                break
-            }
-        }
-
-        guard let binary = menuBarBinary else {
-            log("[warn] Menu bar app binary not found — skipping auto-install")
-            return
-        }
-        log("[info] Found menu bar app at: \(binary)")
-
-        // Create .app bundle in ~/Applications/
-        let appDir = "\(NSHomeDirectory())/Applications/FalconPulsar Menu Bar.app"
-        let macosDir = "\(appDir)/Contents/MacOS"
         let fm = FileManager.default
 
-        do {
-            try fm.createDirectory(atPath: macosDir, withIntermediateDirectories: true)
-            let destBinary = "\(macosDir)/FalconPulsarMenuBar"
-            if fm.fileExists(atPath: destBinary) {
-                try fm.removeItem(atPath: destBinary)
-            }
-            try fm.copyItem(atPath: binary, toPath: destBinary)
-
-            // Create app icon from embedded logo
-            let resourcesDir = "\(appDir)/Contents/Resources"
-            try fm.createDirectory(atPath: resourcesDir, withIntermediateDirectories: true)
-            createAppIcon(at: "\(resourcesDir)/AppIcon.icns")
-
-            // Create Info.plist
-            let plist = """
-            <?xml version="1.0" encoding="UTF-8"?>
-            <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-            <plist version="1.0">
-            <dict>
-                <key>CFBundleExecutable</key>
-                <string>FalconPulsarMenuBar</string>
-                <key>CFBundleIdentifier</key>
-                <string>com.falconpulsar.menubar</string>
-                <key>CFBundleName</key>
-                <string>FalconPulsar</string>
-                <key>CFBundleVersion</key>
-                <string>0.1.0</string>
-                <key>CFBundleIconFile</key>
-                <string>AppIcon</string>
-                <key>LSUIElement</key>
-                <true/>
-            </dict>
-            </plist>
-            """
-            try plist.write(toFile: "\(appDir)/Contents/Info.plist", atomically: true, encoding: .utf8)
-            log("[info] Menu bar app installed to \(appDir)")
-        } catch {
-            log("[warn] Failed to install menu bar app: \(error)")
+        // The menu bar .app is bundled inside this installer's Resources.
+        guard let resourcePath = Bundle.main.resourcePath else {
+            log("[warn] Installer has no resource path — skipping menu bar install")
+            return
+        }
+        let sourceApp = "\(resourcePath)/FalconPulsar Menu Bar.app"
+        guard fm.fileExists(atPath: sourceApp) else {
+            log("[warn] Bundled menu bar app not found at \(sourceApp) — skipping")
             return
         }
 
-        // Create LaunchAgent for auto-start on login
+        let destApp = "/Applications/FalconPulsar Menu Bar.app"
+
+        // Kill any existing FalconPulsarMenuBar process so we can replace
+        // the binary — copy/remove fails if the file is in use.
+        _ = ShellRunner.run("/usr/bin/pkill -9 -f FalconPulsarMenuBar 2>/dev/null; sleep 0.5")
+        log("[info] Killed any running menu bar instances")
+
+        do {
+            if fm.fileExists(atPath: destApp) {
+                try fm.removeItem(atPath: destApp)
+                log("[info] Removed existing \(destApp)")
+            }
+            try fm.copyItem(atPath: sourceApp, toPath: destApp)
+            log("[info] Copied menu bar app from \(sourceApp)")
+            // Only strip quarantine — do NOT re-sign. The bundle is already
+            // signed by the DMG build step, and re-signing on the customer's
+            // machine changes the signature each install, which poisons
+            // LaunchServices caches.
+            _ = ShellRunner.run("/usr/bin/xattr -dr com.apple.quarantine '\(destApp)' 2>/dev/null")
+            log("[info] Stripped quarantine from menu bar app")
+        } catch {
+            log("[warn] Failed to copy menu bar app to /Applications: \(error)")
+            return
+        }
+
+        // LaunchAgent for auto-start on login
         let launchAgentDir = "\(NSHomeDirectory())/Library/LaunchAgents"
         let launchAgentPath = "\(launchAgentDir)/com.falconpulsar.menubar.plist"
         do {
@@ -310,7 +323,7 @@ enum InstallRunner {
                 <string>com.falconpulsar.menubar</string>
                 <key>ProgramArguments</key>
                 <array>
-                    <string>\(NSHomeDirectory())/Applications/FalconPulsar Menu Bar.app/Contents/MacOS/FalconPulsarMenuBar</string>
+                    <string>\(destApp)/Contents/MacOS/FalconPulsarMenuBar</string>
                 </array>
                 <key>RunAtLoad</key>
                 <true/>
@@ -325,11 +338,8 @@ enum InstallRunner {
             log("[warn] Failed to create LaunchAgent: \(error)")
         }
 
-        // Register the .app bundle with macOS LaunchServices so the
-        // icon appears in Login Items, Finder, and Spotlight.
-        let (_, _) = ShellRunner.run("/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f '\(appDir)'")
+        let (_, _) = ShellRunner.run("/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f '\(destApp)'")
         log("[info] Registered app with LaunchServices")
-        log("[info] Menu bar app ready at \(appDir) (will launch after user confirms)")
     }
 
     private static func finish(state: InstallerState, success: Bool, error: String) {

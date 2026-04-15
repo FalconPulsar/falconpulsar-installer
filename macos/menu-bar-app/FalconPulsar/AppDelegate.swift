@@ -21,10 +21,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        // Explicitly force the item visible. macOS remembers per-bundle-ID
+        // user hide/show state in the menu bar; this ensures we start shown.
+        statusItem.behavior = []
+        statusItem.isVisible = true
         updateIcon(.unknown)
-
         buildMenu()
-
         pollTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
             self?.pollHealth()
         }
@@ -32,6 +34,26 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     // MARK: - Menu
+
+    /// Builds an NSAttributedString where `symbol` (SF Symbol) appears inline
+    /// at the start, followed by the title. All menu items using this render
+    /// their leading edge at column 0 (text and icon share the same column).
+    private func inlineIconTitle(_ title: String, symbol: String, color: NSColor? = nil, bold: Bool = false) -> NSAttributedString {
+        let attachment = NSTextAttachment()
+        var img = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+        if let color = color, let base = img {
+            let cfg = NSImage.SymbolConfiguration(paletteColors: [color])
+            img = base.withSymbolConfiguration(cfg)
+        }
+        attachment.image = img
+        let out = NSMutableAttributedString()
+        out.append(NSAttributedString(attachment: attachment))
+        let textAttrs: [NSAttributedString.Key: Any] = bold
+            ? [.font: NSFont.boldSystemFont(ofSize: 13)]
+            : [:]
+        out.append(NSAttributedString(string: "  \(title)", attributes: textAttrs))
+        return out
+    }
 
     private func buildMenu() {
         let menu = NSMenu()
@@ -53,22 +75,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         let openUI = NSMenuItem(title: "Open Web UI", action: #selector(openWebUI), keyEquivalent: "o")
         openUI.target = self
-        openUI.attributedTitle = NSAttributedString(
-            string: "Open Web UI",
-            attributes: [.font: NSFont.boldSystemFont(ofSize: 13)]
-        )
+        openUI.attributedTitle = inlineIconTitle("Open Web UI", symbol: "safari", bold: true)
         menu.addItem(openUI)
 
         let start = NSMenuItem(title: "Start Stack", action: #selector(startStack), keyEquivalent: "")
         start.target = self
+        start.attributedTitle = inlineIconTitle("Start Stack", symbol: "play.fill")
         menu.addItem(start)
 
         let stop = NSMenuItem(title: "Stop Stack", action: #selector(stopStack), keyEquivalent: "")
         stop.target = self
+        stop.attributedTitle = inlineIconTitle("Stop Stack", symbol: "stop.fill")
         menu.addItem(stop)
 
         let restart = NSMenuItem(title: "Restart Stack", action: #selector(restartStack), keyEquivalent: "")
         restart.target = self
+        restart.attributedTitle = inlineIconTitle("Restart Stack", symbol: "arrow.clockwise")
         menu.addItem(restart)
         menu.addItem(.separator())
 
@@ -107,12 +129,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         let autoStart = NSMenuItem(title: "Start at Login", action: #selector(toggleAutoStart), keyEquivalent: "")
         autoStart.target = self
-        autoStart.state = isAutoStartEnabled() ? .on : .off
+        let autoStartTitle = isAutoStartEnabled() ? "✓ Start at Login" : "Start at Login"
+        autoStart.title = autoStartTitle
         menu.addItem(autoStart)
 
         let docs = NSMenuItem(title: "Documentation", action: #selector(openDocumentation), keyEquivalent: "d")
         docs.target = self
         menu.addItem(docs)
+
+        let requestFeature = NSMenuItem(title: "Request a Feature…", action: #selector(openRequestFeature), keyEquivalent: "")
+        requestFeature.target = self
+        requestFeature.attributedTitle = inlineIconTitle(
+            "Request a Feature…",
+            symbol: "lightbulb.fill",
+            color: NSColor(red: 0.95, green: 0.55, blue: 0.10, alpha: 1.0)
+        )
+        menu.addItem(requestFeature)
 
         let refresh = NSMenuItem(title: "Refresh Status", action: #selector(refreshStatus), keyEquivalent: "r")
         refresh.target = self
@@ -173,67 +205,95 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Status Icon
 
     private func updateIcon(_ newStatus: StackStatus) {
-        let color: NSColor
         let tooltip: String
-
+        let dotColor: CGColor
         switch newStatus {
         case .running:
-            color = NSColor(red: 0.13, green: 0.77, blue: 0.37, alpha: 1) // green
             tooltip = "FalconPulsar: Running"
+            dotColor = CGColor(red: 0.13, green: 0.77, blue: 0.37, alpha: 1)
         case .partiallyRunning:
-            color = NSColor(red: 0.92, green: 0.70, blue: 0.03, alpha: 1) // yellow
             tooltip = "FalconPulsar: Partially running"
+            dotColor = CGColor(red: 0.92, green: 0.70, blue: 0.03, alpha: 1)
         case .stopped:
-            color = NSColor(red: 0.94, green: 0.27, blue: 0.27, alpha: 1) // red
             tooltip = "FalconPulsar: Stopped"
+            dotColor = CGColor(red: 0.94, green: 0.27, blue: 0.27, alpha: 1)
         case .unknown:
-            color = NSColor.gray
-            tooltip = "FalconPulsar: Checking..."
+            tooltip = "FalconPulsar: Checking…"
+            dotColor = CGColor(red: 0.55, green: 0.55, blue: 0.55, alpha: 1)
         }
 
-        statusItem.button?.image = createStatusImage(color: color)
-        statusItem.button?.toolTip = tooltip
+        guard let button = statusItem.button else { return }
+
+        button.title = ""
+        if let img = buildIcon(dotColor: dotColor) {
+            button.image = img
+        } else {
+            button.title = "FP"
+        }
+        button.toolTip = tooltip
+    }
+
+    private func buildIcon(dotColor: CGColor) -> NSImage? {
+        guard let url = Bundle.main.url(forResource: "MenuBarIcon", withExtension: "png"),
+              let data = try? Data(contentsOf: url),
+              let src = CGImageSourceCreateWithData(data as CFData, nil),
+              let baseCG = CGImageSourceCreateImageAtIndex(src, 0, nil) else {
+            return nil
+        }
+
+        // 2x retina canvas (36x36) so @2x displays crisp
+        let pxSize = 36
+        guard let ctx = CGContext(
+            data: nil,
+            width: pxSize,
+            height: pxSize,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+
+        // Base logo fills the whole 36x36
+        ctx.interpolationQuality = .high
+        ctx.draw(baseCG, in: CGRect(x: 0, y: 0, width: pxSize, height: pxSize))
+
+        // Status dot: 12x12 at bottom-right with a 2px white halo
+        let dotDiameter: CGFloat = 12
+        let dotX: CGFloat = CGFloat(pxSize) - dotDiameter - 2
+        let dotY: CGFloat = 2
+        let haloRect = CGRect(x: dotX - 2, y: dotY - 2, width: dotDiameter + 4, height: dotDiameter + 4)
+        let dotRect = CGRect(x: dotX, y: dotY, width: dotDiameter, height: dotDiameter)
+        ctx.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+        ctx.fillEllipse(in: haloRect)
+        ctx.setFillColor(dotColor)
+        ctx.fillEllipse(in: dotRect)
+
+        guard let composed = ctx.makeImage() else { return nil }
+        let img = NSImage(cgImage: composed, size: NSSize(width: 18, height: 18))
+        img.isTemplate = false
+        return img
     }
 
     private func createStatusImage(color: NSColor) -> NSImage {
-        let size = NSSize(width: 18, height: 18)
-        let image = NSImage(size: size)
-        image.lockFocus()
-
-        // Draw the falcon logo scaled to fit
-        if let logo = LogoData.image {
-            logo.draw(in: NSRect(origin: .zero, size: size),
-                     from: NSRect(origin: .zero, size: logo.size),
-                     operation: .sourceOver, fraction: 1.0)
-        } else {
-            // Fallback: "F" on dark circle
-            let rect = NSRect(origin: .zero, size: size)
-            NSColor(red: 0.05, green: 0.10, blue: 0.19, alpha: 1).setFill()
-            NSBezierPath(ovalIn: rect.insetBy(dx: 1, dy: 1)).fill()
-            let attrs: [NSAttributedString.Key: Any] = [
-                .font: NSFont.boldSystemFont(ofSize: 11),
-                .foregroundColor: NSColor.white
-            ]
-            let str = NSAttributedString(string: "F", attributes: attrs)
-            let strSize = str.size()
-            str.draw(at: NSPoint(
-                x: (size.width - strSize.width) / 2,
-                y: (size.height - strSize.height) / 2
-            ))
+        // Write the PNG to a temp file once, then load via NSImage(contentsOfFile:).
+        // File-based NSImage loading has proven the most reliable path for
+        // menu bar status items on modern macOS.
+        let tmpPath = NSTemporaryDirectory() + "falconpulsar-menubar-icon.png"
+        if !FileManager.default.fileExists(atPath: tmpPath) {
+            if let data = Data(base64Encoded: LogoData.base64) {
+                try? data.write(to: URL(fileURLWithPath: tmpPath))
+            }
         }
-
-        // Status dot in bottom-right corner
-        let dotSize: CGFloat = 6
-        let dotX = size.width - dotSize - 1
-        let dotY: CGFloat = 1
-        NSColor.white.setFill()
-        NSBezierPath(ovalIn: NSRect(x: dotX - 1, y: dotY - 1, width: dotSize + 2, height: dotSize + 2)).fill()
-        color.setFill()
-        NSBezierPath(ovalIn: NSRect(x: dotX, y: dotY, width: dotSize, height: dotSize)).fill()
-
-        image.unlockFocus()
-        image.isTemplate = false
-        return image
+        if let img = NSImage(contentsOfFile: tmpPath) {
+            img.size = NSSize(width: 18, height: 18)
+            img.isTemplate = false
+            return img
+        }
+        // Last-resort fallback: SF Symbol as a template image
+        let fallback = NSImage(systemSymbolName: "chart.line.uptrend.xyaxis",
+                               accessibilityDescription: "FalconPulsar") ?? NSImage()
+        fallback.isTemplate = true
+        return fallback
     }
 
     // MARK: - Health Polling
@@ -311,14 +371,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func viewLogs() {
-        let script = """
-        tell application "Terminal"
-            activate
-            do script "cd \(homeDir) && docker compose logs -f --tail 100"
-        end tell
+        // Write a .command shell script; opening it launches Terminal
+        // automatically via LaunchServices — no AppleScript permissions
+        // required. The script runs `docker compose logs -f` in the
+        // user's stack directory.
+        let scriptPath = NSTemporaryDirectory() + "falconpulsar-logs.command"
+        let body = """
+        #!/bin/bash
+        cd \"\(homeDir)\" || exit 1
+        exec docker compose logs -f --tail 100
         """
-        var error: NSDictionary?
-        NSAppleScript(source: script)?.executeAndReturnError(&error)
+        try? body.write(toFile: scriptPath, atomically: true, encoding: .utf8)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o755],
+                                                ofItemAtPath: scriptPath)
+        NSWorkspace.shared.open(URL(fileURLWithPath: scriptPath))
     }
 
     @objc func openDataFolder() {
@@ -363,12 +429,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let fm = FileManager.default
 
         if fm.fileExists(atPath: plistPath) {
-            // Remove auto-start
             shell("launchctl unload '\(plistPath)' 2>/dev/null")
             try? fm.removeItem(atPath: plistPath)
         } else {
-            // Add auto-start
-            let appPath = "\(NSHomeDirectory())/Applications/FalconPulsar Menu Bar.app/Contents/MacOS/FalconPulsarMenuBar"
+            // Resolve the installed app path (/Applications takes precedence)
+            let candidates = [
+                "/Applications/FalconPulsar Menu Bar.app",
+                "\(NSHomeDirectory())/Applications/FalconPulsar Menu Bar.app",
+            ]
+            let appBundle = candidates.first { fm.fileExists(atPath: $0) } ?? candidates[0]
+            let appBinary = "\(appBundle)/Contents/MacOS/FalconPulsarMenuBar"
             let plist = """
             <?xml version="1.0" encoding="UTF-8"?>
             <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -378,22 +448,26 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 <string>com.falconpulsar.menubar</string>
                 <key>ProgramArguments</key>
                 <array>
-                    <string>\(appPath)</string>
+                    <string>\(appBinary)</string>
                 </array>
                 <key>RunAtLoad</key>
                 <true/>
+                <key>KeepAlive</key>
+                <false/>
             </dict>
             </plist>
             """
+            try? fm.createDirectory(atPath: "\(NSHomeDirectory())/Library/LaunchAgents",
+                                    withIntermediateDirectories: true)
             try? plist.write(toFile: plistPath, atomically: true, encoding: .utf8)
+            // Do NOT `launchctl load` here — we're already running, and
+            // loading would spawn a duplicate instance. launchd picks the
+            // plist up automatically at next login.
         }
 
-        // Update the menu item state
-        if let menu = statusItem.menu {
-            for item in menu.items where item.title == "Start at Login" {
-                item.state = isAutoStartEnabled() ? .on : .off
-            }
-        }
+        // Rebuild the entire menu so the checkmark prefix updates and
+        // any other state-dependent items refresh.
+        buildMenu()
     }
 
     private func isAutoStartEnabled() -> Bool {
@@ -403,6 +477,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func openDocumentation() {
         NSWorkspace.shared.open(URL(string: "https://falconpulsar.com/docs")!)
+    }
+
+    @objc func openRequestFeature() {
+        NSWorkspace.shared.open(URL(string: "https://falconpulsar.com/roadmap#request-form")!)
     }
 
     @objc func refreshStatus() {
@@ -647,9 +725,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     cd ~/falconpulsar 2>/dev/null && docker compose down --remove-orphans 2>/dev/null || true
                     docker rmi falconpulsar/core falconpulsar/ui falconpulsar/ai-gateway 2>/dev/null || true
                     \(purge ? "rm -rf ~/falconpulsar" : "rm -f ~/falconpulsar/compose.yml ~/falconpulsar/.env")
+                    rm -rf /Applications/FalconPulsar\\ Menu\\ Bar.app 2>/dev/null || true
                     rm -rf ~/Applications/FalconPulsar\\ Menu\\ Bar.app 2>/dev/null || true
+                    launchctl bootout gui/$(id -u)/com.falconpulsar.menubar 2>/dev/null || true
                     launchctl unload ~/Library/LaunchAgents/com.falconpulsar.menubar.plist 2>/dev/null || true
                     rm -f ~/Library/LaunchAgents/com.falconpulsar.menubar.plist 2>/dev/null || true
+                    /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -u /Applications/FalconPulsar\\ Menu\\ Bar.app 2>/dev/null || true
                     """)
             }
 

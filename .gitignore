@@ -19,6 +19,7 @@ macos/pkg/output/
 macos/pkg/staging/
 macos/installer-app/.build/
 macos/menu-bar-app/.build/
+dist/
 
 # Local test artifacts
 *.log

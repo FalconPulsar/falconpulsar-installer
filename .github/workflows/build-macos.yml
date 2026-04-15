@@ -25,105 +25,21 @@ env:
 
 jobs:
   build:
-    name: build macOS installer + menu bar app
+    name: build macOS DMG
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v5
 
-      - name: Build installer app
+      - name: Build DMG
         run: |
-          cd macos/installer-app
-          swift build -c release 2>&1
-          echo "Installer app built"
-
-      - name: Build menu bar app
-        run: |
-          cd macos/menu-bar-app
-          mkdir -p .build
-          # Build with swiftc directly (SPM has caching issues with menu bar apps)
-          swiftc FalconPulsar/main.swift FalconPulsar/AppDelegate.swift FalconPulsar/Logo.swift \
-            -o .build/FalconPulsarMenuBar \
-            -framework AppKit \
-            -framework UserNotifications \
-            -O
-          echo "Menu bar app built"
-
-      - name: Stage .app bundles under Applications/
-        run: |
-          ROOT=dist/pkg-root/Applications
-          mkdir -p "$ROOT"
-
-          APP="$ROOT/FalconPulsar Installer.app"
-          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-          cp macos/installer-app/.build/release/FalconPulsarInstaller "$APP/Contents/MacOS/"
-          cat > "$APP/Contents/Info.plist" << 'PLIST'
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0"><dict>
-            <key>CFBundleExecutable</key><string>FalconPulsarInstaller</string>
-            <key>CFBundleIdentifier</key><string>com.falconpulsar.installer</string>
-            <key>CFBundleName</key><string>FalconPulsar Installer</string>
-            <key>CFBundleVersion</key><string>0.1.0</string>
-            <key>CFBundleShortVersionString</key><string>0.1.0</string>
-            <key>NSHighResolutionCapable</key><true/>
-          </dict></plist>
-          PLIST
-
-          APP="$ROOT/FalconPulsar Menu Bar.app"
-          mkdir -p "$APP/Contents/MacOS"
-          cp macos/menu-bar-app/.build/FalconPulsarMenuBar "$APP/Contents/MacOS/"
-          cat > "$APP/Contents/Info.plist" << 'PLIST'
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0"><dict>
-            <key>CFBundleExecutable</key><string>FalconPulsarMenuBar</string>
-            <key>CFBundleIdentifier</key><string>com.falconpulsar.menubar</string>
-            <key>CFBundleName</key><string>FalconPulsar</string>
-            <key>CFBundleVersion</key><string>0.1.0</string>
-            <key>CFBundleShortVersionString</key><string>0.1.0</string>
-            <key>LSUIElement</key><true/>
-          </dict></plist>
-          PLIST
-
-      - name: Ad-hoc codesign apps
-        run: |
-          codesign --force --deep --sign - "dist/pkg-root/Applications/FalconPulsar Installer.app"
-          codesign --force --deep --sign - "dist/pkg-root/Applications/FalconPulsar Menu Bar.app"
-
-      - name: Create postinstall scripts
-        run: |
-          mkdir -p dist/scripts
-          cat > dist/scripts/postinstall <<'SH'
-          #!/bin/bash
-          /usr/bin/xattr -dr com.apple.quarantine "/Applications/FalconPulsar Installer.app" 2>/dev/null || true
-          /usr/bin/xattr -dr com.apple.quarantine "/Applications/FalconPulsar Menu Bar.app" 2>/dev/null || true
-          if [ -n "$USER" ] && [ "$USER" != "root" ]; then
-            TARGET_USER="$USER"
-          else
-            TARGET_USER="$(/usr/bin/stat -f %Su /dev/console)"
-          fi
-          TARGET_UID="$(/usr/bin/id -u "$TARGET_USER")"
-          /bin/launchctl asuser "$TARGET_UID" /usr/bin/open -a "/Applications/FalconPulsar Installer.app" || true
-          exit 0
-          SH
-          chmod +x dist/scripts/postinstall
-
-      - name: Build .pkg
-        run: |
-          mkdir -p dist
-          pkgbuild \
-            --root dist/pkg-root \
-            --scripts dist/scripts \
-            --identifier com.falconpulsar.installer.pkg \
-            --version 0.1.0 \
-            --install-location / \
-            dist/FalconPulsar-Setup.pkg
-          ls -lh dist/FalconPulsar-Setup.pkg
+          chmod +x macos/build-dmg.sh
+          ./macos/build-dmg.sh
+          ls -lh dist/FalconPulsar-Setup.dmg
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v5
         with:
           name: FalconPulsar-macOS
-          path: dist/FalconPulsar-Setup.pkg
+          path: dist/FalconPulsar-Setup.dmg
           retention-days: 30
           if-no-files-found: error

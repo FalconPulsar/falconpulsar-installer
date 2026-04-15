@@ -1,6 +1,8 @@
 using System;
 using System.Diagnostics;
 using System.Drawing;
+using System.Drawing.Drawing2D;
+using System.Drawing.Text;
 using System.IO;
 using System.Net.Http;
 using System.Text.Json;
@@ -115,14 +117,18 @@ namespace FalconPulsar.Tray
             var openUi = new ToolStripMenuItem("Open Web UI", null,
                 (s, e) => OpenWebUI());
             openUi.Font = new Font(openUi.Font, FontStyle.Bold);
+            openUi.Image = CreateGlyphIcon("\uE774", Color.FromArgb(70, 70, 70));  // Globe
             menu.Items.Add(openUi);
 
             _startItem = new ToolStripMenuItem("Start Stack", null,
                 async (s, e) => await RunComposeCommand("up -d"));
+            _startItem.Image = CreateGlyphIcon("\uE768", Color.FromArgb(70, 70, 70));  // Play
             _stopItem = new ToolStripMenuItem("Stop Stack", null,
                 async (s, e) => await RunComposeCommand("down"));
+            _stopItem.Image = CreateSquareIcon(Color.FromArgb(70, 70, 70));  // Stop (drawn square)
             _restartItem = new ToolStripMenuItem("Restart Stack", null,
                 async (s, e) => await RunComposeCommand("restart"));
+            _restartItem.Image = CreateGlyphIcon("\uE72C", Color.FromArgb(70, 70, 70));  // Refresh
             menu.Items.Add(_startItem);
             menu.Items.Add(_stopItem);
             menu.Items.Add(_restartItem);
@@ -160,6 +166,13 @@ namespace FalconPulsar.Tray
             menu.Items.Add(new ToolStripMenuItem("Documentation", null,
                 (s, e) => Process.Start(new ProcessStartInfo("https://falconpulsar.com/docs")
                 { UseShellExecute = true })));
+
+            var requestFeature = new ToolStripMenuItem("Request a Feature...", null,
+                (s, e) => Process.Start(new ProcessStartInfo("https://falconpulsar.com/roadmap#request-form")
+                { UseShellExecute = true }));
+            requestFeature.Image = CreateGlyphIcon("\uEA80", Color.FromArgb(243, 140, 25));  // Lightbulb, warm orange
+            menu.Items.Add(requestFeature);
+
             menu.Items.Add(new ToolStripMenuItem("Refresh Status", null,
                 async (s, e) => await PollHealth()));
             menu.Items.Add(new ToolStripMenuItem("About FalconPulsar", null,
@@ -680,6 +693,42 @@ namespace FalconPulsar.Tray
             _pollTimer.Stop();
             _trayIcon.Visible = false;
             Application.Exit();
+        }
+
+        // Draws a filled square icon — used for Stop because Segoe MDL2 Assets
+        // doesn't ship a clean filled-square glyph.
+        private static Image CreateSquareIcon(Color color)
+        {
+            var bmp = new Bitmap(16, 16);
+            using (var g = Graphics.FromImage(bmp))
+            using (var brush = new SolidBrush(color))
+            {
+                g.Clear(Color.Transparent);
+                g.SmoothingMode = SmoothingMode.AntiAlias;
+                g.FillRectangle(brush, new Rectangle(4, 4, 8, 8));
+            }
+            return bmp;
+        }
+
+        // Renders a Segoe MDL2 Assets glyph into a 16x16 bitmap so it can be
+        // used as a ToolStripMenuItem.Image. Segoe MDL2 Assets ships with
+        // Windows 10+, so no font shipping is required.
+        private static Image CreateGlyphIcon(string glyph, Color color)
+        {
+            var bmp = new Bitmap(16, 16);
+            using (var g = Graphics.FromImage(bmp))
+            using (var font = new Font("Segoe MDL2 Assets", 11f, FontStyle.Regular, GraphicsUnit.Pixel))
+            using (var brush = new SolidBrush(color))
+            {
+                g.Clear(Color.Transparent);
+                g.SmoothingMode = SmoothingMode.AntiAlias;
+                g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
+                var sz = g.MeasureString(glyph, font);
+                var x = (16 - sz.Width) / 2f;
+                var y = (16 - sz.Height) / 2f;
+                g.DrawString(glyph, font, brush, x, y);
+            }
+            return bmp;
         }
 
         public void Dispose()

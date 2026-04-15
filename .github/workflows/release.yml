@@ -98,116 +98,29 @@ jobs:
           name: bundles-windows
           path: windows/Output/*.exe
 
-  build-macos-pkg:
-    name: build macOS .pkg
+  build-macos-dmg:
+    name: build macOS DMG
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v5
 
-      - name: Build installer app
+      - name: Build DMG via build-dmg.sh
         run: |
-          cd macos/installer-app
-          swift build -c release
+          chmod +x macos/build-dmg.sh
+          FP_VERSION="${GITHUB_REF_NAME#v}" ./macos/build-dmg.sh
+          cp dist/FalconPulsar-Setup.dmg "dist/FalconPulsar-Setup-${GITHUB_REF_NAME}.dmg"
+          ls -lh dist/*.dmg
 
-      - name: Build menu bar app
-        run: |
-          cd macos/menu-bar-app
-          mkdir -p .build
-          swiftc FalconPulsar/main.swift FalconPulsar/AppDelegate.swift FalconPulsar/Logo.swift \
-            -o .build/FalconPulsarMenuBar \
-            -framework AppKit -framework UserNotifications -O
-
-      - name: Stage .app bundles
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          ROOT=dist/pkg-root/Applications
-          mkdir -p "$ROOT"
-
-          # Installer .app
-          APP="$ROOT/FalconPulsar Installer.app"
-          mkdir -p "$APP/Contents/MacOS"
-          cp macos/installer-app/.build/release/FalconPulsarInstaller "$APP/Contents/MacOS/"
-          cat > "$APP/Contents/Info.plist" <<PLIST
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0"><dict>
-            <key>CFBundleExecutable</key><string>FalconPulsarInstaller</string>
-            <key>CFBundleIdentifier</key><string>com.falconpulsar.installer</string>
-            <key>CFBundleName</key><string>FalconPulsar Installer</string>
-            <key>CFBundleVersion</key><string>${VERSION}</string>
-            <key>CFBundleShortVersionString</key><string>${VERSION}</string>
-            <key>NSHighResolutionCapable</key><true/>
-          </dict></plist>
-          PLIST
-
-          # Menu bar .app
-          APP="$ROOT/FalconPulsar Menu Bar.app"
-          mkdir -p "$APP/Contents/MacOS"
-          cp macos/menu-bar-app/.build/FalconPulsarMenuBar "$APP/Contents/MacOS/"
-          cat > "$APP/Contents/Info.plist" <<PLIST
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0"><dict>
-            <key>CFBundleExecutable</key><string>FalconPulsarMenuBar</string>
-            <key>CFBundleIdentifier</key><string>com.falconpulsar.menubar</string>
-            <key>CFBundleName</key><string>FalconPulsar</string>
-            <key>CFBundleVersion</key><string>${VERSION}</string>
-            <key>CFBundleShortVersionString</key><string>${VERSION}</string>
-            <key>LSUIElement</key><true/>
-          </dict></plist>
-          PLIST
-
-      - name: Ad-hoc codesign apps
-        run: |
-          codesign --force --deep --sign - "dist/pkg-root/Applications/FalconPulsar Installer.app"
-          codesign --force --deep --sign - "dist/pkg-root/Applications/FalconPulsar Menu Bar.app"
-          codesign -dv "dist/pkg-root/Applications/FalconPulsar Installer.app" || true
-
-      - name: Create postinstall scripts
-        run: |
-          mkdir -p dist/scripts
-          cat > dist/scripts/postinstall <<'SH'
-          #!/bin/bash
-          # Strip macOS quarantine so Gatekeeper doesn't block first launch.
-          /usr/bin/xattr -dr com.apple.quarantine "/Applications/FalconPulsar Installer.app" 2>/dev/null || true
-          /usr/bin/xattr -dr com.apple.quarantine "/Applications/FalconPulsar Menu Bar.app" 2>/dev/null || true
-          # Auto-launch the FalconPulsar wizard as the installing user
-          # (postinstall runs as root; use launchctl asuser to hand off).
-          if [ -n "$USER" ] && [ "$USER" != "root" ]; then
-            TARGET_USER="$USER"
-          else
-            TARGET_USER="$(/usr/bin/stat -f %Su /dev/console)"
-          fi
-          TARGET_UID="$(/usr/bin/id -u "$TARGET_USER")"
-          /bin/launchctl asuser "$TARGET_UID" /usr/bin/open -a "/Applications/FalconPulsar Installer.app" || true
-          exit 0
-          SH
-          chmod +x dist/scripts/postinstall
-
-      - name: Build .pkg
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          mkdir -p dist
-          pkgbuild \
-            --root dist/pkg-root \
-            --scripts dist/scripts \
-            --identifier com.falconpulsar.installer.pkg \
-            --version "${VERSION}" \
-            --install-location / \
-            "dist/FalconPulsar-Setup-${GITHUB_REF_NAME}.pkg"
-          cp "dist/FalconPulsar-Setup-${GITHUB_REF_NAME}.pkg" dist/FalconPulsar-Setup.pkg
-          ls -lh dist/*.pkg
-
-      - name: Upload .pkg
+      - name: Upload DMG
         uses: actions/upload-artifact@v5
         with:
           name: bundles-macos
-          path: dist/FalconPulsar-Setup*.pkg
+          path: dist/FalconPulsar-Setup*.dmg
 
   publish:
     name: create github release
     runs-on: ubuntu-latest
-    needs: [bundle, build-windows-exe, build-macos-pkg]
+    needs: [bundle, build-windows-exe, build-macos-dmg]
     permissions:
       contents: write
     steps:
@@ -223,7 +136,7 @@ jobs:
           name: bundles-windows
           path: dist/
 
-      - name: Download macOS .pkg
+      - name: Download macOS DMG
         uses: actions/download-artifact@v5
         with:
           name: bundles-macos
@@ -236,9 +149,11 @@ jobs:
           if [ -n "$EXE" ]; then
             cp "$EXE" dist/FalconPulsar-Setup.exe
           fi
-          # macOS .pkg (unversioned alias already created by build-pkg.sh)
-          # Just verify it exists
-          ls -lh dist/FalconPulsar-Setup.pkg 2>/dev/null || echo "No .pkg alias found"
+          # macOS DMG
+          DMG=$(ls dist/FalconPulsar-Setup-*.dmg 2>/dev/null | head -1)
+          if [ -n "$DMG" ]; then
+            cp "$DMG" dist/FalconPulsar-Setup.dmg
+          fi
 
       - name: List release assets
         run: ls -lh dist/

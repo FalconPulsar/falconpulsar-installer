@@ -3,6 +3,7 @@ import SwiftUI
 
 enum InstallerPage: Int, CaseIterable {
     case welcome = 0
+    case existing
     case legal
     case registry
     case credentials
@@ -12,6 +13,27 @@ enum InstallerPage: Int, CaseIterable {
 
 enum StepStatus {
     case pending, running, passed, failed, skipped
+}
+
+enum InstallAction: String {
+    case upgrade    // pull + recreate, preserves compose.yml/.env/data
+    case reinstall  // rewrite stack files, preserves data
+    case fresh      // delete everything and start over
+}
+
+struct ExistingInstall {
+    var stackDirExists: Bool = false
+    var stackDirSize: String = ""
+    var containers: [String] = []      // names of FP containers (running or stopped)
+    var runningContainers: [String] = []
+    var images: [String] = []          // "repo:tag  size"
+    var dataDirSize: String = ""
+    var dataDirExists: Bool = false
+    var menuBarInstalled: Bool = false
+
+    var isEmpty: Bool {
+        !stackDirExists && containers.isEmpty && images.isEmpty && !dataDirExists && !menuBarInstalled
+    }
 }
 
 class InstallerState: ObservableObject {
@@ -36,7 +58,16 @@ class InstallerState: ObservableObject {
     @Published var dockerFound = false
     @Published var dockerRunning = false
     @Published var dockerPath = ""
+    @Published var composeV2 = false
     @Published var detecting = true
+    @Published var runtimeName = ""
+
+    // Existing install detection
+    @Published var existing: ExistingInstall = ExistingInstall()
+    @Published var detectingExisting = false
+    @Published var installAction: InstallAction = .fresh
+    @Published var removeCachedImages = false
+    @Published var freshConfirmed = false
 
     // Install progress
     @Published var steps: [(name: String, status: StepStatus)] = [
@@ -63,11 +94,74 @@ class InstallerState: ObservableObject {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let path = ShellRunner.findDocker()
             let running = ShellRunner.isDockerRunning()
+            var compose = false
+            var runtime = ""
+            if let p = path, running {
+                let (out, code) = ShellRunner.run("\(p) compose version 2>&1")
+                compose = (code == 0)
+                let (ctx, _) = ShellRunner.run("\(p) context show 2>/dev/null")
+                runtime = ctx.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
             DispatchQueue.main.async {
                 self?.dockerPath = path ?? ""
                 self?.dockerFound = path != nil
                 self?.dockerRunning = running
+                self?.composeV2 = compose
+                self?.runtimeName = runtime
                 self?.detecting = false
+            }
+        }
+    }
+
+    var prerequisitesOk: Bool {
+        dockerFound && dockerRunning && composeV2
+    }
+
+    func detectExistingInstall() {
+        detectingExisting = true
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            var found = ExistingInstall()
+            let home = NSHomeDirectory()
+            let fm = FileManager.default
+
+            let stackDir = "\(home)/falconpulsar"
+            if fm.fileExists(atPath: stackDir) {
+                found.stackDirExists = true
+                let (sz, _) = ShellRunner.run("/usr/bin/du -sh '\(stackDir)' 2>/dev/null | /usr/bin/awk '{print $1}'")
+                found.stackDirSize = sz.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+
+            let dataDir = "\(stackDir)/data"
+            if fm.fileExists(atPath: dataDir) {
+                found.dataDirExists = true
+                let (sz, _) = ShellRunner.run("/usr/bin/du -sh '\(dataDir)' 2>/dev/null | /usr/bin/awk '{print $1}'")
+                found.dataDirSize = sz.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+
+            if let docker = ShellRunner.findDocker() {
+                let (psAll, _) = ShellRunner.run("\(docker) ps -a --filter name=falconpulsar- --format '{{.Names}}' 2>/dev/null")
+                found.containers = psAll.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
+
+                let (psRun, _) = ShellRunner.run("\(docker) ps --filter name=falconpulsar- --format '{{.Names}}' 2>/dev/null")
+                found.runningContainers = psRun.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
+
+                let (imgs, _) = ShellRunner.run("\(docker) images --filter reference='*falconpulsar*' --format '{{.Repository}}:{{.Tag}}  {{.Size}}' 2>/dev/null")
+                found.images = imgs.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
+            }
+
+            if fm.fileExists(atPath: "/Applications/FalconPulsar Menu Bar.app") {
+                found.menuBarInstalled = true
+            }
+
+            DispatchQueue.main.async {
+                self?.existing = found
+                self?.detectingExisting = false
+                // Default action: upgrade if stack dir exists, fresh otherwise
+                if found.stackDirExists || !found.containers.isEmpty {
+                    self?.installAction = .upgrade
+                } else {
+                    self?.installAction = .fresh
+                }
             }
         }
     }
@@ -108,14 +202,27 @@ class InstallerState: ObservableObject {
     }
 
     func nextPage() {
-        if let next = InstallerPage(rawValue: currentPage.rawValue + 1) {
+        guard let next = InstallerPage(rawValue: currentPage.rawValue + 1) else { return }
+        if next == .existing && existing.isEmpty {
+            currentPage = InstallerPage(rawValue: next.rawValue + 1) ?? next
+        } else {
             currentPage = next
         }
     }
 
     func prevPage() {
-        if let prev = InstallerPage(rawValue: currentPage.rawValue - 1) {
+        guard let prev = InstallerPage(rawValue: currentPage.rawValue - 1) else { return }
+        if prev == .existing && existing.isEmpty {
+            currentPage = InstallerPage(rawValue: prev.rawValue - 1) ?? prev
+        } else {
             currentPage = prev
         }
+    }
+
+    var canProceedFromExisting: Bool {
+        if installAction == .fresh && !existing.isEmpty {
+            return freshConfirmed
+        }
+        return true
     }
 }
