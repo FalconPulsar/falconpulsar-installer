@@ -474,7 +474,7 @@ struct CredentialsPage: View {
 
             Toggle(isOn: $state.aiGatewayEnabled) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Install AI Gateway")
+                    Text("Install AI Capabilities")
                         .font(.callout.bold())
                     Text("Provides AI chat, natural-language queries, and LLM-powered analysis. Requires an LLM API key or local Ollama. You can enable this later with fp ai enable.")
                         .font(.caption)
@@ -603,7 +603,7 @@ struct ConclusionPage: View {
                     ServiceRow(name: "Web UI", url: "http://localhost:8080")
                     ServiceRow(name: "REST API", url: "http://localhost:7433")
                     ServiceRow(name: "WebSocket", url: "ws://localhost:7434")
-                    ServiceRow(name: "AI Gateway", url: "http://localhost:7436")
+                    ServiceRow(name: "AI Capabilities", url: "http://localhost:7436")
                 }
 
                 Divider().padding(.horizontal, 40)

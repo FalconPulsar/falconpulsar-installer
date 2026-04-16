@@ -105,7 +105,7 @@ namespace FalconPulsar.Tray
             // Status items
             _coreItem = new ToolStripMenuItem("Core: checking...");
             _uiItem = new ToolStripMenuItem("Web UI: checking...");
-            _gatewayItem = new ToolStripMenuItem("AI Gateway: checking...");
+            _gatewayItem = new ToolStripMenuItem("AI Capabilities: checking...");
             _apiItem = new ToolStripMenuItem("REST API: checking...");
             menu.Items.Add(_coreItem);
             menu.Items.Add(_uiItem);
@@ -146,7 +146,7 @@ namespace FalconPulsar.Tray
             var configMenu = new ToolStripMenuItem("Config Files");
             configMenu.DropDownItems.Add(new ToolStripMenuItem("Core (falconpulsar.toml)", null,
                 (s, e) => EditConfigFile("data/falconpulsar.toml")));
-            configMenu.DropDownItems.Add(new ToolStripMenuItem("AI Gateway (gateway.yaml)", null,
+            configMenu.DropDownItems.Add(new ToolStripMenuItem("AI Capabilities (gateway.yaml)", null,
                 (s, e) => EditConfigFile("gateway.yaml")));
             configMenu.DropDownItems.Add(new ToolStripMenuItem("Docker Compose (compose.yml)", null,
                 (s, e) => EditConfigFile("compose.yml")));
@@ -155,17 +155,13 @@ namespace FalconPulsar.Tray
                 (s, e) => OpenDataFolder()));
             menu.Items.Add(configMenu);
 
-            // AI Gateway toggle submenu
-            var aiMenu = new ToolStripMenuItem("AI Gateway");
-            var aiStatusLabel = new ToolStripMenuItem(IsAIGatewayEnabled() ? "✓ Enabled" : "Disabled")
-            { Enabled = false };
-            aiMenu.DropDownItems.Add(aiStatusLabel);
-            aiMenu.DropDownItems.Add(new ToolStripSeparator());
-            aiMenu.DropDownItems.Add(new ToolStripMenuItem("Enable AI Gateway...", null,
-                async (s, e) => await EnableAIGatewayAsync()));
-            aiMenu.DropDownItems.Add(new ToolStripMenuItem("Disable AI Gateway", null,
-                (s, e) => DisableAIGateway()));
-            menu.Items.Add(aiMenu);
+            // AI Capabilities — single toggle
+            if (IsAIGatewayEnabled())
+                menu.Items.Add(new ToolStripMenuItem("Disable AI Capabilities", null,
+                    (s, e) => DisableAIGateway()));
+            else
+                menu.Items.Add(new ToolStripMenuItem("Enable AI Capabilities", null,
+                    async (s, e) => await EnableAIGatewayAsync()));
 
             // Configuration Backup submenu (export / import)
             var backupMenu = new ToolStripMenuItem("Configuration Backup");
@@ -214,11 +210,14 @@ namespace FalconPulsar.Tray
             _gatewayRunning = await IsContainerRunning("falconpulsar-ai-gateway");
             _apiHealthy = await IsApiHealthy();
 
-            // Determine overall status
+            // Determine overall status — exclude disabled gateway from aggregate
             var prev = _status;
-            if (_coreRunning && _uiRunning && _gatewayRunning)
-                _status = _apiHealthy ? StackStatus.Running : StackStatus.PartiallyRunning;
-            else if (_coreRunning || _uiRunning || _gatewayRunning)
+            var aiEnabled = IsAIGatewayEnabled();
+            var allExpected = _coreRunning && _uiRunning && (!aiEnabled || _gatewayRunning);
+            var anyRunning = _coreRunning || _uiRunning || (aiEnabled && _gatewayRunning);
+            if (allExpected && _apiHealthy)
+                _status = StackStatus.Running;
+            else if (anyRunning)
                 _status = StackStatus.PartiallyRunning;
             else
                 _status = StackStatus.Stopped;
@@ -272,8 +271,16 @@ namespace FalconPulsar.Tray
             _coreItem.Image = CreateDot(_coreRunning ? Color.Green : Color.Red);
             _uiItem.Text = _uiRunning ? "Web UI: Running" : "Web UI: Stopped";
             _uiItem.Image = CreateDot(_uiRunning ? Color.Green : Color.Red);
-            _gatewayItem.Text = _gatewayRunning ? "AI Gateway: Running" : "AI Gateway: Stopped";
-            _gatewayItem.Image = CreateDot(_gatewayRunning ? Color.Green : Color.Red);
+            if (IsAIGatewayEnabled())
+            {
+                _gatewayItem.Text = _gatewayRunning ? "AI Capabilities: Running" : "AI Capabilities: Stopped";
+                _gatewayItem.Image = CreateDot(_gatewayRunning ? Color.Green : Color.Red);
+            }
+            else
+            {
+                _gatewayItem.Text = "AI Capabilities: Disabled";
+                _gatewayItem.Image = CreateDot(Color.Gray);
+            }
             _apiItem.Text = _apiHealthy ? "REST API: Healthy" : "REST API: Not responding";
             _apiItem.Image = CreateDot(_apiHealthy ? Color.Green : Color.Gray);
 
@@ -587,7 +594,7 @@ namespace FalconPulsar.Tray
             });
 
             // Component grid with checkmarks
-            string[] names = { "Core Engine", "Compose", "Web UI", "AI Gateway" };
+            string[] names = { "Core Engine", "Compose", "Web UI", "AI Capabilities" };
             string[] vers = { "latest", "v2", "latest", "latest" };
             bool[] oks = { _coreRunning, true, _uiRunning, _gatewayRunning };
 
@@ -752,48 +759,37 @@ namespace FalconPulsar.Tray
             File.WriteAllLines(envPath, lines);
         }
 
+        private static void EnsureGatewayConfig()
+        {
+            var p = Path.Combine(ConfigBackup.FalconPulsarHomeDir, "gateway.yaml");
+            if (Directory.Exists(p)) Directory.Delete(p, true);
+            if (!File.Exists(p))
+            {
+                Directory.CreateDirectory(ConfigBackup.FalconPulsarHomeDir);
+                File.WriteAllText(p,
+                    "# FalconPulsar AI Gateway — default configuration.\n" +
+                    "# Configure providers + models via the Web UI Config Hub.\n" +
+                    "providers: []\ndefault_model: \"\"\ncontext:\n  max_tokens: 4096\n");
+            }
+        }
+
         private async Task EnableAIGatewayAsync()
         {
-            var creds = PromptAdminCredentials(
-                "Enable AI Gateway",
-                "Enter admin credentials to bootstrap the gateway.");
-            if (creds is null) return;
-
-            using var form = new Form
-            {
-                Text = "LLM Provider Keys",
-                Width = 420, Height = 200,
-                FormBorderStyle = FormBorderStyle.FixedDialog,
-                StartPosition = FormStartPosition.CenterScreen,
-            };
-            var msg = new Label { Text = "Enter at least one API key (or leave blank for Ollama):",
-                Width = 380, Height = 20, Top = 10, Left = 15 };
-            var anthropicLabel = new Label { Text = "Anthropic:", Width = 80, Top = 40, Left = 15 };
-            var anthropicBox = new TextBox { Width = 270, Top = 38, Left = 100 };
-            var xaiLabel = new Label { Text = "xAI:", Width = 80, Top = 72, Left = 15 };
-            var xaiBox = new TextBox { Width = 270, Top = 70, Left = 100 };
-            var okBtn = new Button { Text = "Enable", DialogResult = DialogResult.OK, Width = 80, Top = 110, Left = 210 };
-            var cancelBtn = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, Width = 80, Top = 110, Left = 300 };
-            form.Controls.AddRange(new Control[] { msg, anthropicLabel, anthropicBox, xaiLabel, xaiBox, okBtn, cancelBtn });
-            form.AcceptButton = okBtn;
-            form.CancelButton = cancelBtn;
-            if (form.ShowDialog() != DialogResult.OK) return;
-
+            EnsureGatewayConfig();
             SetEnvValue("FP_AI_GATEWAY_ENABLED", "true");
-            if (!string.IsNullOrWhiteSpace(anthropicBox.Text))
-                SetEnvValue("ANTHROPIC_API_KEY", anthropicBox.Text.Trim());
-            if (!string.IsNullOrWhiteSpace(xaiBox.Text))
-                SetEnvValue("XAI_API_KEY", xaiBox.Text.Trim());
-
+            _trayIcon.ShowBalloonTip(5000, "FalconPulsar",
+                "Starting AI Capabilities… this may take a moment.", ToolTipIcon.Info);
             await RunComposeCommand("--profile ai up -d");
             _trayIcon.ContextMenuStrip = BuildMenu();
+            _trayIcon.ShowBalloonTip(5000, "FalconPulsar",
+                "AI Capabilities is running. Configure LLM providers in the Web UI.", ToolTipIcon.Info);
         }
 
         private void DisableAIGateway()
         {
             var result = MessageBox.Show(
-                "Chat features will be hidden in the Web UI until re-enabled.\n\nDisable AI Gateway?",
-                "Disable AI Gateway",
+                "Chat features will be hidden in the Web UI until re-enabled.\n\nDisable AI Capabilities?",
+                "Disable AI Capabilities",
                 MessageBoxButtons.OKCancel, MessageBoxIcon.Warning);
             if (result != DialogResult.OK) return;
 
@@ -875,7 +871,7 @@ namespace FalconPulsar.Tray
             if (dlg.ShowDialog() != DialogResult.OK) return;
 
             var confirm = MessageBox.Show(
-                "This will replace your current users, datasources, assets, and AI Gateway configuration with those from the backup file. Your time-series data is unaffected.\n\nContinue?",
+                "This will replace your current users, datasources, assets, and AI Capabilities configuration with those from the backup file. Your time-series data is unaffected.\n\nContinue?",
                 "Replace current configuration?",
                 MessageBoxButtons.OKCancel, MessageBoxIcon.Warning);
             if (confirm != DialogResult.OK) return;

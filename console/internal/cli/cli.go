@@ -66,7 +66,7 @@ func cmdStatus() *cobra.Command {
 	var asJSON bool
 	c := &cobra.Command{
 		Use:   "status",
-		Short: "Show stack status (Core, UI, AI Gateway, REST API)",
+		Short: "Show stack status (Core, UI, AI Capabilities, REST API)",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			st := actions.Poll(context.Background())
 			if asJSON {
@@ -93,10 +93,10 @@ func cmdStatus() *cobra.Command {
 			printRow("Core", st.Core, "")
 			printRow("Web UI", st.UI, "http://localhost:8080")
 			if actions.AIGatewayEnabled() {
-				printRow("AI Gateway", st.Gateway, "")
+				printRow("AI Capabilities", st.Gateway, "")
 			} else {
 				fmt.Printf("  %s  %-12s %s\n",
-					colorText("–", colorYellow), "AI Gateway",
+					colorText("–", colorYellow), "AI Capabilities",
 					colorText("disabled", colorYellow))
 			}
 			printRow("REST API", st.APIHealthy, "http://localhost:7433")
@@ -247,63 +247,45 @@ func cmdConfigImport() *cobra.Command {
 func cmdAI() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "ai",
-		Short: "Enable, disable, or check AI Gateway status",
+		Short: "Enable, disable, or check AI Capabilities status",
 	}
 	c.AddCommand(
 		&cobra.Command{
 			Use:   "status",
-			Short: "Show whether the AI Gateway is enabled",
+			Short: "Show whether AI Capabilities is enabled",
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if actions.AIGatewayEnabled() {
-					fmt.Println(colorText("AI Gateway: enabled", colorGreen))
+					fmt.Println(colorText("AI Capabilities: enabled", colorGreen))
 				} else {
-					fmt.Println(colorText("AI Gateway: disabled", colorYellow))
+					fmt.Println(colorText("AI Capabilities: disabled", colorYellow))
 				}
 				return nil
 			},
 		},
 		&cobra.Command{
 			Use:   "enable",
-			Short: "Enable the AI Gateway (prompts for admin credentials + LLM API key)",
+			Short: "Enable AI Capabilities and start the gateway container",
 			RunE: func(cmd *cobra.Command, args []string) error {
-				ctx := context.Background()
-				cli, _, _, err := auth.PromptAdmin(ctx,
-					"Enable AI Gateway — admin credentials required to bootstrap the gateway service token.")
-				if err != nil {
-					return err
-				}
-
-				fmt.Fprint(os.Stderr, "Anthropic API key (leave blank to skip): ")
-				var anthropicKey string
-				fmt.Scanln(&anthropicKey)
-				fmt.Fprint(os.Stderr, "xAI API key (leave blank to skip): ")
-				var xaiKey string
-				fmt.Scanln(&xaiKey)
-
+				actions.EnsureGatewayConfig()
 				if err := actions.SetEnvValue("FP_AI_GATEWAY_ENABLED", "true"); err != nil {
 					return err
 				}
-				if anthropicKey != "" {
-					_ = actions.SetEnvValue("ANTHROPIC_API_KEY", anthropicKey)
+				fmt.Fprintln(os.Stderr, "Enabling AI Capabilities…")
+				if err := actions.Compose(context.Background(), os.Stdout, os.Stderr, "up", "-d"); err != nil {
+					return err
 				}
-				if xaiKey != "" {
-					_ = actions.SetEnvValue("XAI_API_KEY", xaiKey)
-				}
-
-				// Bootstrap gateway token if not already present
-				_ = cli // token bootstrap would use this client
-				fmt.Fprintln(os.Stderr, "AI Gateway enabled. Restarting stack…")
-				return actions.Compose(ctx, os.Stdout, os.Stderr, "up", "-d")
+				fmt.Fprintln(os.Stderr, "AI Capabilities enabled. Configure LLM providers in the Web UI (Settings > AI Configuration).")
+				return nil
 			},
 		},
 		&cobra.Command{
 			Use:   "disable",
-			Short: "Disable the AI Gateway (stops the container, hides AI features in the UI)",
+			Short: "Disable AI Capabilities (stops the container, hides AI features in the UI)",
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if err := actions.SetEnvValue("FP_AI_GATEWAY_ENABLED", "false"); err != nil {
 					return err
 				}
-				fmt.Fprintln(os.Stderr, "AI Gateway disabled. Restarting stack…")
+				fmt.Fprintln(os.Stderr, "AI Capabilities disabled. Restarting stack…")
 				ctx := context.Background()
 				// Stop gateway explicitly first, then restart without profile
 				_ = actions.Compose(ctx, nil, nil, "stop", "ai-gateway")

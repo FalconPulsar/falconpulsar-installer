@@ -69,7 +69,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(NSMenuItem(title: "Core: checking...", action: nil, keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "Web UI: checking...", action: nil, keyEquivalent: ""))
-        menu.addItem(NSMenuItem(title: "AI Gateway: checking...", action: nil, keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "AI Capabilities: checking...", action: nil, keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "REST API: checking...", action: nil, keyEquivalent: ""))
         menu.addItem(.separator())
 
@@ -111,7 +111,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let coreConfig = NSMenuItem(title: "Core (falconpulsar.toml)", action: #selector(editCoreConfig), keyEquivalent: "")
         coreConfig.target = self
         configMenu.addItem(coreConfig)
-        let gwConfig = NSMenuItem(title: "AI Gateway (gateway.yaml)", action: #selector(editGatewayConfig), keyEquivalent: "")
+        let gwConfig = NSMenuItem(title: "AI Capabilities (gateway.yaml)", action: #selector(editGatewayConfig), keyEquivalent: "")
         gwConfig.target = self
         configMenu.addItem(gwConfig)
         let composeConfig = NSMenuItem(title: "Docker Compose (compose.yml)", action: #selector(editComposeConfig), keyEquivalent: "")
@@ -137,22 +137,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         backupItem.submenu = backupMenu
         menu.addItem(backupItem)
 
-        // AI Gateway toggle submenu
-        let aiMenu = NSMenu()
-        let aiStatus = NSMenuItem(title: isAIGatewayEnabled() ? "✓ Enabled" : "Disabled",
-                                   action: nil, keyEquivalent: "")
-        aiStatus.isEnabled = false
-        aiMenu.addItem(aiStatus)
-        aiMenu.addItem(.separator())
-        let aiEnable = NSMenuItem(title: "Enable AI Gateway…", action: #selector(enableAIGateway), keyEquivalent: "")
-        aiEnable.target = self
-        aiMenu.addItem(aiEnable)
-        let aiDisable = NSMenuItem(title: "Disable AI Gateway", action: #selector(disableAIGateway), keyEquivalent: "")
-        aiDisable.target = self
-        aiMenu.addItem(aiDisable)
-        let aiItem = NSMenuItem(title: "AI Gateway", action: nil, keyEquivalent: "")
-        aiItem.submenu = aiMenu
-        menu.addItem(aiItem)
+        // AI Capabilities — single toggle
+        if isAIGatewayEnabled() {
+            let aiToggle = NSMenuItem(title: "Disable AI Capabilities", action: #selector(disableAIGateway), keyEquivalent: "")
+            aiToggle.target = self
+            menu.addItem(aiToggle)
+        } else {
+            let aiToggle = NSMenuItem(title: "Enable AI Capabilities", action: #selector(enableAIGateway), keyEquivalent: "")
+            aiToggle.target = self
+            menu.addItem(aiToggle)
+        }
 
         menu.addItem(.separator())
 
@@ -199,16 +193,34 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func updateMenu() {
         guard let menu = statusItem.menu else { return }
 
+        let aiEnabled = isAIGatewayEnabled()
+
         // Status items are at indices 2-5 (after header + separator)
         let statuses: [(Bool, String)] = [
             (coreRunning, "Core"),
             (uiRunning, "Web UI"),
-            (gatewayRunning, "AI Gateway"),
+            (gatewayRunning, "AI Capabilities"),
             (apiHealthy, "REST API")
         ]
 
         for (i, (running, name)) in statuses.enumerated() {
             let item = menu.item(at: i + 2)!
+
+            // AI Capabilities: show "Disabled" in gray when not enabled
+            if name == "AI Capabilities" && !aiEnabled {
+                let attributed = NSMutableAttributedString()
+                attributed.append(NSAttributedString(
+                    string: "– ",
+                    attributes: [.foregroundColor: NSColor.systemGray, .font: NSFont.systemFont(ofSize: 14)]
+                ))
+                attributed.append(NSAttributedString(
+                    string: "\(name): Disabled",
+                    attributes: [.foregroundColor: NSColor.systemGray, .font: NSFont.systemFont(ofSize: 13)]
+                ))
+                item.attributedTitle = attributed
+                continue
+            }
+
             let dot = running ? "●" : "○"
             let dotColor: NSColor = running ? .systemGreen : .systemRed
             let statusText = running ? (name == "REST API" ? "Healthy" : "Running") : "Stopped"
@@ -337,9 +349,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self.apiHealthy = self.isAPIHealthy()
 
             let prev = self.status
-            if self.coreRunning && self.uiRunning && self.gatewayRunning {
-                self.status = self.apiHealthy ? .running : .partiallyRunning
-            } else if self.coreRunning || self.uiRunning || self.gatewayRunning {
+            let aiEnabled = self.isAIGatewayEnabled()
+            let allExpectedRunning: Bool
+            if aiEnabled {
+                allExpectedRunning = self.coreRunning && self.uiRunning && self.gatewayRunning
+            } else {
+                allExpectedRunning = self.coreRunning && self.uiRunning
+            }
+            let anyRunning = self.coreRunning || self.uiRunning || (aiEnabled && self.gatewayRunning)
+            if allExpectedRunning && self.apiHealthy {
+                self.status = .running
+            } else if allExpectedRunning {
+                self.status = .partiallyRunning
+            } else if anyRunning {
                 self.status = .partiallyRunning
             } else {
                 self.status = .stopped
@@ -543,42 +565,53 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         try? lines.joined(separator: "\n").write(toFile: envPath, atomically: true, encoding: .utf8)
     }
 
+    private func ensureGatewayConfig() {
+        let p = "\(homeDir)/gateway.yaml"
+        var isDir: ObjCBool = false
+        let fm = FileManager.default
+        if fm.fileExists(atPath: p, isDirectory: &isDir), isDir.boolValue {
+            try? fm.removeItem(atPath: p)
+        }
+        if !fm.fileExists(atPath: p) {
+            let defaultCfg = """
+            # FalconPulsar AI Gateway — default configuration.
+            # Configure providers + models via the Web UI Config Hub.
+            providers: []
+            default_model: ""
+            context:
+              max_tokens: 4096
+            """
+            try? defaultCfg.write(toFile: p, atomically: true, encoding: .utf8)
+        }
+    }
+
     @objc func enableAIGateway() {
-        guard let creds = promptAdminCredentials(
-            title: "Enable AI Gateway",
-            message: "Enter admin credentials to bootstrap the gateway service token."
-        ) else { return }
-
-        let alert = NSAlert()
-        alert.messageText = "LLM Provider Keys"
-        alert.informativeText = "Enter at least one API key (or leave blank for Ollama-only setups)."
-        alert.addButton(withTitle: "Enable")
-        alert.addButton(withTitle: "Cancel")
-        let container = NSView(frame: NSRect(x: 0, y: 0, width: 340, height: 64))
-        let anthropicField = NSTextField(frame: NSRect(x: 0, y: 34, width: 340, height: 24))
-        anthropicField.placeholderString = "Anthropic API key (sk-ant-...)"
-        let xaiField = NSTextField(frame: NSRect(x: 0, y: 0, width: 340, height: 24))
-        xaiField.placeholderString = "xAI API key (xai-...)"
-        container.addSubview(anthropicField)
-        container.addSubview(xaiField)
-        alert.accessoryView = container
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-
+        ensureGatewayConfig()
         setEnvValue("FP_AI_GATEWAY_ENABLED", "true")
-        if !anthropicField.stringValue.isEmpty {
-            setEnvValue("ANTHROPIC_API_KEY", anthropicField.stringValue)
+
+        // Show progress via notification
+        let note = NSUserNotification()
+        note.title = "FalconPulsar"
+        note.informativeText = "Starting AI Capabilities… this may take a moment."
+        NSUserNotificationCenter.default.deliver(note)
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
+            self.shell("cd '\(self.homeDir)' && docker compose --profile ai up -d 2>&1")
+            DispatchQueue.main.async {
+                self.buildMenu()
+                self.pollHealth()
+                let done = NSUserNotification()
+                done.title = "FalconPulsar"
+                done.informativeText = "AI Capabilities is now running. Configure LLM providers in the Web UI."
+                NSUserNotificationCenter.default.deliver(done)
+            }
         }
-        if !xaiField.stringValue.isEmpty {
-            setEnvValue("XAI_API_KEY", xaiField.stringValue)
-        }
-        shell("cd '\(homeDir)' && docker compose --profile ai up -d 2>&1")
-        buildMenu()
-        pollHealth()
     }
 
     @objc func disableAIGateway() {
         let alert = NSAlert()
-        alert.messageText = "Disable AI Gateway?"
+        alert.messageText = "Disable AI Capabilities?"
         alert.informativeText = "Chat features will be hidden in the Web UI until re-enabled."
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Disable")
@@ -586,9 +619,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
         setEnvValue("FP_AI_GATEWAY_ENABLED", "false")
-        shell("cd '\(homeDir)' && docker compose stop ai-gateway 2>&1")
-        buildMenu()
-        pollHealth()
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
+            self.shell("cd '\(self.homeDir)' && docker compose stop ai-gateway 2>&1")
+            DispatchQueue.main.async {
+                self.buildMenu()
+                self.pollHealth()
+            }
+        }
     }
 
     // MARK: - Configuration Backup
@@ -664,7 +702,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         let confirm = NSAlert()
         confirm.messageText = "Replace current configuration?"
-        confirm.informativeText = "This will replace your current users, datasources, assets, and AI Gateway configuration with those from the backup file. Your time-series data is unaffected."
+        confirm.informativeText = "This will replace your current users, datasources, assets, and AI Capabilities configuration with those from the backup file. Your time-series data is unaffected."
         confirm.alertStyle = .warning
         confirm.addButton(withTitle: "Replace")
         confirm.addButton(withTitle: "Cancel")
@@ -769,7 +807,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             ("Core Engine", coreVer, coreRunning),
             ("Compose", "v2", true),
             ("Web UI", uiVer, uiRunning),
-            ("AI Gateway", gwVer, gatewayRunning)
+            ("AI Capabilities", gwVer, gatewayRunning)
         ]
 
         let gridY = h - 310

@@ -263,17 +263,17 @@ prompt_ai_gateway() {
         export FP_AI_GATEWAY_ENABLED
         return 0
     fi
-    printf '\n%sAI Gateway%s\n' "${FP_C_BOLD}" "${FP_C_RESET}" >&2
-    printf 'The AI Gateway provides natural-language chat, FPQ query generation, and\n' >&2
+    printf '\n%sAI Capabilities%s\n' "${FP_C_BOLD}" "${FP_C_RESET}" >&2
+    printf 'AI Capabilities provides natural-language chat, FPQ query generation, and\n' >&2
     printf 'LLM-powered analysis. It requires an API key from a supported provider\n' >&2
     printf '(Anthropic, xAI, OpenAI-compatible) or a locally running Ollama instance.\n\n' >&2
     printf 'If you do not have a GPU or LLM API key, you can skip this and enable it\n' >&2
     printf 'later with: %sfp ai enable%s\n\n' "${FP_C_CYAN}" "${FP_C_RESET}" >&2
-    if confirm "Install the AI Gateway?" default-yes; then
+    if confirm "Install AI Capabilities?" default-yes; then
         FP_AI_GATEWAY_ENABLED=true
     else
         FP_AI_GATEWAY_ENABLED=false
-        log_info "AI Gateway will not be installed. Enable later with: fp ai enable"
+        log_info "AI Capabilities will not be installed. Enable later with: fp ai enable"
     fi
     export FP_AI_GATEWAY_ENABLED
 }

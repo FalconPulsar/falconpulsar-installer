@@ -49,7 +49,7 @@ func buildSections() []menuSection {
 			{label: "View all logs", accel: "F5", action: func(a *App) { a.showLogsPickerExec("") }},
 			{label: "Core only", action: func(a *App) { a.showLogsPickerExec("core") }},
 			{label: "Web UI only", action: func(a *App) { a.showLogsPickerExec("ui") }},
-			{label: "AI Gateway only", action: func(a *App) { a.showLogsPickerExec("ai-gateway") }},
+			{label: "AI Capabilities only", action: func(a *App) { a.showLogsPickerExec("ai-gateway") }},
 			{sep: true},
 			{label: "Open install log", action: func(a *App) { a.openInstallLog() }},
 		}},
@@ -57,7 +57,7 @@ func buildSections() []menuSection {
 			{label: "Edit core (falconpulsar.toml)", action: func(a *App) {
 				a.editConfig(filepath.Join("data", "falconpulsar.toml"))
 			}},
-			{label: "Edit AI Gateway (gateway.yaml)", action: func(a *App) {
+			{label: "Edit AI Capabilities (gateway.yaml)", action: func(a *App) {
 				a.editConfig("gateway.yaml")
 			}},
 			{label: "Edit Docker Compose (compose.yml)", action: func(a *App) {
@@ -75,16 +75,14 @@ func buildSections() []menuSection {
 			{label: "Export configuration…", accel: "F7", action: func(a *App) { a.doExport() }},
 			{label: "Import configuration…", accel: "F8", action: func(a *App) { a.doImport() }},
 		}},
-		{"AI Gateway", []menuItem{
-			{label: "Status", action: func(a *App) {
+		{"AI", []menuItem{
+			{label: aiToggleLabel(), action: func(a *App) {
 				if actions.AIGatewayEnabled() {
-					a.showMessage("AI Gateway", "AI Gateway is currently enabled.\nUse 'Disable' to stop it.", true)
+					a.disableAIGateway()
 				} else {
-					a.showMessage("AI Gateway", "AI Gateway is currently disabled.\nUse 'Enable' to start it.", true)
+					a.enableAIGateway()
 				}
 			}},
-			{label: "Enable AI Gateway…", action: func(a *App) { a.enableAIGateway() }},
-			{label: "Disable AI Gateway", action: func(a *App) { a.disableAIGateway() }},
 		}},
 		{"Help", []menuItem{
 			{label: "Keyboard shortcuts", accel: "F1", action: func(a *App) { a.showHelp() }},
@@ -234,10 +232,10 @@ func (a *App) refreshServices() {
 	rows = append(rows, svcRow{"Web UI", "http://localhost:8080",
 		stateLabel(a.status.UI), dotColor(a.status.UI), stateColor(a.status.UI)})
 	if aiEnabled {
-		rows = append(rows, svcRow{"AI Gateway", "http://localhost:7436",
+		rows = append(rows, svcRow{"AI Capabilities", "http://localhost:7436",
 			stateLabel(a.status.Gateway), dotColor(a.status.Gateway), stateColor(a.status.Gateway)})
 	} else {
-		rows = append(rows, svcRow{"AI Gateway", "(disabled)",
+		rows = append(rows, svcRow{"AI Capabilities", "(disabled)",
 			"[#9CA3AF]disabled[-]", theme.TextMuted, theme.TextMuted})
 	}
 	rows = append(rows, svcRow{"REST API", "http://localhost:7433",
@@ -274,7 +272,7 @@ func (a *App) refreshDetails(row ...int) {
 	if len(row) > 0 {
 		r = row[0]
 	}
-	labels := []string{"Core", "Web UI", "AI Gateway", "REST API"}
+	labels := []string{"Core", "Web UI", "AI Capabilities", "REST API"}
 	if r < 0 || r >= len(labels) {
 		r = 0
 	}
@@ -283,7 +281,7 @@ func (a *App) refreshDetails(row ...int) {
 			"Stack aggregate: [#00AAFF]%s[-]\n\n"+
 			"Core         %s\n"+
 			"Web UI       %s\n"+
-			"AI Gateway   %s\n"+
+			"AI Capabilities %s\n"+
 			"REST API     %s\n\n"+
 			"[#9CA3AF]Version %s — %s[-]",
 		labels[r], a.status.Aggregate(),
@@ -608,50 +606,51 @@ func truncate(s string, n int) string {
 	return s[:n] + "\n…(truncated)"
 }
 
+func aiToggleLabel() string {
+	if actions.AIGatewayEnabled() {
+		return "Disable AI Capabilities"
+	}
+	return "Enable AI Capabilities"
+}
+
 func (a *App) enableAIGateway() {
-	a.askAdminThen("Enable AI Gateway", func(cli *api.Client, user, pass string) {
-		// Prompt for API keys
-		form := tview.NewForm().
-			AddInputField("Anthropic API key (blank to skip)", "", 50, nil, nil).
-			AddInputField("xAI API key (blank to skip)", "", 50, nil, nil)
-		form.SetFieldBackgroundColor(theme.Surface).
-			SetButtonBackgroundColor(theme.AccentDim).
-			SetLabelColor(theme.Text)
-		form.SetBackgroundColor(theme.Panel)
-		form.AddButton("Enable", func() {
-			anthropic := form.GetFormItem(0).(*tview.InputField).GetText()
-			xai := form.GetFormItem(1).(*tview.InputField).GetText()
+	actions.EnsureGatewayConfig()
+	_ = actions.SetEnvValue("FP_AI_GATEWAY_ENABLED", "true")
+	a.showMessage("Enabling AI Capabilities…",
+		"Starting the AI container. Configure LLM providers in the Web UI afterward.", false)
+	go func() {
+		err := actions.Compose(context.Background(), nil, nil, "up", "-d")
+		a.tv.QueueUpdateDraw(func() {
 			a.pages.RemovePage("modal")
-			_ = actions.SetEnvValue("FP_AI_GATEWAY_ENABLED", "true")
-			if anthropic != "" {
-				_ = actions.SetEnvValue("ANTHROPIC_API_KEY", anthropic)
+			a.sections = buildSections() // refresh menu to show updated toggle label
+			a.status = actions.Poll(context.Background())
+			a.refreshServices()
+			if err != nil {
+				a.showMessage("Error", err.Error(), true)
+			} else {
+				a.showMessage("AI Capabilities enabled",
+					"Configure LLM providers in the Web UI (Settings > AI Configuration).", true)
 			}
-			if xai != "" {
-				_ = actions.SetEnvValue("XAI_API_KEY", xai)
-			}
-			a.runAction("Enabling AI Gateway…", "start")
 		})
-		form.AddButton("Cancel", func() { a.pages.RemovePage("modal") })
-		a.pushModal("LLM Provider Keys", form, 64, 8)
-		a.tv.SetFocus(form)
-	})
+	}()
 }
 
 func (a *App) disableAIGateway() {
 	m := tview.NewModal().
-		SetText("Disable AI Gateway?\n\nChat features will be hidden in the Web UI until re-enabled.").
+		SetText("Disable AI Capabilities?\n\nChat features will be hidden in the Web UI until re-enabled.").
 		AddButtons([]string{"Disable", "Cancel"}).
 		SetDoneFunc(func(idx int, label string) {
 			a.pages.RemovePage("modal")
 			if label == "Disable" {
 				_ = actions.SetEnvValue("FP_AI_GATEWAY_ENABLED", "false")
+				a.showMessage("Disabling AI Capabilities…", "Stopping the AI container.", false)
 				go func() {
 					_ = actions.Compose(context.Background(), nil, nil, "stop", "ai-gateway")
 					a.tv.QueueUpdateDraw(func() {
+						a.pages.RemovePage("modal")
+						a.sections = buildSections()
 						a.status = actions.Poll(context.Background())
 						a.refreshServices()
-						a.showMessage("AI Gateway disabled",
-							"Re-enable anytime via AI Gateway → Enable.", true)
 					})
 				}()
 			}
@@ -831,7 +830,7 @@ func (a *App) showAbout() {
 			"Stack dir:   %s\n"+
 			"Web UI:      http://localhost:8080\n"+
 			"REST API:    http://localhost:7433\n"+
-			"AI Gateway:  http://localhost:7436\n\n"+
+			"AI Capabilities: http://localhost:7436\n\n"+
 			"Website:     https://falconpulsar.com\n"+
 			"Docs:        https://falconpulsar.com/docs\n"+
 			"Roadmap:     https://falconpulsar.com/roadmap\n\n"+

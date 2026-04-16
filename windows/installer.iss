@@ -150,8 +150,8 @@ Source: "..\README.md";                                     DestDir: "{app}";   
 
 [Tasks]
 Name: "aigateway"; \
-    Description: "Install the AI Gateway (requires an LLM API key or local Ollama — can be enabled later with fp ai enable)"; \
-    GroupDescription: "AI Gateway:"; \
+    Description: "Install AI Capabilities (requires an LLM API key or local Ollama — can be enabled later with fp ai enable)"; \
+    GroupDescription: "AI Capabilities:"; \
     Flags: checked
 Name: "addtopath"; \
     Description: "Add fp console to my PATH (lets you run ""fp"" from PowerShell anywhere)"; \
@@ -1289,7 +1289,7 @@ begin
       'This installer will set up:' + #13#10 +
       '  - Core engine (REST API + WebSocket)' + #13#10 +
       '  - Web UI for dashboards and operations' + #13#10 +
-      '  - AI Gateway for natural-language interaction' + #13#10 + #13#10 +
+      '  - AI Capabilities for natural-language interaction' + #13#10 + #13#10 +
       'Click Next to continue.';
     WizardForm.WelcomeLabel2.Caption := Summary;
 

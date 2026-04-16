@@ -40,6 +40,23 @@ func dockerPath() string {
 	return "docker"
 }
 
+// HasGatewayToken checks if FP_API_KEY is already present in .env (meaning
+// the gateway token was bootstrapped previously — no need to re-auth).
+func HasGatewayToken() bool {
+	data, err := os.ReadFile(filepath.Join(HomeDir(), ".env"))
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "FP_API_KEY=") {
+			val := strings.TrimPrefix(line, "FP_API_KEY=")
+			return val != ""
+		}
+	}
+	return false
+}
+
 // AIGatewayEnabled reads FP_AI_GATEWAY_ENABLED from ~/falconpulsar/.env.
 func AIGatewayEnabled() bool {
 	data, err := os.ReadFile(filepath.Join(HomeDir(), ".env"))
@@ -87,8 +104,13 @@ func composeProfileArgs() []string {
 }
 
 // Compose runs `docker compose <args...>` in the stack directory. Automatically
-// adds --profile ai when FP_AI_GATEWAY_ENABLED=true in .env.
+// adds --profile ai when FP_AI_GATEWAY_ENABLED=true in .env. Also ensures
+// gateway.yaml exists as a file before any compose up to prevent Docker from
+// creating a directory at that path.
 func Compose(ctx context.Context, stdout, stderr io.Writer, args ...string) error {
+	if AIGatewayEnabled() {
+		EnsureGatewayConfig()
+	}
 	base := []string{"compose"}
 	base = append(base, composeProfileArgs()...)
 	base = append(base, args...)
@@ -111,14 +133,19 @@ type Status struct {
 }
 
 // Aggregate returns a single word describing overall status.
+// When AI Gateway is disabled, it's excluded from the tally —
+// Core + UI running = "running" (green), not "partial" (yellow).
 func (s Status) Aggregate() string {
+	aiEnabled := AIGatewayEnabled()
+	expected := 2 // core + ui
 	running := 0
-	for _, b := range []bool{s.Core, s.UI, s.Gateway} {
-		if b {
-			running++
-		}
+	if s.Core { running++ }
+	if s.UI { running++ }
+	if aiEnabled {
+		expected++
+		if s.Gateway { running++ }
 	}
-	if running == 3 && s.APIHealthy {
+	if running == expected && s.APIHealthy {
 		return "running"
 	}
 	if running == 0 {
@@ -146,6 +173,30 @@ func containerRunning(ctx context.Context, name string) bool {
 	out, err := cmd.Output()
 	return err == nil && len(strings.TrimSpace(string(out))) > 0
 }
+
+// EnsureGatewayConfig makes sure ~/falconpulsar/gateway.yaml exists as a
+// file (not a directory). Docker creates a directory when the bind-mount
+// source doesn't exist; the Python gateway then crashes with IsADirectoryError.
+func EnsureGatewayConfig() {
+	p := filepath.Join(HomeDir(), "gateway.yaml")
+	fi, err := os.Stat(p)
+	if err == nil && fi.IsDir() {
+		_ = os.RemoveAll(p)
+	}
+	if _, err := os.Stat(p); os.IsNotExist(err) {
+		_ = os.MkdirAll(HomeDir(), 0755)
+		_ = os.WriteFile(p, []byte(defaultGatewayYAML), 0644)
+	}
+}
+
+const defaultGatewayYAML = `# FalconPulsar AI Gateway — default configuration.
+# Edit via the Web UI Config Hub (Settings > AI Configuration) or
+# directly here and restart the gateway: fp restart
+providers: []
+default_model: ""
+context:
+  max_tokens: 4096
+`
 
 // OpenFolder opens a local directory in the platform file manager.
 func OpenFolder(path string) error {
