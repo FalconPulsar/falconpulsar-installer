@@ -27,7 +27,9 @@ param(
     [string] $Registry = 'falconpulsar',
     [string] $RegistryUser = '',
     [string] $RegistryPass = '',
-    [switch] $RegistrySkip
+    [switch] $RegistrySkip,
+    [string] $AIGateway = 'true',
+    [string] $InstallAction = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -109,25 +111,32 @@ if ($rc -ne 0) {
 # -- 3. Check for existing FalconPulsar installation -------------------------
 # If the data directory already has a config file, this is a re-install /
 # upgrade. Skip the admin password prompt and just bring the stack up.
+# Detect existing install inside WSL
 $existingInstall = & wsl.exe -d $Distro -u root -- bash -c 'test -f /home/falconpulsar/data/falconpulsar.toml && echo yes || echo no' 2>$null
-$isReinstall = ($existingInstall -and $existingInstall.Trim() -eq 'yes')
+$hasExisting = ($existingInstall -and $existingInstall.Trim() -eq 'yes')
 
-if ($isReinstall) {
-    Write-Info 'Existing FalconPulsar installation detected -- upgrading in place'
-    Write-Info 'Skipping admin user creation (already exists in database)'
-    Write-Info 'Pulling latest images and restarting the stack...'
+# If Inno Setup already determined the action, use it; otherwise default
+# based on whether an existing install was found.
+if (-not $InstallAction) {
+    if ($hasExisting) { $InstallAction = 'upgrade' }
+    else              { $InstallAction = 'fresh' }
+}
+Write-Info "Install action: $InstallAction"
 
+if ($InstallAction -eq 'upgrade' -and $hasExisting) {
+    Write-Info 'Upgrading in place -- pulling latest images and restarting'
+    $profileFlag = if ($AIGateway -eq 'true') { '--profile ai' } else { '' }
     $upgradeScript = @"
 set -e
 export FP_ASSUME_YES=1
 export FP_LEGAL_ACCEPTED=1
 cd /home/falconpulsar 2>/dev/null || cd /opt/falconpulsar-installer
 if [ -f /home/falconpulsar/compose.yml ]; then
-    sudo -u falconpulsar -H sg docker -c 'cd /home/falconpulsar && docker compose pull && docker compose up -d'
+    sudo -u falconpulsar -H sg docker -c "cd /home/falconpulsar && docker compose $profileFlag pull && docker compose $profileFlag up -d"
     echo '[ok] Stack upgraded and restarted'
 else
     echo '[info] No existing compose.yml found -- running full installer'
-    bash /opt/falconpulsar-installer/linux/install.sh --mode docker --yes
+    FP_INSTALL_ACTION=upgrade FP_AI_GATEWAY_ENABLED=$AIGateway bash /opt/falconpulsar-installer/linux/install.sh --mode docker --yes
 fi
 "@
     $rc = Invoke-WslBash -Distro $Distro -Script $upgradeScript -User root
@@ -136,6 +145,18 @@ fi
     }
     Write-Output '[ok] FalconPulsar upgraded inside WSL'
     exit 0
+}
+
+# For 'fresh' — clean up WSL-side data before running the full installer
+if ($InstallAction -eq 'fresh' -and $hasExisting) {
+    Write-Info 'Fresh install -- removing existing data inside WSL'
+    $cleanScript = @"
+set +e
+cd /home/falconpulsar 2>/dev/null && sudo -u falconpulsar -H sg docker -c 'docker compose down --remove-orphans --volumes' 2>/dev/null
+rm -rf /home/falconpulsar
+echo '[ok] Previous install cleaned'
+"@
+    $null = Invoke-WslBash -Distro $Distro -Script $cleanScript -User root
 }
 
 # -- 4. Docker Desktop detection ---------------------------------------------
@@ -221,6 +242,8 @@ printf '%s\n' \
   "export FP_REGISTRY_USER='$regUserEscaped'" \
   "export FP_REGISTRY_PASS='$regPassEscaped'" \
   "export FP_REGISTRY_SKIP='$regSkipVal'" \
+  "export FP_INSTALL_ACTION='$InstallAction'" \
+  "export FP_AI_GATEWAY_ENABLED='$AIGateway'" \
   > "`$ENVFILE"
 . "`$ENVFILE"
 rm -f "`$ENVFILE"

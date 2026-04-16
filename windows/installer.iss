@@ -241,6 +241,7 @@ var
   RegistryTestButton: TNewButton;
   RegistryStatusLabel: TNewStaticText;
   IsUpgrade: Boolean;
+  InstallAction: String;   // 'upgrade' | 'reinstall' | 'fresh'
   FpLogFile: String;
   DetectedWslStatus: String;
   DetectedDockerDesktop: String;
@@ -658,7 +659,7 @@ begin
     else
       AIGatewayArg := '-AIGateway "false"';
 
-    if IsUpgrade then
+    if IsUpgrade and (InstallAction = 'upgrade') then
     begin
       AdminUserArg := '-AdminUser "admin"';
       AdminPassArg := '-AdminPass "upgrade-placeholder"';
@@ -782,7 +783,7 @@ begin
         AdminUserArg + ' ' + AdminPassArg + ' ' +
         RegistryArg + ' ' + RegistryUserArg + ' ' +
         RegistryPassArg + ' ' + RegistrySkipArg + ' ' +
-        AIGatewayArg,
+        AIGatewayArg + ' -InstallAction "' + InstallAction + '"',
         'Installing FalconPulsar inside WSL (this may take 5-10 minutes)...') then begin UpdateStep(4, 'fail'); Abort; end;
     UpdateStep(4, 'done');
     LogInfo('Step 5/7: PASSED');
@@ -1707,17 +1708,72 @@ begin
   // This key only exists after a COMPLETED previous install -- partial or
   // failed installs (e.g. test runs that left files behind) don't have it.
   // The AppId from [Setup] with '_is1' suffix is the standard Inno key name.
+  InstallAction := 'fresh';
+
   if RegKeyExists(HKLM, 'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{#SetupSetting("AppId")}_is1') or
      RegKeyExists(HKCU, 'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{#SetupSetting("AppId")}_is1') then
   begin
     IsUpgrade := True;
-    LogInfo('Existing installation detected -- upgrade mode');
-    MsgBox('FalconPulsar is already installed on this computer.' + #13#10 + #13#10 +
-           'Click OK to upgrade to the latest version. Your existing data ' +
-           'and configuration will be preserved.',
-           mbInformation, MB_OK);
-  end else
+    LogInfo('Existing installation detected');
+
+    // 3-way choice matching the macOS installer:
+    //   YES    = Upgrade in place
+    //   NO     = Reinstall or Fresh install
+    //   CANCEL = Abort
+    case MsgBox(
+      'FalconPulsar is already installed on this computer.' + #13#10 + #13#10 +
+      'Choose how to proceed:' + #13#10 + #13#10 +
+      '  YES  = Upgrade in place (pull latest images, keep data + settings)' + #13#10 +
+      '  NO   = Reinstall or Fresh install (next dialog)' + #13#10 +
+      '  CANCEL = Exit the installer',
+      mbConfirmation, MB_YESNOCANCEL) of
+      IDYES:
+      begin
+        InstallAction := 'upgrade';
+        LogInfo('User chose: Upgrade in place');
+      end;
+      IDNO:
+      begin
+        // Second dialog: keep data or delete everything
+        case MsgBox(
+          'What about your existing data?' + #13#10 + #13#10 +
+          '  YES  = Reinstall (keep database, create new admin account)' + #13#10 +
+          '  NO   = Fresh install — DELETE ALL DATA (irreversible)' + #13#10 +
+          '  CANCEL = Go back',
+          mbConfirmation, MB_YESNOCANCEL) of
+          IDYES:
+          begin
+            InstallAction := 'reinstall';
+            LogInfo('User chose: Reinstall (keep data)');
+          end;
+          IDNO:
+          begin
+            if MsgBox(
+              'WARNING: This will permanently delete your FalconPulsar database ' +
+              'and all configuration inside WSL.' + #13#10 + #13#10 +
+              'Are you sure?', mbError, MB_YESNO) = IDYES then
+            begin
+              InstallAction := 'fresh';
+              LogInfo('User chose: Fresh install (DELETE ALL DATA)');
+            end else
+            begin
+              Result := False;
+              Exit;
+            end;
+          end;
+        else
+          Result := False;
+          Exit;
+        end;
+      end;
+    else
+      Result := False;
+      Exit;
+    end;
+  end else begin
     LogInfo('No existing installation found -- fresh install mode');
+    InstallAction := 'fresh';
+  end;
 end;
 
 // Skip the legal and credentials pages on upgrade -- the user already
@@ -1733,13 +1789,21 @@ begin
       Result := True;
   end;
 
-  if IsUpgrade then
+  // Only skip pages when upgrading in place. Reinstall + Fresh need the
+  // user to re-enter credentials (and legal on fresh).
+  if IsUpgrade and (InstallAction = 'upgrade') then
   begin
     if (LegalPage <> nil) and (PageID = LegalPage.ID) then
       Result := True;
     if (RegistryPage <> nil) and (PageID = RegistryPage.ID) then
       Result := True;
     if (CredentialsPage <> nil) and (PageID = CredentialsPage.ID) then
+      Result := True;
+  end;
+  // Reinstall skips legal (already accepted) but shows registry + credentials
+  if IsUpgrade and (InstallAction = 'reinstall') then
+  begin
+    if (LegalPage <> nil) and (PageID = LegalPage.ID) then
       Result := True;
   end;
 end;
