@@ -235,6 +235,7 @@ prompt_ai_gateway
 prompt_admin_credentials
 
 cp "${REPO_ROOT}/shared/compose.yml" "${FP_HOME}/compose.yml"
+cp "${REPO_ROOT}/shared/nginx.conf" "${FP_HOME}/nginx.conf"
 
 # Copy the AI Gateway config if it doesn't already exist (skip if gateway disabled)
 if [ "${FP_AI_GATEWAY_ENABLED}" = "true" ]; then

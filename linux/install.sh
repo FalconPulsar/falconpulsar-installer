@@ -272,6 +272,9 @@ prompt_admin_credentials
 install -m 0644 -o "$FP_USER" -g "$FP_USER" \
     "${REPO_ROOT}/shared/compose.yml" \
     "${FP_HOME}/compose.yml"
+install -m 0644 -o "$FP_USER" -g "$FP_USER" \
+    "${REPO_ROOT}/shared/nginx.conf" \
+    "${FP_HOME}/nginx.conf"
 
 # Copy the AI Gateway config if it doesn't already exist (skip if disabled).
 if [ "${FP_AI_GATEWAY_ENABLED}" = "true" ]; then

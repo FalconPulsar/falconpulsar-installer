@@ -101,6 +101,11 @@ services:
     restart: unless-stopped
     ports:
       - "${FP_UI_PORT:-8080}:8080"
+    volumes:
+      # Override the built-in nginx.conf so AI Gateway DNS is resolved lazily.
+      # Without this mount, the image's default upstream{} block crashes
+      # nginx when the gateway container is disabled (compose profile off).
+      - "${FP_HOME:-.}/nginx.conf:/etc/nginx/nginx.conf:ro"
     depends_on:
       core:
         condition: service_healthy
