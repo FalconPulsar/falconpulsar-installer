@@ -108,10 +108,14 @@ services:
       - falconpulsar
 
   # ── AI Gateway: FastAPI service brokering LLM tool calls ────────────────
+  # Optional — only starts when FP_AI_GATEWAY_ENABLED=true (installers pass
+  # --profile ai accordingly). Users can enable/disable post-install via
+  # `fp ai enable` / `fp ai disable` or the tray's AI Gateway menu.
   ai-gateway:
     image: ${FP_REGISTRY:-falconpulsar}/ai-gateway:${FP_VERSION:-latest}
     container_name: falconpulsar-ai-gateway
     restart: unless-stopped
+    profiles: ["ai"]
     user: "${FP_UID}:${FP_GID}"
     ports:
       - "${FP_GATEWAY_PORT:-7436}:7436"

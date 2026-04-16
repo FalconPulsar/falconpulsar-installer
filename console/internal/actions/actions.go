@@ -40,11 +40,59 @@ func dockerPath() string {
 	return "docker"
 }
 
-// Compose runs `docker compose <args...>` in the stack directory. Nil writers
-// route output to /dev/null (suitable for background/TUI use).
+// AIGatewayEnabled reads FP_AI_GATEWAY_ENABLED from ~/falconpulsar/.env.
+func AIGatewayEnabled() bool {
+	data, err := os.ReadFile(filepath.Join(HomeDir(), ".env"))
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "FP_AI_GATEWAY_ENABLED=") {
+			val := strings.TrimPrefix(line, "FP_AI_GATEWAY_ENABLED=")
+			return val == "true" || val == "1" || val == "yes"
+		}
+	}
+	return true // default: enabled if flag is absent (backward compat)
+}
+
+// SetEnvValue writes or updates a key=value line in ~/falconpulsar/.env.
+func SetEnvValue(key, value string) error {
+	envPath := filepath.Join(HomeDir(), ".env")
+	data, err := os.ReadFile(envPath)
+	if err != nil {
+		return err
+	}
+	lines := strings.Split(string(data), "\n")
+	found := false
+	for i, line := range lines {
+		if strings.HasPrefix(strings.TrimSpace(line), key+"=") {
+			lines[i] = key + "=" + value
+			found = true
+			break
+		}
+	}
+	if !found {
+		lines = append(lines, key+"="+value)
+	}
+	return os.WriteFile(envPath, []byte(strings.Join(lines, "\n")), 0600)
+}
+
+// composeProfileArgs returns the --profile flags needed based on .env state.
+func composeProfileArgs() []string {
+	if AIGatewayEnabled() {
+		return []string{"--profile", "ai"}
+	}
+	return nil
+}
+
+// Compose runs `docker compose <args...>` in the stack directory. Automatically
+// adds --profile ai when FP_AI_GATEWAY_ENABLED=true in .env.
 func Compose(ctx context.Context, stdout, stderr io.Writer, args ...string) error {
-	all := append([]string{"compose"}, args...)
-	cmd := exec.CommandContext(ctx, dockerPath(), all...)
+	base := []string{"compose"}
+	base = append(base, composeProfileArgs()...)
+	base = append(base, args...)
+	cmd := exec.CommandContext(ctx, dockerPath(), base...)
 	cmd.Dir = HomeDir()
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr

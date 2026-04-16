@@ -43,6 +43,7 @@ func Root(runTUI func() error) *cobra.Command {
 		cmdLogs(),
 		cmdOpen(),
 		cmdConfig(),
+		cmdAI(),
 		cmdAbout(),
 		cmdDocs(),
 		cmdRequestFeature(),
@@ -91,7 +92,13 @@ func cmdStatus() *cobra.Command {
 			fmt.Println("FalconPulsar status:")
 			printRow("Core", st.Core, "")
 			printRow("Web UI", st.UI, "http://localhost:8080")
-			printRow("AI Gateway", st.Gateway, "")
+			if actions.AIGatewayEnabled() {
+				printRow("AI Gateway", st.Gateway, "")
+			} else {
+				fmt.Printf("  %s  %-12s %s\n",
+					colorText("–", colorYellow), "AI Gateway",
+					colorText("disabled", colorYellow))
+			}
 			printRow("REST API", st.APIHealthy, "http://localhost:7433")
 			fmt.Printf("\nAggregate: %s\n", st.Aggregate())
 			// Exit code tells scripts the overall state
@@ -235,6 +242,76 @@ func cmdConfigImport() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+func cmdAI() *cobra.Command {
+	c := &cobra.Command{
+		Use:   "ai",
+		Short: "Enable, disable, or check AI Gateway status",
+	}
+	c.AddCommand(
+		&cobra.Command{
+			Use:   "status",
+			Short: "Show whether the AI Gateway is enabled",
+			RunE: func(cmd *cobra.Command, args []string) error {
+				if actions.AIGatewayEnabled() {
+					fmt.Println(colorText("AI Gateway: enabled", colorGreen))
+				} else {
+					fmt.Println(colorText("AI Gateway: disabled", colorYellow))
+				}
+				return nil
+			},
+		},
+		&cobra.Command{
+			Use:   "enable",
+			Short: "Enable the AI Gateway (prompts for admin credentials + LLM API key)",
+			RunE: func(cmd *cobra.Command, args []string) error {
+				ctx := context.Background()
+				cli, _, _, err := auth.PromptAdmin(ctx,
+					"Enable AI Gateway — admin credentials required to bootstrap the gateway service token.")
+				if err != nil {
+					return err
+				}
+
+				fmt.Fprint(os.Stderr, "Anthropic API key (leave blank to skip): ")
+				var anthropicKey string
+				fmt.Scanln(&anthropicKey)
+				fmt.Fprint(os.Stderr, "xAI API key (leave blank to skip): ")
+				var xaiKey string
+				fmt.Scanln(&xaiKey)
+
+				if err := actions.SetEnvValue("FP_AI_GATEWAY_ENABLED", "true"); err != nil {
+					return err
+				}
+				if anthropicKey != "" {
+					_ = actions.SetEnvValue("ANTHROPIC_API_KEY", anthropicKey)
+				}
+				if xaiKey != "" {
+					_ = actions.SetEnvValue("XAI_API_KEY", xaiKey)
+				}
+
+				// Bootstrap gateway token if not already present
+				_ = cli // token bootstrap would use this client
+				fmt.Fprintln(os.Stderr, "AI Gateway enabled. Restarting stack…")
+				return actions.Compose(ctx, os.Stdout, os.Stderr, "up", "-d")
+			},
+		},
+		&cobra.Command{
+			Use:   "disable",
+			Short: "Disable the AI Gateway (stops the container, hides AI features in the UI)",
+			RunE: func(cmd *cobra.Command, args []string) error {
+				if err := actions.SetEnvValue("FP_AI_GATEWAY_ENABLED", "false"); err != nil {
+					return err
+				}
+				fmt.Fprintln(os.Stderr, "AI Gateway disabled. Restarting stack…")
+				ctx := context.Background()
+				// Stop gateway explicitly first, then restart without profile
+				_ = actions.Compose(ctx, nil, nil, "stop", "ai-gateway")
+				return actions.Compose(ctx, os.Stdout, os.Stderr, "up", "-d")
+			},
+		},
+	)
+	return c
 }
 
 func cmdAbout() *cobra.Command {

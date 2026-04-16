@@ -214,7 +214,8 @@ enum InstallRunner {
             "FP_REGISTRY='\(state.registryUrl)'",
             "FP_REGISTRY_USER='\(state.registryUser)'",
             "FP_REGISTRY_PASS='\(state.registryPass.replacingOccurrences(of: "'", with: "'\\''"))'",
-            state.registrySkip ? "FP_REGISTRY_SKIP=1" : ""
+            state.registrySkip ? "FP_REGISTRY_SKIP=1" : "",
+            "FP_AI_GATEWAY_ENABLED=\(state.aiGatewayEnabled ? "true" : "false")"
         ].filter { !$0.isEmpty }.joined(separator: " ")
 
         let pathExport = "export PATH=\"/Applications/Docker.app/Contents/Resources/bin:/usr/local/bin:/opt/homebrew/bin:$PATH\""

@@ -148,6 +148,10 @@ Source: "..\REQUIREMENTS.md";                               DestDir: "{app}";   
 Source: "..\README.md";                                     DestDir: "{app}";                Flags: ignoreversion
 
 [Tasks]
+Name: "aigateway"; \
+    Description: "Install the AI Gateway (requires an LLM API key or local Ollama — can be enabled later with fp ai enable)"; \
+    GroupDescription: "AI Gateway:"; \
+    Flags: checked
 Name: "addtopath"; \
     Description: "Add fp console to my PATH (lets you run ""fp"" from PowerShell anywhere)"; \
     GroupDescription: "fp console CLI:"; \
@@ -625,6 +629,7 @@ var
   RegistryUserArg: String;
   RegistryPassArg: String;
   RegistrySkipArg: String;
+  AIGatewayArg: String;
   Distro: String;
   DistroArg: String;
   DockerExePath: String;
@@ -646,6 +651,12 @@ begin
       LogInfo('Mode: upgrade')
     else
       LogInfo('Mode: fresh install');
+
+    // AI Gateway checkbox
+    if WizardIsTaskSelected('aigateway') then
+      AIGatewayArg := '-AIGateway "true"'
+    else
+      AIGatewayArg := '-AIGateway "false"';
 
     if IsUpgrade then
     begin
@@ -770,7 +781,8 @@ begin
         DistroArg + ' ' + AppDirArg + ' ' +
         AdminUserArg + ' ' + AdminPassArg + ' ' +
         RegistryArg + ' ' + RegistryUserArg + ' ' +
-        RegistryPassArg + ' ' + RegistrySkipArg,
+        RegistryPassArg + ' ' + RegistrySkipArg + ' ' +
+        AIGatewayArg,
         'Installing FalconPulsar inside WSL (this may take 5-10 minutes)...') then begin UpdateStep(4, 'fail'); Abort; end;
     UpdateStep(4, 'done');
     LogInfo('Step 5/7: PASSED');

@@ -75,6 +75,17 @@ func buildSections() []menuSection {
 			{label: "Export configuration…", accel: "F7", action: func(a *App) { a.doExport() }},
 			{label: "Import configuration…", accel: "F8", action: func(a *App) { a.doImport() }},
 		}},
+		{"AI Gateway", []menuItem{
+			{label: "Status", action: func(a *App) {
+				if actions.AIGatewayEnabled() {
+					a.showMessage("AI Gateway", "AI Gateway is currently enabled.\nUse 'Disable' to stop it.", true)
+				} else {
+					a.showMessage("AI Gateway", "AI Gateway is currently disabled.\nUse 'Enable' to start it.", true)
+				}
+			}},
+			{label: "Enable AI Gateway…", action: func(a *App) { a.enableAIGateway() }},
+			{label: "Disable AI Gateway", action: func(a *App) { a.disableAIGateway() }},
+		}},
 		{"Help", []menuItem{
 			{label: "Keyboard shortcuts", accel: "F1", action: func(a *App) { a.showHelp() }},
 			{label: "About FalconPulsar", action: func(a *App) { a.showAbout() }},
@@ -211,35 +222,51 @@ func (a *App) startPolling() {
 
 func (a *App) refreshServices() {
 	a.services.Clear()
-	rows := []struct {
-		name, note string
-		on         bool
-	}{
-		{"Core", "time-series engine", a.status.Core},
-		{"Web UI", "http://localhost:8080", a.status.UI},
-		{"AI Gateway", "http://localhost:7436", a.status.Gateway},
-		{"REST API", "http://localhost:7433", a.status.APIHealthy},
+	type svcRow struct {
+		name, note, stateStr string
+		dotColor             tcell.Color
+		stateColor           tcell.Color
 	}
+	aiEnabled := actions.AIGatewayEnabled()
+	var rows []svcRow
+	rows = append(rows, svcRow{"Core", "time-series engine",
+		stateLabel(a.status.Core), dotColor(a.status.Core), stateColor(a.status.Core)})
+	rows = append(rows, svcRow{"Web UI", "http://localhost:8080",
+		stateLabel(a.status.UI), dotColor(a.status.UI), stateColor(a.status.UI)})
+	if aiEnabled {
+		rows = append(rows, svcRow{"AI Gateway", "http://localhost:7436",
+			stateLabel(a.status.Gateway), dotColor(a.status.Gateway), stateColor(a.status.Gateway)})
+	} else {
+		rows = append(rows, svcRow{"AI Gateway", "(disabled)",
+			"[#9CA3AF]disabled[-]", theme.TextMuted, theme.TextMuted})
+	}
+	rows = append(rows, svcRow{"REST API", "http://localhost:7433",
+		stateLabel(a.status.APIHealthy), dotColor(a.status.APIHealthy), stateColor(a.status.APIHealthy)})
+
 	for i, r := range rows {
-		dot := tview.NewTableCell("●").SetAlign(tview.AlignCenter)
-		name := tview.NewTableCell(r.name)
-		state := tview.NewTableCell(stateLabel(r.on))
-		note := tview.NewTableCell(r.note)
-		name.SetTextColor(theme.Text)
-		note.SetTextColor(theme.TextDim)
-		if r.on {
-			dot.SetTextColor(theme.Running)
-			state.SetTextColor(theme.Running)
-		} else {
-			dot.SetTextColor(theme.Stopped)
-			state.SetTextColor(theme.Stopped)
-		}
+		dot := tview.NewTableCell("●").SetAlign(tview.AlignCenter).SetTextColor(r.dotColor)
+		name := tview.NewTableCell(r.name).SetTextColor(theme.Text)
+		state := tview.NewTableCell(r.stateStr).SetTextColor(r.stateColor)
+		note := tview.NewTableCell(r.note).SetTextColor(theme.TextDim)
 		a.services.SetCell(i, 0, dot)
 		a.services.SetCell(i, 1, name)
 		a.services.SetCell(i, 2, state)
 		a.services.SetCell(i, 3, note)
 	}
 	a.refreshDetails(a.services.GetSelection())
+}
+
+func dotColor(on bool) tcell.Color {
+	if on {
+		return theme.Running
+	}
+	return theme.Stopped
+}
+func stateColor(on bool) tcell.Color {
+	if on {
+		return theme.Running
+	}
+	return theme.Stopped
 }
 
 func (a *App) refreshDetails(row ...int) {
@@ -579,6 +606,58 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "\n…(truncated)"
+}
+
+func (a *App) enableAIGateway() {
+	a.askAdminThen("Enable AI Gateway", func(cli *api.Client, user, pass string) {
+		// Prompt for API keys
+		form := tview.NewForm().
+			AddInputField("Anthropic API key (blank to skip)", "", 50, nil, nil).
+			AddInputField("xAI API key (blank to skip)", "", 50, nil, nil)
+		form.SetFieldBackgroundColor(theme.Surface).
+			SetButtonBackgroundColor(theme.AccentDim).
+			SetLabelColor(theme.Text)
+		form.SetBackgroundColor(theme.Panel)
+		form.AddButton("Enable", func() {
+			anthropic := form.GetFormItem(0).(*tview.InputField).GetText()
+			xai := form.GetFormItem(1).(*tview.InputField).GetText()
+			a.pages.RemovePage("modal")
+			_ = actions.SetEnvValue("FP_AI_GATEWAY_ENABLED", "true")
+			if anthropic != "" {
+				_ = actions.SetEnvValue("ANTHROPIC_API_KEY", anthropic)
+			}
+			if xai != "" {
+				_ = actions.SetEnvValue("XAI_API_KEY", xai)
+			}
+			a.runAction("Enabling AI Gateway…", "start")
+		})
+		form.AddButton("Cancel", func() { a.pages.RemovePage("modal") })
+		a.pushModal("LLM Provider Keys", form, 64, 8)
+		a.tv.SetFocus(form)
+	})
+}
+
+func (a *App) disableAIGateway() {
+	m := tview.NewModal().
+		SetText("Disable AI Gateway?\n\nChat features will be hidden in the Web UI until re-enabled.").
+		AddButtons([]string{"Disable", "Cancel"}).
+		SetDoneFunc(func(idx int, label string) {
+			a.pages.RemovePage("modal")
+			if label == "Disable" {
+				_ = actions.SetEnvValue("FP_AI_GATEWAY_ENABLED", "false")
+				go func() {
+					_ = actions.Compose(context.Background(), nil, nil, "stop", "ai-gateway")
+					a.tv.QueueUpdateDraw(func() {
+						a.status = actions.Poll(context.Background())
+						a.refreshServices()
+						a.showMessage("AI Gateway disabled",
+							"Re-enable anytime via AI Gateway → Enable.", true)
+					})
+				}()
+			}
+		})
+	m.SetBackgroundColor(theme.Panel)
+	a.pages.AddPage("modal", m, true, true)
 }
 
 func (a *App) doExport() {

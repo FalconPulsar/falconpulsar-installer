@@ -137,6 +137,23 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         backupItem.submenu = backupMenu
         menu.addItem(backupItem)
 
+        // AI Gateway toggle submenu
+        let aiMenu = NSMenu()
+        let aiStatus = NSMenuItem(title: isAIGatewayEnabled() ? "✓ Enabled" : "Disabled",
+                                   action: nil, keyEquivalent: "")
+        aiStatus.isEnabled = false
+        aiMenu.addItem(aiStatus)
+        aiMenu.addItem(.separator())
+        let aiEnable = NSMenuItem(title: "Enable AI Gateway…", action: #selector(enableAIGateway), keyEquivalent: "")
+        aiEnable.target = self
+        aiMenu.addItem(aiEnable)
+        let aiDisable = NSMenuItem(title: "Disable AI Gateway", action: #selector(disableAIGateway), keyEquivalent: "")
+        aiDisable.target = self
+        aiMenu.addItem(aiDisable)
+        let aiItem = NSMenuItem(title: "AI Gateway", action: nil, keyEquivalent: "")
+        aiItem.submenu = aiMenu
+        menu.addItem(aiItem)
+
         menu.addItem(.separator())
 
         let autoStart = NSMenuItem(title: "Start at Login", action: #selector(toggleAutoStart), keyEquivalent: "")
@@ -493,6 +510,85 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func openRequestFeature() {
         NSWorkspace.shared.open(URL(string: "https://falconpulsar.com/roadmap#request-form")!)
+    }
+
+    // MARK: - AI Gateway Toggle
+
+    private func isAIGatewayEnabled() -> Bool {
+        let envPath = "\(homeDir)/.env"
+        guard let data = try? String(contentsOfFile: envPath, encoding: .utf8) else { return true }
+        for line in data.components(separatedBy: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("FP_AI_GATEWAY_ENABLED=") {
+                let val = trimmed.replacingOccurrences(of: "FP_AI_GATEWAY_ENABLED=", with: "")
+                return val == "true" || val == "1" || val == "yes"
+            }
+        }
+        return true
+    }
+
+    private func setEnvValue(_ key: String, _ value: String) {
+        let envPath = "\(homeDir)/.env"
+        guard var data = try? String(contentsOfFile: envPath, encoding: .utf8) else { return }
+        var lines = data.components(separatedBy: "\n")
+        var found = false
+        for i in 0..<lines.count {
+            if lines[i].trimmingCharacters(in: .whitespaces).hasPrefix("\(key)=") {
+                lines[i] = "\(key)=\(value)"
+                found = true
+                break
+            }
+        }
+        if !found { lines.append("\(key)=\(value)") }
+        try? lines.joined(separator: "\n").write(toFile: envPath, atomically: true, encoding: .utf8)
+    }
+
+    @objc func enableAIGateway() {
+        guard let creds = promptAdminCredentials(
+            title: "Enable AI Gateway",
+            message: "Enter admin credentials to bootstrap the gateway service token."
+        ) else { return }
+
+        let alert = NSAlert()
+        alert.messageText = "LLM Provider Keys"
+        alert.informativeText = "Enter at least one API key (or leave blank for Ollama-only setups)."
+        alert.addButton(withTitle: "Enable")
+        alert.addButton(withTitle: "Cancel")
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 340, height: 64))
+        let anthropicField = NSTextField(frame: NSRect(x: 0, y: 34, width: 340, height: 24))
+        anthropicField.placeholderString = "Anthropic API key (sk-ant-...)"
+        let xaiField = NSTextField(frame: NSRect(x: 0, y: 0, width: 340, height: 24))
+        xaiField.placeholderString = "xAI API key (xai-...)"
+        container.addSubview(anthropicField)
+        container.addSubview(xaiField)
+        alert.accessoryView = container
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        setEnvValue("FP_AI_GATEWAY_ENABLED", "true")
+        if !anthropicField.stringValue.isEmpty {
+            setEnvValue("ANTHROPIC_API_KEY", anthropicField.stringValue)
+        }
+        if !xaiField.stringValue.isEmpty {
+            setEnvValue("XAI_API_KEY", xaiField.stringValue)
+        }
+        shell("cd '\(homeDir)' && docker compose --profile ai up -d 2>&1")
+        buildMenu()
+        pollHealth()
+    }
+
+    @objc func disableAIGateway() {
+        let alert = NSAlert()
+        alert.messageText = "Disable AI Gateway?"
+        alert.informativeText = "Chat features will be hidden in the Web UI until re-enabled."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Disable")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        setEnvValue("FP_AI_GATEWAY_ENABLED", "false")
+        shell("cd '\(homeDir)' && docker compose stop ai-gateway 2>&1")
+        buildMenu()
+        pollHealth()
     }
 
     // MARK: - Configuration Backup

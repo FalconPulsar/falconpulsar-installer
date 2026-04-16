@@ -470,6 +470,20 @@ struct CredentialsPage: View {
                     .font(.callout)
             }
 
+            Divider().padding(.vertical, 4)
+
+            Toggle(isOn: $state.aiGatewayEnabled) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Install AI Gateway")
+                        .font(.callout.bold())
+                    Text("Provides AI chat, natural-language queries, and LLM-powered analysis. Requires an LLM API key or local Ollama. You can enable this later with fp ai enable.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .toggleStyle(.checkbox)
+
             Spacer()
         }
         .padding(30)

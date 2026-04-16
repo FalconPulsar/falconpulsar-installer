@@ -266,19 +266,21 @@ esac
 # ── Step 6: Generate compose.yml + .env + (optional) init.json ──────────────
 log_step "step 6/8 — stack files in ${FP_HOME}"
 
+prompt_ai_gateway
 prompt_admin_credentials
 
 install -m 0644 -o "$FP_USER" -g "$FP_USER" \
     "${REPO_ROOT}/shared/compose.yml" \
     "${FP_HOME}/compose.yml"
 
-# Copy the AI Gateway config if it doesn't already exist (don't overwrite
-# user edits on re-install).
-if [ ! -f "${FP_HOME}/gateway.yaml" ] && [ -f "${REPO_ROOT}/shared/gateway.yaml" ]; then
-    install -m 0644 -o "$FP_USER" -g "$FP_USER" \
-        "${REPO_ROOT}/shared/gateway.yaml" \
-        "${FP_HOME}/gateway.yaml"
-    log_info "copied default gateway.yaml"
+# Copy the AI Gateway config if it doesn't already exist (skip if disabled).
+if [ "${FP_AI_GATEWAY_ENABLED}" = "true" ]; then
+    if [ ! -f "${FP_HOME}/gateway.yaml" ] && [ -f "${REPO_ROOT}/shared/gateway.yaml" ]; then
+        install -m 0644 -o "$FP_USER" -g "$FP_USER" \
+            "${REPO_ROOT}/shared/gateway.yaml" \
+            "${FP_HOME}/gateway.yaml"
+        log_info "copied default gateway.yaml"
+    fi
 fi
 
 install -d -m 0750 -o "$FP_USER" -g "$FP_USER" "$FP_DATA_DIR"
@@ -321,6 +323,7 @@ FP_PUBSUB_PORT=${FP_PUBSUB_PORT}
 FP_GATEWAY_PORT=${FP_GATEWAY_PORT}
 FP_UI_PORT=${FP_UI_PORT}
 FP_LOG_LEVEL=${FP_LOG_LEVEL}
+FP_AI_GATEWAY_ENABLED=${FP_AI_GATEWAY_ENABLED:-true}
 ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
 XAI_API_KEY=${XAI_API_KEY:-}
 EOF
@@ -373,13 +376,20 @@ done
 # ── 7b. Create the AI gateway service token via REST API ──────────────────
 # This appends FP_API_KEY=<token> to .env. The admin password is consumed
 # by the login call here and then we drop it from our shell variables.
-fp_bootstrap_gateway_token "${FP_HOME}/.env"
+if [ "${FP_AI_GATEWAY_ENABLED}" = "true" ]; then
+    fp_bootstrap_gateway_token "${FP_HOME}/.env"
+else
+    log_info "AI Gateway disabled — skipping token bootstrap"
+fi
 
-# ── 7c. Start the rest of the stack (ui + ai-gateway) ─────────────────────
-# At this point .env contains FP_API_KEY but NOT FP_ADMIN_PASS. The
-# ai-gateway will pick up the token from .env on startup.
-log_info "starting ui and ai-gateway"
-sudo -u "$FP_USER" -H sg docker -c "cd '${FP_HOME}' && docker compose up -d"
+# ── 7c. Start the rest of the stack ───────────────────────────────────────
+if [ "${FP_AI_GATEWAY_ENABLED}" = "true" ]; then
+    log_info "starting ui and ai-gateway"
+    sudo -u "$FP_USER" -H sg docker -c "cd '${FP_HOME}' && docker compose --profile ai up -d"
+else
+    log_info "starting ui (AI Gateway disabled)"
+    sudo -u "$FP_USER" -H sg docker -c "cd '${FP_HOME}' && docker compose up -d"
+fi
 
 # ── 7d. Install the fp CLI under ${FP_HOME}/bin/ (self-contained stack) ───
 fp_install_cli "$FP_HOME" "${FP_VERSION:-0.1.0}"
@@ -427,7 +437,9 @@ fi
 # ── Post-install health check ───────────────────────────────────────────────
 log_step "verifying installation health"
 HEALTH_OK=true
-for svc in falconpulsar-core falconpulsar-ui falconpulsar-ai-gateway; do
+HEALTH_SVCS="falconpulsar-core falconpulsar-ui"
+[ "${FP_AI_GATEWAY_ENABLED}" = "true" ] && HEALTH_SVCS="${HEALTH_SVCS} falconpulsar-ai-gateway"
+for svc in $HEALTH_SVCS; do
     if docker ps --filter "name=$svc" --filter "status=running" -q 2>/dev/null | grep -q .; then
         log_success "$svc: running"
     else

@@ -155,6 +155,18 @@ namespace FalconPulsar.Tray
                 (s, e) => OpenDataFolder()));
             menu.Items.Add(configMenu);
 
+            // AI Gateway toggle submenu
+            var aiMenu = new ToolStripMenuItem("AI Gateway");
+            var aiStatusLabel = new ToolStripMenuItem(IsAIGatewayEnabled() ? "✓ Enabled" : "Disabled")
+            { Enabled = false };
+            aiMenu.DropDownItems.Add(aiStatusLabel);
+            aiMenu.DropDownItems.Add(new ToolStripSeparator());
+            aiMenu.DropDownItems.Add(new ToolStripMenuItem("Enable AI Gateway...", null,
+                async (s, e) => await EnableAIGatewayAsync()));
+            aiMenu.DropDownItems.Add(new ToolStripMenuItem("Disable AI Gateway", null,
+                (s, e) => DisableAIGateway()));
+            menu.Items.Add(aiMenu);
+
             // Configuration Backup submenu (export / import)
             var backupMenu = new ToolStripMenuItem("Configuration Backup");
             backupMenu.DropDownItems.Add(new ToolStripMenuItem("Export Configuration...", null,
@@ -701,6 +713,93 @@ namespace FalconPulsar.Tray
             _pollTimer.Stop();
             _trayIcon.Visible = false;
             Application.Exit();
+        }
+
+        // ────────────────────────── AI Gateway Toggle ────────────────────────────
+
+        private static bool IsAIGatewayEnabled()
+        {
+            var envPath = Path.Combine(ConfigBackup.FalconPulsarHomeDir, ".env");
+            if (!File.Exists(envPath)) return true;
+            foreach (var line in File.ReadLines(envPath))
+            {
+                var trimmed = line.Trim();
+                if (trimmed.StartsWith("FP_AI_GATEWAY_ENABLED="))
+                {
+                    var val = trimmed["FP_AI_GATEWAY_ENABLED=".Length..];
+                    return val is "true" or "1" or "yes";
+                }
+            }
+            return true;
+        }
+
+        private static void SetEnvValue(string key, string value)
+        {
+            var envPath = Path.Combine(ConfigBackup.FalconPulsarHomeDir, ".env");
+            if (!File.Exists(envPath)) return;
+            var lines = File.ReadAllLines(envPath).ToList();
+            bool found = false;
+            for (int i = 0; i < lines.Count; i++)
+            {
+                if (lines[i].TrimStart().StartsWith(key + "="))
+                {
+                    lines[i] = key + "=" + value;
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) lines.Add(key + "=" + value);
+            File.WriteAllLines(envPath, lines);
+        }
+
+        private async Task EnableAIGatewayAsync()
+        {
+            var creds = PromptAdminCredentials(
+                "Enable AI Gateway",
+                "Enter admin credentials to bootstrap the gateway.");
+            if (creds is null) return;
+
+            using var form = new Form
+            {
+                Text = "LLM Provider Keys",
+                Width = 420, Height = 200,
+                FormBorderStyle = FormBorderStyle.FixedDialog,
+                StartPosition = FormStartPosition.CenterScreen,
+            };
+            var msg = new Label { Text = "Enter at least one API key (or leave blank for Ollama):",
+                Width = 380, Height = 20, Top = 10, Left = 15 };
+            var anthropicLabel = new Label { Text = "Anthropic:", Width = 80, Top = 40, Left = 15 };
+            var anthropicBox = new TextBox { Width = 270, Top = 38, Left = 100 };
+            var xaiLabel = new Label { Text = "xAI:", Width = 80, Top = 72, Left = 15 };
+            var xaiBox = new TextBox { Width = 270, Top = 70, Left = 100 };
+            var okBtn = new Button { Text = "Enable", DialogResult = DialogResult.OK, Width = 80, Top = 110, Left = 210 };
+            var cancelBtn = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, Width = 80, Top = 110, Left = 300 };
+            form.Controls.AddRange(new Control[] { msg, anthropicLabel, anthropicBox, xaiLabel, xaiBox, okBtn, cancelBtn });
+            form.AcceptButton = okBtn;
+            form.CancelButton = cancelBtn;
+            if (form.ShowDialog() != DialogResult.OK) return;
+
+            SetEnvValue("FP_AI_GATEWAY_ENABLED", "true");
+            if (!string.IsNullOrWhiteSpace(anthropicBox.Text))
+                SetEnvValue("ANTHROPIC_API_KEY", anthropicBox.Text.Trim());
+            if (!string.IsNullOrWhiteSpace(xaiBox.Text))
+                SetEnvValue("XAI_API_KEY", xaiBox.Text.Trim());
+
+            await RunComposeCommand("--profile ai up -d");
+            _trayIcon.ContextMenuStrip = BuildMenu();
+        }
+
+        private void DisableAIGateway()
+        {
+            var result = MessageBox.Show(
+                "Chat features will be hidden in the Web UI until re-enabled.\n\nDisable AI Gateway?",
+                "Disable AI Gateway",
+                MessageBoxButtons.OKCancel, MessageBoxIcon.Warning);
+            if (result != DialogResult.OK) return;
+
+            SetEnvValue("FP_AI_GATEWAY_ENABLED", "false");
+            Task.Run(async () => await RunComposeCommand("stop ai-gateway"));
+            _trayIcon.ContextMenuStrip = BuildMenu();
         }
 
         // ────────────────────────── Configuration Backup ──────────────────────────

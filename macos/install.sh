@@ -231,14 +231,17 @@ log_success "${FP_HOME} ready"
 # ── Step 4: compose.yml + .env ──────────────────────────────────────────────
 log_step "step 4/6 — stack files"
 
+prompt_ai_gateway
 prompt_admin_credentials
 
 cp "${REPO_ROOT}/shared/compose.yml" "${FP_HOME}/compose.yml"
 
-# Copy the AI Gateway config if it doesn't already exist
-if [ ! -f "${FP_HOME}/gateway.yaml" ] && [ -f "${REPO_ROOT}/shared/gateway.yaml" ]; then
-    cp "${REPO_ROOT}/shared/gateway.yaml" "${FP_HOME}/gateway.yaml"
-    log_info "copied default gateway.yaml"
+# Copy the AI Gateway config if it doesn't already exist (skip if gateway disabled)
+if [ "${FP_AI_GATEWAY_ENABLED}" = "true" ]; then
+    if [ ! -f "${FP_HOME}/gateway.yaml" ] && [ -f "${REPO_ROOT}/shared/gateway.yaml" ]; then
+        cp "${REPO_ROOT}/shared/gateway.yaml" "${FP_HOME}/gateway.yaml"
+        log_info "copied default gateway.yaml"
+    fi
 fi
 
 # On macOS, FP_UID = the current user's UID. The compose.yml uses this to set
@@ -273,6 +276,7 @@ FP_PUBSUB_PORT=${FP_PUBSUB_PORT}
 FP_GATEWAY_PORT=${FP_GATEWAY_PORT}
 FP_UI_PORT=${FP_UI_PORT}
 FP_LOG_LEVEL=${FP_LOG_LEVEL}
+FP_AI_GATEWAY_ENABLED=${FP_AI_GATEWAY_ENABLED:-true}
 ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
 XAI_API_KEY=${XAI_API_KEY:-}
 EOF
@@ -312,12 +316,21 @@ while :; do
     sleep 3
 done
 
-# 5b. Create the AI gateway service token via REST API.
-fp_bootstrap_gateway_token "${FP_HOME}/.env"
+# 5b. Create the AI gateway service token via REST API (skip if gateway disabled).
+if [ "${FP_AI_GATEWAY_ENABLED}" = "true" ]; then
+    fp_bootstrap_gateway_token "${FP_HOME}/.env"
+else
+    log_info "AI Gateway disabled — skipping token bootstrap"
+fi
 
-# 5c. Start the rest of the stack (ui + ai-gateway).
-log_info "starting ui and ai-gateway"
-( cd "$FP_HOME" && docker compose up -d )
+# 5c. Start the rest of the stack.
+if [ "${FP_AI_GATEWAY_ENABLED}" = "true" ]; then
+    log_info "starting ui and ai-gateway"
+    ( cd "$FP_HOME" && docker compose --profile ai up -d )
+else
+    log_info "starting ui (AI Gateway disabled)"
+    ( cd "$FP_HOME" && docker compose up -d )
+fi
 
 # 5d. Install the fp CLI into ${FP_HOME}/bin/ and optionally add to PATH.
 fp_install_cli "$FP_HOME" "${FP_VERSION:-0.1.0}"
@@ -326,7 +339,9 @@ fp_offer_path_append "$FP_HOME"
 # ── Step 6: Done ────────────────────────────────────────────────────────────
 log_step "verifying installation health"
 HEALTH_OK=true
-for svc in falconpulsar-core falconpulsar-ui falconpulsar-ai-gateway; do
+HEALTH_SVCS="falconpulsar-core falconpulsar-ui"
+[ "${FP_AI_GATEWAY_ENABLED}" = "true" ] && HEALTH_SVCS="${HEALTH_SVCS} falconpulsar-ai-gateway"
+for svc in $HEALTH_SVCS; do
     if docker ps --filter "name=$svc" --filter "status=running" -q 2>/dev/null | grep -q .; then
         log_success "$svc: running"
     else
