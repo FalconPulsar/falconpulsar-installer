@@ -151,8 +151,7 @@ Source: "..\README.md";                                     DestDir: "{app}";   
 [Tasks]
 Name: "aigateway"; \
     Description: "Install AI Capabilities (requires an LLM API key or local Ollama — can be enabled later with fp ai enable)"; \
-    GroupDescription: "AI Capabilities:"; \
-    Flags: checked
+    GroupDescription: "AI Capabilities:"
 Name: "addtopath"; \
     Description: "Add fp console to my PATH (lets you run ""fp"" from PowerShell anywhere)"; \
     GroupDescription: "fp console CLI:"; \
