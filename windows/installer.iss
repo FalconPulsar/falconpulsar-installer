@@ -1662,6 +1662,7 @@ end;
 function InitializeSetup(): Boolean;
 var
   WinVer: TWindowsVersion;
+  Choice: Integer;
 begin
   Result := True;
   IsUpgrade := False;
@@ -1716,57 +1717,55 @@ begin
     IsUpgrade := True;
     LogInfo('Existing installation detected');
 
-    // 3-way choice matching the macOS installer:
-    //   YES    = Upgrade in place
-    //   NO     = Reinstall or Fresh install
-    //   CANCEL = Abort
-    case MsgBox(
+    // 3-way choice matching the macOS installer. Uses if/else instead of
+    // nested case statements (Inno Setup Pascal doesn't handle nested
+    // case-with-else cleanly).
+    Choice := MsgBox(
       'FalconPulsar is already installed on this computer.' + #13#10 + #13#10 +
       'Choose how to proceed:' + #13#10 + #13#10 +
       '  YES  = Upgrade in place (pull latest images, keep data + settings)' + #13#10 +
       '  NO   = Reinstall or Fresh install (next dialog)' + #13#10 +
       '  CANCEL = Exit the installer',
-      mbConfirmation, MB_YESNOCANCEL) of
-      IDYES:
+      mbConfirmation, MB_YESNOCANCEL);
+    if Choice = IDYES then
+    begin
+      InstallAction := 'upgrade';
+      LogInfo('User chose: Upgrade in place');
+    end
+    else if Choice = IDNO then
+    begin
+      Choice := MsgBox(
+        'What about your existing data?' + #13#10 + #13#10 +
+        '  YES  = Reinstall (keep database, create new admin account)' + #13#10 +
+        '  NO   = Fresh install — DELETE ALL DATA (irreversible)' + #13#10 +
+        '  CANCEL = Go back',
+        mbConfirmation, MB_YESNOCANCEL);
+      if Choice = IDYES then
       begin
-        InstallAction := 'upgrade';
-        LogInfo('User chose: Upgrade in place');
-      end;
-      IDNO:
+        InstallAction := 'reinstall';
+        LogInfo('User chose: Reinstall (keep data)');
+      end
+      else if Choice = IDNO then
       begin
-        // Second dialog: keep data or delete everything
-        case MsgBox(
-          'What about your existing data?' + #13#10 + #13#10 +
-          '  YES  = Reinstall (keep database, create new admin account)' + #13#10 +
-          '  NO   = Fresh install — DELETE ALL DATA (irreversible)' + #13#10 +
-          '  CANCEL = Go back',
-          mbConfirmation, MB_YESNOCANCEL) of
-          IDYES:
-          begin
-            InstallAction := 'reinstall';
-            LogInfo('User chose: Reinstall (keep data)');
-          end;
-          IDNO:
-          begin
-            if MsgBox(
-              'WARNING: This will permanently delete your FalconPulsar database ' +
-              'and all configuration inside WSL.' + #13#10 + #13#10 +
-              'Are you sure?', mbError, MB_YESNO) = IDYES then
-            begin
-              InstallAction := 'fresh';
-              LogInfo('User chose: Fresh install (DELETE ALL DATA)');
-            end else
-            begin
-              Result := False;
-              Exit;
-            end;
-          end;
-        else
+        if MsgBox(
+          'WARNING: This will permanently delete your FalconPulsar database ' +
+          'and all configuration inside WSL.' + #13#10 + #13#10 +
+          'Are you sure?', mbError, MB_YESNO) = IDYES then
+        begin
+          InstallAction := 'fresh';
+          LogInfo('User chose: Fresh install (DELETE ALL DATA)');
+        end else
+        begin
           Result := False;
           Exit;
         end;
+      end else
+      begin
+        Result := False;
+        Exit;
       end;
-    else
+    end else
+    begin
       Result := False;
       Exit;
     end;
