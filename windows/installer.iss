@@ -108,6 +108,8 @@ Source: "..\shared\lib\checks.sh";                          DestDir: "{app}\shar
 Source: "..\shared\lib\prompts.sh";                         DestDir: "{app}\shared\lib";     Flags: ignoreversion
 Source: "..\shared\lib\bootstrap.sh";                       DestDir: "{app}\shared\lib";     Flags: ignoreversion
 Source: "..\shared\lib\registry_auth.sh";                   DestDir: "{app}\shared\lib";     Flags: ignoreversion
+Source: "..\shared\lib\fpcli.sh";                           DestDir: "{app}\shared\lib";     Flags: ignoreversion
+Source: "..\shared\lib\existing.sh";                        DestDir: "{app}\shared\lib";     Flags: ignoreversion
 
 ; ── PowerShell helpers ──────────────────────────────────────────────────────
 Source: "helpers\lib.ps1";                                  DestDir: "{app}\helpers";        Flags: ignoreversion
