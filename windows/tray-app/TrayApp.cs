@@ -743,9 +743,12 @@ namespace FalconPulsar.Tray
 
         private static void SetEnvValue(string key, string value)
         {
-            var envPath = Path.Combine(ConfigBackup.FalconPulsarHomeDir, ".env");
-            if (!File.Exists(envPath)) return;
-            var lines = File.ReadAllLines(envPath).ToList();
+            var dir = ConfigBackup.FalconPulsarHomeDir;
+            var envPath = Path.Combine(dir, ".env");
+            if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
+            var lines = File.Exists(envPath)
+                ? File.ReadAllLines(envPath).ToList()
+                : new List<string>();
             bool found = false;
             for (int i = 0; i < lines.Count; i++)
             {
@@ -769,8 +772,11 @@ namespace FalconPulsar.Tray
                 Directory.CreateDirectory(ConfigBackup.FalconPulsarHomeDir);
                 File.WriteAllText(p,
                     "# FalconPulsar AI Gateway — default configuration.\n" +
-                    "# Configure providers + models via the Web UI Config Hub.\n" +
-                    "providers: []\ndefault_model: \"\"\ncontext:\n  max_tokens: 4096\n");
+                    "# Providers and models are managed via the Web UI.\n" +
+                    "server:\n  host: \"0.0.0.0\"\n  port: 7436\n" +
+                    "falconpulsar:\n  url: \"http://localhost:7433\"\n  timeout: 30\n" +
+                    "context:\n  schema_cache_ttl: 300\n  max_conversation_tokens: 100000\n" +
+                    "logging:\n  level: \"INFO\"\n");
             }
         }
 

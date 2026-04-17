@@ -190,12 +190,30 @@ func EnsureGatewayConfig() {
 }
 
 const defaultGatewayYAML = `# FalconPulsar AI Gateway — default configuration.
-# Edit via the Web UI Config Hub (Settings > AI Configuration) or
-# directly here and restart the gateway: fp restart
-providers: []
-default_model: ""
+# Providers, API keys, and models are managed via the Web UI
+# (Settings > AI Configuration), not this file.
+server:
+  host: "0.0.0.0"
+  port: 7436
+falconpulsar:
+  url: "http://localhost:7433"
+  timeout: 30
 context:
-  max_tokens: 4096
+  schema_cache_ttl: 300
+  max_conversation_tokens: 100000
+  include_fpq_examples: true
+knowledge:
+  enabled: true
+  path: "./knowledge"
+memory:
+  enabled: true
+  db_path: "./data/conversations.db"
+  max_messages: 100
+user_memory:
+  enabled: true
+  db_path: "./data/user_memory.db"
+logging:
+  level: "INFO"
 `
 
 // OpenFolder opens a local directory in the platform file manager.

@@ -86,10 +86,10 @@ log_step "stopping the stack"
 if [ -f "${FP_HOME}/compose.yml" ]; then
     if [ "$FP_PURGE" -eq 1 ]; then
         # --volumes removes named Docker volumes declared in compose.yml
-        sudo -u "$FP_USER" -H sg docker -c "cd '${FP_HOME}' && docker compose down --remove-orphans --volumes" || \
+        sudo -u "$FP_USER" -H sg docker -c "cd '${FP_HOME}' && docker compose --profile ai down --remove-orphans --volumes" || \
             log_warn "docker compose down failed — continuing anyway"
     else
-        sudo -u "$FP_USER" -H sg docker -c "cd '${FP_HOME}' && docker compose down --remove-orphans" || \
+        sudo -u "$FP_USER" -H sg docker -c "cd '${FP_HOME}' && docker compose --profile ai down --remove-orphans" || \
             log_warn "docker compose down failed — continuing anyway"
     fi
 else

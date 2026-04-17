@@ -121,12 +121,13 @@ log_info "Menu bar app stopped"
 log_step "Stopping containers"
 if [ -f "${FP_HOME}/compose.yml" ]; then
     if [ "$FP_PURGE" = "1" ]; then
-        # --volumes removes named volumes declared in compose.yml
-        ( cd "$FP_HOME" && docker compose down --remove-orphans --volumes 2>/dev/null ) || \
+        # Always include --profile ai so the gateway container is caught
+        # even if AI was enabled post-install then disabled before uninstall.
+        ( cd "$FP_HOME" && docker compose --profile ai down --remove-orphans --volumes 2>/dev/null ) || \
             log_warn "docker compose down failed — continuing anyway"
         log_info "Containers and named volumes removed"
     else
-        ( cd "$FP_HOME" && docker compose down --remove-orphans 2>/dev/null ) || \
+        ( cd "$FP_HOME" && docker compose --profile ai down --remove-orphans 2>/dev/null ) || \
             log_warn "docker compose down failed — continuing anyway"
         log_info "Containers stopped and removed (volumes preserved)"
     fi

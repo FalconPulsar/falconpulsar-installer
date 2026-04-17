@@ -257,5 +257,13 @@ if ($rc -ne 0) {
     Stop-WithError "Bash installer failed inside WSL with exit code $rc. Run 'wsl -d $Distro -u root -- bash /opt/falconpulsar-installer/linux/install.sh --mode docker' manually to see the full output."
 }
 
+# Mirror the AI flag to the Windows side so the tray + fp.exe can read it
+# (they can't access the WSL filesystem directly).
+$winEnvDir = Join-Path $env:USERPROFILE 'falconpulsar'
+if (-not (Test-Path $winEnvDir)) { New-Item -ItemType Directory -Path $winEnvDir -Force | Out-Null }
+$winEnvPath = Join-Path $winEnvDir '.env'
+Set-Content -Path $winEnvPath -Value "FP_AI_GATEWAY_ENABLED=$AIGateway"
+Write-Info "Mirrored AI flag to $winEnvPath"
+
 Write-Output '[ok] FalconPulsar installed inside WSL'
 exit 0

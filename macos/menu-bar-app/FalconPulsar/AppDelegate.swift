@@ -573,15 +573,29 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             try? fm.removeItem(atPath: p)
         }
         if !fm.fileExists(atPath: p) {
-            let defaultCfg = """
-            # FalconPulsar AI Gateway — default configuration.
-            # Configure providers + models via the Web UI Config Hub.
-            providers: []
-            default_model: ""
-            context:
-              max_tokens: 4096
-            """
-            try? defaultCfg.write(toFile: p, atomically: true, encoding: .utf8)
+            // Copy the real shared/gateway.yaml if available; otherwise write a
+            // minimal valid config (no providers key — that's managed via the UI).
+            let bundled = Bundle.main.resourcePath.map { "\($0)/../../shared/gateway.yaml" }
+            if let src = bundled, fm.fileExists(atPath: src) {
+                try? fm.copyItem(atPath: src, toPath: p)
+            } else {
+                let cfg = """
+                # FalconPulsar AI Gateway — default configuration.
+                # Providers and models are managed via the Web UI.
+                server:
+                  host: "0.0.0.0"
+                  port: 7436
+                falconpulsar:
+                  url: "http://localhost:7433"
+                  timeout: 30
+                context:
+                  schema_cache_ttl: 300
+                  max_conversation_tokens: 100000
+                logging:
+                  level: "INFO"
+                """
+                try? cfg.write(toFile: p, atomically: true, encoding: .utf8)
+            }
         }
     }
 
@@ -589,22 +603,34 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         ensureGatewayConfig()
         setEnvValue("FP_AI_GATEWAY_ENABLED", "true")
 
-        // Show progress via notification
-        let note = NSUserNotification()
-        note.title = "FalconPulsar"
-        note.informativeText = "Starting AI Capabilities… this may take a moment."
-        NSUserNotificationCenter.default.deliver(note)
+        // Show a modal progress dialog (NSUserNotification is removed on Sequoia)
+        let progressAlert = NSAlert()
+        progressAlert.messageText = "Enabling AI Capabilities…"
+        progressAlert.informativeText = "Starting the AI container. This may take a moment."
+        progressAlert.alertStyle = .informational
+        progressAlert.addButton(withTitle: "")  // invisible button so the dialog shows
+        let spinner = NSProgressIndicator(frame: NSRect(x: 0, y: 0, width: 32, height: 32))
+        spinner.style = .spinning
+        spinner.startAnimation(nil)
+        progressAlert.accessoryView = spinner
+        // Show non-modally by running on a sheet-less window, then dismiss from background
+        let window = NSWindow(contentRect: .zero, styleMask: [], backing: .buffered, defer: true)
+        DispatchQueue.main.async {
+            progressAlert.beginSheetModal(for: window) { _ in }
+        }
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
             self.shell("cd '\(self.homeDir)' && docker compose --profile ai up -d 2>&1")
             DispatchQueue.main.async {
+                window.orderOut(nil)
                 self.buildMenu()
                 self.pollHealth()
-                let done = NSUserNotification()
-                done.title = "FalconPulsar"
-                done.informativeText = "AI Capabilities is now running. Configure LLM providers in the Web UI."
-                NSUserNotificationCenter.default.deliver(done)
+                let done = NSAlert()
+                done.messageText = "AI Capabilities enabled"
+                done.informativeText = "Configure LLM providers in the Web UI (Settings > AI Configuration)."
+                done.addButton(withTitle: "OK")
+                done.runModal()
             }
         }
     }
@@ -974,8 +1000,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 // `compose down --volumes` and prune any orphan volumes +
                 // images so NOTHING is left behind.
                 let composeDown = purge
-                    ? "cd ~/falconpulsar 2>/dev/null && docker compose down --remove-orphans --volumes 2>/dev/null || true"
-                    : "cd ~/falconpulsar 2>/dev/null && docker compose down --remove-orphans 2>/dev/null || true"
+                    ? "cd ~/falconpulsar 2>/dev/null && docker compose --profile ai down --remove-orphans --volumes 2>/dev/null || true"
+                    : "cd ~/falconpulsar 2>/dev/null && docker compose --profile ai down --remove-orphans 2>/dev/null || true"
                 let removeImages = """
                     IMAGES="$(cd ~/falconpulsar 2>/dev/null && docker compose config --images 2>/dev/null | sort -u)"
                     if [ -n "$IMAGES" ]; then echo "$IMAGES" | xargs docker rmi -f 2>/dev/null || true; fi
