@@ -567,70 +567,160 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func ensureGatewayConfig() {
         let p = "\(homeDir)/gateway.yaml"
-        var isDir: ObjCBool = false
         let fm = FileManager.default
+        var isDir: ObjCBool = false
+
+        // Remove if Docker created a directory instead of a file
         if fm.fileExists(atPath: p, isDirectory: &isDir), isDir.boolValue {
             try? fm.removeItem(atPath: p)
         }
-        if !fm.fileExists(atPath: p) {
-            // Copy the real shared/gateway.yaml if available; otherwise write a
-            // minimal valid config (no providers key — that's managed via the UI).
-            let bundled = Bundle.main.resourcePath.map { "\($0)/../../shared/gateway.yaml" }
-            if let src = bundled, fm.fileExists(atPath: src) {
-                try? fm.copyItem(atPath: src, toPath: p)
-            } else {
-                let cfg = """
-                # FalconPulsar AI Gateway — default configuration.
-                # Providers and models are managed via the Web UI.
-                server:
-                  host: "0.0.0.0"
-                  port: 7436
-                falconpulsar:
-                  url: "http://localhost:7433"
-                  timeout: 30
-                context:
-                  schema_cache_ttl: 300
-                  max_conversation_tokens: 100000
-                logging:
-                  level: "INFO"
-                """
-                try? cfg.write(toFile: p, atomically: true, encoding: .utf8)
+
+        // Check if existing file contains the known-bad `providers: []`
+        var needsWrite = !fm.fileExists(atPath: p)
+        if !needsWrite, let content = try? String(contentsOfFile: p, encoding: .utf8) {
+            if content.contains("providers: []") || content.contains("providers: {}") {
+                needsWrite = true
             }
+        }
+
+        if needsWrite {
+            // Copy the real shared/gateway.yaml from the installer if available
+            let candidates = [
+                "\(homeDir)/../shared/gateway.yaml",
+                "/opt/falconpulsar-installer/shared/gateway.yaml",
+            ]
+            for src in candidates where fm.fileExists(atPath: src) {
+                try? fm.removeItem(atPath: p)
+                try? fm.copyItem(atPath: src, toPath: p)
+                return
+            }
+            let cfg = """
+            # FalconPulsar AI Gateway — default configuration.
+            # Providers and models are managed via the Web UI.
+            server:
+              host: "0.0.0.0"
+              port: 7436
+            falconpulsar:
+              url: "http://localhost:7433"
+              timeout: 30
+            context:
+              schema_cache_ttl: 300
+              max_conversation_tokens: 100000
+            logging:
+              level: "INFO"
+            """
+            try? cfg.write(toFile: p, atomically: true, encoding: .utf8)
         }
     }
 
+    private func hasGatewayToken() -> Bool {
+        let envPath = "\(homeDir)/.env"
+        guard let data = try? String(contentsOfFile: envPath, encoding: .utf8) else { return false }
+        for line in data.components(separatedBy: "\n") {
+            let t = line.trimmingCharacters(in: .whitespaces)
+            if t.hasPrefix("FP_API_KEY=") {
+                return !t.replacingOccurrences(of: "FP_API_KEY=", with: "").isEmpty
+            }
+        }
+        return false
+    }
+
     @objc func enableAIGateway() {
+        // Bootstrap the service token if this is the first time AI is enabled
+        if !hasGatewayToken() {
+            guard let creds = promptAdminCredentials(
+                title: "Enable AI Capabilities",
+                message: "First-time setup: admin credentials are needed to create the AI service token. This only happens once."
+            ) else { return }
+            // Bootstrap: the install.sh function fp_bootstrap_gateway_token does
+            // this via bash. We replicate the essential call here.
+            _ = self.shell("""
+                cd '\(homeDir)' && \
+                export PATH="/Applications/Docker.app/Contents/Resources/bin:/usr/local/bin:/opt/homebrew/bin:$PATH" && \
+                source ../shared/lib/common.sh 2>/dev/null; \
+                source ../shared/lib/bootstrap.sh 2>/dev/null; \
+                fp_bootstrap_gateway_token '\(homeDir)/.env' 2>&1 || \
+                echo '[warn] token bootstrap via lib failed, trying direct curl' && \
+                TOKEN=$(curl -sf -X POST http://localhost:7433/api/v1/auth/login \
+                  -H 'Content-Type: application/json' \
+                  -d '{"username":"\(creds.user)","password":"\(creds.pass.replacingOccurrences(of: "\"", with: "\\\""))"}' \
+                  | grep -o '"token":"[^"]*"' | cut -d'"' -f4) && \
+                API_KEY=$(curl -sf -X POST http://localhost:7433/api/v1/tokens \
+                  -H "Authorization: Bearer $TOKEN" \
+                  -H 'Content-Type: application/json' \
+                  -d '{"name":"ai-gateway","permissions":["read","query"]}' \
+                  | grep -o '"token":"[^"]*"' | cut -d'"' -f4) && \
+                echo "FP_API_KEY=$API_KEY" >> '\(homeDir)/.env'
+            """)
+        }
+
         ensureGatewayConfig()
         setEnvValue("FP_AI_GATEWAY_ENABLED", "true")
 
-        // Show a modal progress dialog (NSUserNotification is removed on Sequoia)
-        let progressAlert = NSAlert()
-        progressAlert.messageText = "Enabling AI Capabilities…"
-        progressAlert.informativeText = "Starting the AI container. This may take a moment."
-        progressAlert.alertStyle = .informational
-        progressAlert.addButton(withTitle: "")  // invisible button so the dialog shows
-        let spinner = NSProgressIndicator(frame: NSRect(x: 0, y: 0, width: 32, height: 32))
-        spinner.style = .spinning
-        spinner.startAnimation(nil)
-        progressAlert.accessoryView = spinner
-        // Show non-modally by running on a sheet-less window, then dismiss from background
-        let window = NSWindow(contentRect: .zero, styleMask: [], backing: .buffered, defer: true)
-        DispatchQueue.main.async {
-            progressAlert.beginSheetModal(for: window) { _ in }
-        }
+        // Progress window with streaming log output
+        let panel = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 550, height: 350),
+            styleMask: [.titled, .closable],
+            backing: .buffered, defer: false)
+        panel.title = "Enabling AI Capabilities…"
+        panel.center()
+
+        let scrollView = NSScrollView(frame: NSRect(x: 10, y: 40, width: 530, height: 300))
+        let logView = NSTextView(frame: scrollView.bounds)
+        logView.isEditable = false
+        logView.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+        logView.backgroundColor = NSColor(white: 0.1, alpha: 1)
+        logView.textColor = NSColor.white
+        scrollView.documentView = logView
+        scrollView.hasVerticalScroller = true
+        panel.contentView?.addSubview(scrollView)
+
+        let closeBtn = NSButton(frame: NSRect(x: 440, y: 5, width: 80, height: 30))
+        closeBtn.title = "Close"
+        closeBtn.bezelStyle = .rounded
+        closeBtn.isEnabled = false
+        closeBtn.target = panel
+        closeBtn.action = #selector(NSPanel.orderOut(_:))
+        panel.contentView?.addSubview(closeBtn)
+
+        panel.makeKeyAndOrderFront(nil)
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
-            self.shell("cd '\(self.homeDir)' && docker compose --profile ai up -d 2>&1")
+            let process = Process()
+            let pipe = Pipe()
+            process.launchPath = "/bin/bash"
+            process.arguments = ["-c",
+                "export PATH='/Applications/Docker.app/Contents/Resources/bin:/usr/local/bin:/opt/homebrew/bin:$PATH' && " +
+                "cd '\(self.homeDir)' && docker compose --profile ai up -d 2>&1"
+            ]
+            process.standardOutput = pipe
+            process.standardError = pipe
+
+            pipe.fileHandleForReading.readabilityHandler = { handle in
+                let data = handle.availableData
+                guard !data.isEmpty, let line = String(data: data, encoding: .utf8) else { return }
+                DispatchQueue.main.async {
+                    logView.string += line
+                    logView.scrollToEndOfDocument(nil)
+                }
+            }
+
+            try? process.run()
+            process.waitUntilExit()
+            pipe.fileHandleForReading.readabilityHandler = nil
+
             DispatchQueue.main.async {
-                window.orderOut(nil)
+                let exitCode = process.terminationStatus
+                logView.string += "\n--- Done (exit \(exitCode)) ---\n"
+                if exitCode == 0 {
+                    logView.string += "AI Capabilities enabled. Configure LLM providers in the Web UI.\n"
+                } else {
+                    logView.string += "Enable may have failed. Check the log above.\n"
+                }
+                closeBtn.isEnabled = true
                 self.buildMenu()
                 self.pollHealth()
-                let done = NSAlert()
-                done.messageText = "AI Capabilities enabled"
-                done.informativeText = "Configure LLM providers in the Web UI (Settings > AI Configuration)."
-                done.addButton(withTitle: "OK")
-                done.runModal()
             }
         }
     }

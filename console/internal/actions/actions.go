@@ -174,17 +174,38 @@ func containerRunning(ctx context.Context, name string) bool {
 	return err == nil && len(strings.TrimSpace(string(out))) > 0
 }
 
-// EnsureGatewayConfig makes sure ~/falconpulsar/gateway.yaml exists as a
-// file (not a directory). Docker creates a directory when the bind-mount
-// source doesn't exist; the Python gateway then crashes with IsADirectoryError.
+// EnsureGatewayConfig makes sure ~/falconpulsar/gateway.yaml is a valid
+// config file. Replaces the file if it's a directory (Docker creates one
+// when the bind-mount source is missing) OR if it contains the known-bad
+// `providers: []` pattern from earlier installer versions.
 func EnsureGatewayConfig() {
 	p := filepath.Join(HomeDir(), "gateway.yaml")
 	fi, err := os.Stat(p)
 	if err == nil && fi.IsDir() {
 		_ = os.RemoveAll(p)
 	}
+	needsWrite := false
 	if _, err := os.Stat(p); os.IsNotExist(err) {
+		needsWrite = true
+	} else if data, err := os.ReadFile(p); err == nil {
+		content := string(data)
+		if strings.Contains(content, "providers: []") ||
+			strings.Contains(content, "providers: {}") {
+			needsWrite = true
+		}
+	}
+	if needsWrite {
 		_ = os.MkdirAll(HomeDir(), 0755)
+		// Try to copy the real shared/gateway.yaml from the installer tree
+		for _, candidate := range []string{
+			filepath.Join(HomeDir(), "..", "shared", "gateway.yaml"),
+			"/opt/falconpulsar-installer/shared/gateway.yaml",
+		} {
+			if data, err := os.ReadFile(candidate); err == nil {
+				_ = os.WriteFile(p, data, 0644)
+				return
+			}
+		}
 		_ = os.WriteFile(p, []byte(defaultGatewayYAML), 0644)
 	}
 }

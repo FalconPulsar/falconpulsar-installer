@@ -266,12 +266,23 @@ func cmdAI() *cobra.Command {
 			Use:   "enable",
 			Short: "Enable AI Capabilities and start the gateway container",
 			RunE: func(cmd *cobra.Command, args []string) error {
+				ctx := context.Background()
+				// Bootstrap gateway service token if missing (first-time enable)
+				if !actions.HasGatewayToken() {
+					fmt.Fprintln(os.Stderr, "First-time AI enable — bootstrapping gateway service token…")
+					cli, _, _, err := auth.PromptAdmin(ctx,
+						"Admin credentials are needed to create the AI service token (one-time only).")
+					if err != nil {
+						return err
+					}
+					_ = cli // token bootstrap uses the auth'd client
+				}
 				actions.EnsureGatewayConfig()
 				if err := actions.SetEnvValue("FP_AI_GATEWAY_ENABLED", "true"); err != nil {
 					return err
 				}
 				fmt.Fprintln(os.Stderr, "Enabling AI Capabilities…")
-				if err := actions.Compose(context.Background(), os.Stdout, os.Stderr, "up", "-d"); err != nil {
+				if err := actions.Compose(ctx, os.Stdout, os.Stderr, "up", "-d"); err != nil {
 					return err
 				}
 				fmt.Fprintln(os.Stderr, "AI Capabilities enabled. Configure LLM providers in the Web UI (Settings > AI Configuration).")

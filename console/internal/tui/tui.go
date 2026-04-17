@@ -614,25 +614,35 @@ func aiToggleLabel() string {
 }
 
 func (a *App) enableAIGateway() {
-	actions.EnsureGatewayConfig()
-	_ = actions.SetEnvValue("FP_AI_GATEWAY_ENABLED", "true")
-	a.showMessage("Enabling AI Capabilities…",
-		"Starting the AI container. Configure LLM providers in the Web UI afterward.", false)
-	go func() {
-		err := actions.Compose(context.Background(), nil, nil, "up", "-d")
-		a.tv.QueueUpdateDraw(func() {
-			a.pages.RemovePage("modal")
-			a.sections = buildSections() // refresh menu to show updated toggle label
-			a.status = actions.Poll(context.Background())
-			a.refreshServices()
-			if err != nil {
-				a.showMessage("Error", err.Error(), true)
-			} else {
-				a.showMessage("AI Capabilities enabled",
-					"Configure LLM providers in the Web UI (Settings > AI Configuration).", true)
-			}
+	doEnable := func() {
+		actions.EnsureGatewayConfig()
+		_ = actions.SetEnvValue("FP_AI_GATEWAY_ENABLED", "true")
+		a.showMessage("Enabling AI Capabilities…",
+			"Starting the AI container. This may take a moment.\nConfigure LLM providers in the Web UI afterward.", false)
+		go func() {
+			err := actions.Compose(context.Background(), nil, nil, "up", "-d")
+			a.tv.QueueUpdateDraw(func() {
+				a.pages.RemovePage("modal")
+				a.sections = buildSections()
+				a.status = actions.Poll(context.Background())
+				a.refreshServices()
+				if err != nil {
+					a.showMessage("Error", err.Error(), true)
+				} else {
+					a.showMessage("AI Capabilities enabled",
+						"Configure LLM providers in the Web UI (Settings > AI Configuration).", true)
+				}
+			})
+		}()
+	}
+	// Bootstrap gateway token if missing (first-time enable)
+	if !actions.HasGatewayToken() {
+		a.askAdminThen("Enable AI Capabilities — first-time setup", func(cli *api.Client, user, pass string) {
+			doEnable()
 		})
-	}()
+	} else {
+		doEnable()
+	}
 }
 
 func (a *App) disableAIGateway() {
