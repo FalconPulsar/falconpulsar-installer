@@ -993,9 +993,22 @@ namespace FalconPulsar.Tray
                             // On success show a prominent confirmation dialog
                             // so the user doesn't have to read the streaming
                             // log, with a one-click shortcut to the Web UI.
+                            //
+                            // Two things to get the dialog actually visible:
+                            //   * Pass the streaming Form as owner so the
+                            //     MessageBox stacks as a child of it (modal,
+                            //     always on top of its parent).
+                            //   * Drop the Form's TopMost flag first — a
+                            //     TopMost owner still renders the MessageBox
+                            //     below it on Windows 11 in some cases.
+                            //     After the user dismisses the dialog the
+                            //     log Form returns to normal Z-order so it
+                            //     can be alt-tabbed like any window.
                             if (code == 0)
                             {
+                                form.TopMost = false;
                                 var choice = MessageBox.Show(
+                                    form,
                                     successMessage + Environment.NewLine + Environment.NewLine +
                                     "Open the Web UI now?",
                                     "FalconPulsar",
