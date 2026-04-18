@@ -206,7 +206,62 @@ log_step "checking for existing installation"
 fp_detect_existing_install "$FP_HOME"
 if fp_has_existing_install; then
     fp_prompt_existing_action "$FP_HOME"
+
+    # Admin authentication gate — upgrades and reinstalls can overwrite a
+    # running production stack, so require the existing admin's password
+    # first. FP_FORCE=1 in the parent env skips this for automation.
+    #
+    # Two modes:
+    #   * Non-interactive (GUI installer passed FP_ADMIN_USER + FP_ADMIN_PASS):
+    #     verify once against Core REST API. On mismatch, abort.
+    #   * Interactive (plain `bash install.sh`): prompt for admin password,
+    #     3 attempts.
+    # Both paths treat Core-unreachable as "fall back to YES confirmation"
+    # (or automatic pass when --yes / FP_ASSUME_YES=1).
+    if [ "${FP_FORCE:-0}" != "1" ] && \
+       { [ "${FP_INSTALL_ACTION:-}" = "upgrade" ] || [ "${FP_INSTALL_ACTION:-}" = "reinstall" ]; } && \
+       [ -f "${REPO_ROOT}/shared/lib/auth.sh" ]; then
+        log_step "authorizing ${FP_INSTALL_ACTION}"
+        # shellcheck source=../shared/lib/auth.sh
+        . "${REPO_ROOT}/shared/lib/auth.sh"
+        auth_rc=0
+        if [ -n "${FP_ADMIN_USER:-}" ] && [ -n "${FP_ADMIN_PASS:-}" ]; then
+            fp_verify_admin_credentials "$FP_ADMIN_USER" "$FP_ADMIN_PASS" || auth_rc=$?
+        else
+            fp_authenticate_admin 3 || auth_rc=$?
+        fi
+        case "$auth_rc" in
+            0) ;;  # authenticated
+            2)
+                # Core unreachable — can't verify. Accept an explicit YES.
+                if [ "${FP_ASSUME_YES:-0}" = "1" ]; then
+                    log_warn "Core unreachable — proceeding because --yes (or FP_ASSUME_YES=1) was supplied."
+                else
+                    printf '\nFalconPulsar Core is not running, so the admin password cannot be verified.\n' >&2
+                    printf 'To authorize this %s anyway, type exactly YES (uppercase): ' "${FP_INSTALL_ACTION}" >&2
+                    confirm=''
+                    read -r confirm </dev/tty 2>/dev/null || confirm=''
+                    if [ "$confirm" != 'YES' ]; then
+                        die "confirmation not received — aborting ${FP_INSTALL_ACTION}"
+                    fi
+                fi
+                ;;
+            *) die "admin authentication failed — aborting ${FP_INSTALL_ACTION}" ;;
+        esac
+    fi
+
     fp_apply_existing_action "$FP_HOME"
+
+    # Refresh uninstall.sh + auth.sh BEFORE the fast-path. Otherwise every
+    # upgrade keeps the user's old (potentially broken) uninstaller on disk.
+    if [ -f "${SCRIPT_DIR}/uninstall.sh" ] && [ -d "${FP_HOME}" ]; then
+        cp "${SCRIPT_DIR}/uninstall.sh" "${FP_HOME}/uninstall.sh" 2>/dev/null || true
+        chmod +x "${FP_HOME}/uninstall.sh" 2>/dev/null || true
+        if [ -f "${REPO_ROOT}/shared/lib/auth.sh" ]; then
+            cp "${REPO_ROOT}/shared/lib/auth.sh" "${FP_HOME}/auth.sh" 2>/dev/null || true
+        fi
+    fi
+
     # Fast-path: if the user picked Upgrade and the stack dir is intact,
     # skip everything else and just pull+recreate.
     if fp_try_upgrade_fastpath "$FP_HOME"; then
@@ -277,24 +332,27 @@ FP_PUBSUB_PORT=${FP_PUBSUB_PORT}
 FP_GATEWAY_PORT=${FP_GATEWAY_PORT}
 FP_UI_PORT=${FP_UI_PORT}
 FP_LOG_LEVEL=${FP_LOG_LEVEL}
-FP_AI_GATEWAY_ENABLED=${FP_AI_GATEWAY_ENABLED:-true}
-ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
-XAI_API_KEY=${XAI_API_KEY:-}
+FP_AI_GATEWAY_ENABLED=${FP_AI_GATEWAY_ENABLED:-false}
 EOF
 chmod 0600 "${FP_HOME}/.env"
 umask 022
 
-# Copy uninstall script to the stack directory for easy access
+# Copy uninstall script to the stack directory for easy access.
+# auth.sh ships alongside so the uninstaller can require admin credentials
+# even when run standalone (not from the installer repo).
 if [ -f "${SCRIPT_DIR}/uninstall.sh" ]; then
     cp "${SCRIPT_DIR}/uninstall.sh" "${FP_HOME}/uninstall.sh"
     chmod +x "${FP_HOME}/uninstall.sh"
+    if [ -f "${REPO_ROOT}/shared/lib/auth.sh" ]; then
+        cp "${REPO_ROOT}/shared/lib/auth.sh" "${FP_HOME}/auth.sh"
+    fi
 fi
 
 log_success "wrote ${FP_HOME}/compose.yml and ${FP_HOME}/.env (admin password NOT stored)"
 
 # ── Step 5: Pull, start core, bootstrap token, start the rest ──────────────
 log_step "step 5/6 — pulling images and starting stack"
-( cd "$FP_HOME" && docker compose pull )
+fp_compose_pull_with_retry "$FP_HOME"
 
 # 5a. Start core only with FP_ADMIN_PASS injected from this shell.
 # We do NOT write FP_ADMIN_PASS to .env. compose.yml has `${FP_ADMIN_PASS:-}`

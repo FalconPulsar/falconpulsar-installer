@@ -50,21 +50,45 @@ log "compiling fp console CLI (for embed in installer)"
      go build -ldflags="-s -w" -o dist/fp-macos-arm64 ./cmd/fp )
 # Apple Silicon Macs are all arm64; no x86_64 embed needed for Mx builds.
 
-# ── Step 2: Build AppIcon.icns ─────────────────────────────────────────────
-log "generating AppIcon.icns"
-rm -rf "$ICONSET_TMP"
-mkdir -p "$ICONSET_TMP"
-for s in 16 32 64 128 256 512 1024; do
-  sips -z $s $s windows/assets/falcon-logo.png \
-       --out "$ICONSET_TMP/icon_${s}x${s}.png" >/dev/null 2>&1
-done
-cp "$ICONSET_TMP/icon_32x32.png"     "$ICONSET_TMP/icon_16x16@2x.png"
-cp "$ICONSET_TMP/icon_64x64.png"     "$ICONSET_TMP/icon_32x32@2x.png"
-cp "$ICONSET_TMP/icon_256x256.png"   "$ICONSET_TMP/icon_128x128@2x.png"
-cp "$ICONSET_TMP/icon_512x512.png"   "$ICONSET_TMP/icon_256x256@2x.png"
-cp "$ICONSET_TMP/icon_1024x1024.png" "$ICONSET_TMP/icon_512x512@2x.png"
-rm -f "$ICONSET_TMP/icon_64x64.png" "$ICONSET_TMP/icon_1024x1024.png"
-iconutil -c icns "$ICONSET_TMP" -o "$ICNS_TMP"
+# ── Step 2: Build icns files ───────────────────────────────────────────────
+# Two variants:
+#   $ICNS_TMP         — installer icon: logo + blue download-arrow badge. Used
+#                       on the DMG volume (Finder sidebar, Dock) and on the
+#                       FalconPulsar Installer.app.
+#   $MB_ICNS_TMP      — plain logo. Used on the menu-bar app which is not an
+#                       installer once it has been moved to /Applications.
+MB_ICNS_TMP="/tmp/MenuBarIcon.icns"
+
+log "composing installer icon (logo + download badge)"
+INSTALLER_ICON_PNG="/tmp/FalconPulsar-InstallerIcon.png"
+swift macos/scripts/make-installer-icon.swift \
+  windows/assets/falcon-logo.png "$INSTALLER_ICON_PNG" >/dev/null
+
+# Helper: png -> icns
+png_to_icns() {
+  local src_png="$1" out_icns="$2" iconset
+  iconset=$(mktemp -d)
+  for s in 16 32 64 128 256 512 1024; do
+    sips -z $s $s "$src_png" --out "$iconset/icon_${s}x${s}.png" >/dev/null 2>&1
+  done
+  cp "$iconset/icon_32x32.png"     "$iconset/icon_16x16@2x.png"
+  cp "$iconset/icon_64x64.png"     "$iconset/icon_32x32@2x.png"
+  cp "$iconset/icon_256x256.png"   "$iconset/icon_128x128@2x.png"
+  cp "$iconset/icon_512x512.png"   "$iconset/icon_256x256@2x.png"
+  cp "$iconset/icon_1024x1024.png" "$iconset/icon_512x512@2x.png"
+  rm -f "$iconset/icon_64x64.png" "$iconset/icon_1024x1024.png"
+  # iconutil requires the dir name to end in .iconset
+  local iconset_named="${iconset%/*}/$(basename "$iconset").iconset"
+  mv "$iconset" "$iconset_named"
+  iconutil -c icns "$iconset_named" -o "$out_icns"
+  rm -rf "$iconset_named"
+}
+
+log "generating AppIcon.icns (installer)"
+png_to_icns "$INSTALLER_ICON_PNG" "$ICNS_TMP"
+
+log "generating AppIcon.icns (menu bar)"
+png_to_icns windows/assets/falcon-logo.png "$MB_ICNS_TMP"
 
 # ── Step 3: Assemble Installer.app ──────────────────────────────────────────
 log "assembling Installer.app"
@@ -97,7 +121,7 @@ mkdir -p "$MB_BUNDLE/Contents/MacOS" "$MB_BUNDLE/Contents/Resources"
 cp macos/menu-bar-app/.build/FalconPulsarMenuBar "$MB_BUNDLE/Contents/MacOS/"
 sips -z 36 36 windows/assets/falcon-logo.png \
      --out "$MB_BUNDLE/Contents/Resources/MenuBarIcon.png" >/dev/null 2>&1
-cp "$ICNS_TMP" "$MB_BUNDLE/Contents/Resources/AppIcon.icns"
+cp "$MB_ICNS_TMP" "$MB_BUNDLE/Contents/Resources/AppIcon.icns"
 cat > "$MB_BUNDLE/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -118,17 +142,33 @@ codesign --force --sign - "$MB_BUNDLE" >/dev/null 2>&1
 codesign --force --sign - "$INSTALLER_BUNDLE" >/dev/null 2>&1
 codesign -vvv --strict "$MB_BUNDLE"
 
-# ── Step 6: Package into UDZO DMG ───────────────────────────────────────────
-log "packaging DMG"
+# ── Step 6: Package into UDZO DMG (with custom volume icon) ────────────────
+# macOS needs the kHasCustomIcon flag set on the root of the DMG for Finder
+# to use .VolumeIcon.icns — a UDZO (read-only) image can't be modified after
+# creation, so build a UDRW first, attach it, set the flag, detach, then
+# convert to UDZO.
+log "packaging DMG (staging with custom volume icon)"
 rm -rf "$DMG_STAGING"
 mkdir -p "$DMG_STAGING"
 cp -R "$INSTALLER_BUNDLE" "$DMG_STAGING/"
+cp "$ICNS_TMP" "$DMG_STAGING/.VolumeIcon.icns"
 rm -f "$DMG_OUTPUT"
+
+DMG_TMP="dist/_FalconPulsar-Setup-rw.dmg"
+MOUNT_POINT="/tmp/fpdmg-mount-$$"
+rm -f "$DMG_TMP"
 hdiutil create \
   -volname "FalconPulsar Installer" \
   -srcfolder "$DMG_STAGING" \
-  -ov -format UDZO \
-  "$DMG_OUTPUT" >/dev/null
+  -ov -format UDRW \
+  "$DMG_TMP" >/dev/null
+
+hdiutil attach "$DMG_TMP" -nobrowse -mountpoint "$MOUNT_POINT" >/dev/null
+SetFile -a C "$MOUNT_POINT"
+hdiutil detach "$MOUNT_POINT" >/dev/null
+
+hdiutil convert "$DMG_TMP" -format UDZO -o "$DMG_OUTPUT" >/dev/null
+rm -f "$DMG_TMP"
 
 # ── Step 7: Clean up intermediate bundles so Launchpad doesn't index them ──
 log "cleaning up intermediate bundles"

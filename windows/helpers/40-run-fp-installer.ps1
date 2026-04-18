@@ -28,7 +28,7 @@ param(
     [string] $RegistryUser = '',
     [string] $RegistryPass = '',
     [switch] $RegistrySkip,
-    [string] $AIGateway = 'true',
+    [string] $AIGateway = 'false',
     [string] $InstallAction = ''
 )
 

@@ -365,11 +365,12 @@ bold.
 | `FP_MIN_DISK_GB` | `10` | `checks.sh` | Disk threshold |
 | `FP_DEFAULT_PORTS` | `7433 7434 7435 7436 8080` | `checks.sh` | Ports tested by `check_ports` |
 
-**Optional third-party variables** (consumed by `ai-gateway` container, set in
-`.env` after install):
-
-- `ANTHROPIC_API_KEY` — Anthropic Claude models
-- `XAI_API_KEY` — xAI Grok models
+**LLM provider credentials** (Anthropic, xAI, OpenAI, Ollama, etc.) are NOT
+set via env vars or `.env`. They are configured through the Web UI
+(Settings > AI Configuration) and persisted in the Core database; the AI
+gateway reads them over the REST API at runtime. Keeping secrets out of
+`.env` means (a) no plaintext on disk outside the DB, (b) rotation through
+the UI only, (c) no divergence between `.env` and DB state.
 
 Also honoured: `NO_COLOR` (disables ANSI colours), `DOCKER_CONFIG` (alternate
 Docker config path).

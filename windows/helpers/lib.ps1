@@ -211,6 +211,147 @@ function Invoke-WslBash {
     return $ec
 }
 
+# Admin authentication against the FalconPulsar Core REST API. Used by the
+# uninstaller to require the admin password before destructive actions.
+# Shows a modal WinForms dialog (title, message, red inline error), retries up
+# to maxAttempts, verifies role=admin via /auth/me. Returns $true on success.
+function Assert-AdminAuth {
+    param(
+        [Parameter(Mandatory)] [string] $Title,
+        [Parameter(Mandatory)] [string] $Message,
+        [int] $MaxAttempts = 3,
+        [string] $BaseUrl = 'http://localhost:7433'
+    )
+    Add-Type -AssemblyName System.Windows.Forms
+    Add-Type -AssemblyName System.Drawing
+
+    # Fast-fail if Core unreachable. Show a friendly dialog and return false.
+    try {
+        $probe = Invoke-WebRequest -Uri "$BaseUrl/api/v1/auth/login" `
+            -Method Options -TimeoutSec 3 -ErrorAction Stop -UseBasicParsing
+    } catch [System.Net.WebException] {
+        # A 4xx/5xx from the server still means Core is reachable; only a
+        # ConnectFailure / NameResolutionFailure means it isn't.
+        $status = $_.Exception.Status
+        if ($status -eq [System.Net.WebExceptionStatus]::ConnectFailure -or
+            $status -eq [System.Net.WebExceptionStatus]::NameResolutionFailure -or
+            $status -eq [System.Net.WebExceptionStatus]::Timeout) {
+            [System.Windows.Forms.MessageBox]::Show(
+                "Cannot reach FalconPulsar Core at $BaseUrl.`nStart the stack first and try again.",
+                'Core not reachable',
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
+            return $false
+        }
+    } catch {
+        # Non-WebException — unknown, continue and let the login attempt fail cleanly.
+    }
+
+    $attempt = 0
+    $lastUser = 'admin'
+    $errorText = $null
+    while ($attempt -lt $MaxAttempts) {
+        $hasError = -not [string]::IsNullOrEmpty($errorText)
+        $errorOffset = if ($hasError) { 28 } else { 0 }
+        $form = New-Object System.Windows.Forms.Form
+        $form.Text = $Title
+        $form.Width = 380
+        $form.Height = 220 + $errorOffset
+        $form.FormBorderStyle = 'FixedDialog'
+        $form.StartPosition = 'CenterScreen'
+        $form.MinimizeBox = $false
+        $form.MaximizeBox = $false
+        $form.TopMost = $true
+
+        $msg = New-Object System.Windows.Forms.Label
+        $msg.Text = $Message; $msg.AutoSize = $false
+        $msg.Width = 340; $msg.Height = 40; $msg.Top = 10; $msg.Left = 15
+        $form.Controls.Add($msg)
+
+        if ($hasError) {
+            $err = New-Object System.Windows.Forms.Label
+            $err.Text = $errorText; $err.AutoSize = $false
+            $err.Width = 340; $err.Height = 22; $err.Top = 52; $err.Left = 15
+            $err.ForeColor = [System.Drawing.Color]::Firebrick
+            $err.Font = New-Object System.Drawing.Font($form.Font, [System.Drawing.FontStyle]::Bold)
+            $form.Controls.Add($err)
+        }
+
+        $userLabel = New-Object System.Windows.Forms.Label
+        $userLabel.Text = 'Admin username:'; $userLabel.Width = 120
+        $userLabel.Top = 60 + $errorOffset; $userLabel.Left = 15
+        $form.Controls.Add($userLabel)
+
+        $userBox = New-Object System.Windows.Forms.TextBox
+        $userBox.Width = 220; $userBox.Top = 58 + $errorOffset; $userBox.Left = 140
+        $userBox.Text = $lastUser
+        $form.Controls.Add($userBox)
+
+        $passLabel = New-Object System.Windows.Forms.Label
+        $passLabel.Text = 'Admin password:'; $passLabel.Width = 120
+        $passLabel.Top = 92 + $errorOffset; $passLabel.Left = 15
+        $form.Controls.Add($passLabel)
+
+        $passBox = New-Object System.Windows.Forms.TextBox
+        $passBox.Width = 220; $passBox.Top = 90 + $errorOffset; $passBox.Left = 140
+        $passBox.UseSystemPasswordChar = $true
+        $form.Controls.Add($passBox)
+
+        $okBtn = New-Object System.Windows.Forms.Button
+        $okBtn.Text = 'Continue'; $okBtn.DialogResult = 'OK'
+        $okBtn.Width = 90; $okBtn.Top = 135 + $errorOffset; $okBtn.Left = 175
+        $form.Controls.Add($okBtn); $form.AcceptButton = $okBtn
+
+        $cancelBtn = New-Object System.Windows.Forms.Button
+        $cancelBtn.Text = 'Cancel'; $cancelBtn.DialogResult = 'Cancel'
+        $cancelBtn.Width = 90; $cancelBtn.Top = 135 + $errorOffset; $cancelBtn.Left = 270
+        $form.Controls.Add($cancelBtn); $form.CancelButton = $cancelBtn
+
+        $dr = $form.ShowDialog()
+        $user = $userBox.Text; $pass = $passBox.Text
+        $form.Dispose()
+
+        if ($dr -ne [System.Windows.Forms.DialogResult]::OK) {
+            return $false   # user cancelled
+        }
+        $lastUser = $user
+
+        try {
+            $body = @{ username = $user; password = $pass } | ConvertTo-Json -Compress
+            $resp = Invoke-RestMethod -Uri "$BaseUrl/api/v1/auth/login" -Method Post `
+                -ContentType 'application/json' -Body $body -TimeoutSec 10
+            $jwt = $resp.token
+            if ([string]::IsNullOrEmpty($jwt)) { throw "No token returned by server." }
+
+            $me = Invoke-RestMethod -Uri "$BaseUrl/api/v1/auth/me" -Method Get `
+                -Headers @{ Authorization = "Bearer $jwt" } -TimeoutSec 10
+            $role = if ($me.role) { $me.role } elseif ($me.roles) { $me.roles[0] } else { '' }
+            if ($role -ne 'admin') {
+                throw "This account is not an administrator."
+            }
+            return $true
+        } catch {
+            $msg = $_.Exception.Message
+            # Translate common network errors to actionable text.
+            if ($_.Exception.Response -and $_.Exception.Response.StatusCode.value__ -eq 401) {
+                $msg = 'Incorrect username or password.'
+            } elseif ($_.Exception.Response -and $_.Exception.Response.StatusCode.value__ -eq 403) {
+                $msg = 'Access denied.'
+            }
+            $attempt++
+            $errorText = $msg
+            if ($attempt -ge $MaxAttempts) { break }
+        }
+    }
+
+    [System.Windows.Forms.MessageBox]::Show(
+        'Please verify your admin credentials and try again later.',
+        'Too many failed attempts',
+        [System.Windows.Forms.MessageBoxButtons]::OK,
+        [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
+    return $false
+}
+
 # Translate a Windows path to its WSL mount path.
 # C:\Program Files\FalconPulsar  ->  /mnt/c/Program Files/FalconPulsar
 function ConvertTo-WslPath {

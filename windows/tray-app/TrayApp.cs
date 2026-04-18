@@ -160,7 +160,7 @@ namespace FalconPulsar.Tray
             // AI Capabilities — single toggle
             if (IsAIGatewayEnabled())
                 menu.Items.Add(new ToolStripMenuItem("Disable AI Capabilities", null,
-                    (s, e) => DisableAIGateway()));
+                    async (s, e) => await DisableAIGatewayAsync()));
             else
                 menu.Items.Add(new ToolStripMenuItem("Enable AI Capabilities", null,
                     async (s, e) => await EnableAIGatewayAsync()));
@@ -764,70 +764,437 @@ namespace FalconPulsar.Tray
             File.WriteAllLines(envPath, lines);
         }
 
-        private static void EnsureGatewayConfig()
+        // ── Install log tee (shared with installer: %TEMP%\falconpulsar-install.log)
+
+        private static readonly string InstallLogPath =
+            Path.Combine(Path.GetTempPath(), "falconpulsar-install.log");
+
+        private static StreamWriter InstallLogBegin(string action)
         {
-            var p = Path.Combine(ConfigBackup.FalconPulsarHomeDir, "gateway.yaml");
-            if (Directory.Exists(p)) Directory.Delete(p, true);
-            if (!File.Exists(p))
+            try
             {
-                Directory.CreateDirectory(ConfigBackup.FalconPulsarHomeDir);
-                File.WriteAllText(p,
-                    "# FalconPulsar AI Gateway — default configuration.\n" +
-                    "# Providers and models are managed via the Web UI.\n" +
-                    "server:\n  host: \"0.0.0.0\"\n  port: 7436\n" +
-                    "falconpulsar:\n  url: \"http://localhost:7433\"\n  timeout: 30\n" +
-                    "context:\n  schema_cache_ttl: 300\n  max_conversation_tokens: 100000\n" +
-                    "logging:\n  level: \"INFO\"\n");
+                // Rotate at 5 MiB, keep .1 .2 .3. Best-effort.
+                try
+                {
+                    var fi = new FileInfo(InstallLogPath);
+                    if (fi.Exists && fi.Length > 5 * 1024 * 1024)
+                    {
+                        for (int i = 2; i >= 1; i--)
+                        {
+                            var src = InstallLogPath + "." + i;
+                            var dst = InstallLogPath + "." + (i + 1);
+                            if (File.Exists(src))
+                            {
+                                if (File.Exists(dst)) File.Delete(dst);
+                                File.Move(src, dst);
+                            }
+                        }
+                        File.Move(InstallLogPath, InstallLogPath + ".1");
+                    }
+                }
+                catch { }
+
+                var stream = new FileStream(InstallLogPath, FileMode.Append,
+                    FileAccess.Write, FileShare.Read);
+                var w = new StreamWriter(stream) { AutoFlush = true };
+                w.Write($"\n=== {DateTime.UtcNow:O}  {action} (platform=windows-tray, pid={Environment.ProcessId}) ===\n");
+                return w;
             }
+            catch { return null; }
+        }
+
+        private static void InstallLogAppend(StreamWriter w, string text)
+        {
+            if (w == null) return;
+            try { w.Write(text); } catch { }
+        }
+
+        private static void InstallLogEnd(StreamWriter w, int exitCode)
+        {
+            if (w == null) return;
+            try
+            {
+                w.Write($"=== end (exit {exitCode}) ===\n");
+                w.Dispose();
+            }
+            catch { }
+        }
+
+        // ── WSL helpers (the real stack state lives inside WSL)
+
+        private async Task<(int exitCode, string stdout)> RunWslBashCaptureAsync(string script)
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = "wsl.exe",
+                Arguments = $"-d {_distro} -u falconpulsar -- bash",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardInput = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            };
+            using var proc = Process.Start(psi);
+            if (proc == null) return (-1, string.Empty);
+            await proc.StandardInput.WriteAsync(script);
+            proc.StandardInput.Close();
+            var stdout = await proc.StandardOutput.ReadToEndAsync();
+            await proc.WaitForExitAsync();
+            return (proc.ExitCode, stdout);
+        }
+
+        private async Task<bool> WslGatewayTokenExistsAsync()
+        {
+            var (rc, _) = await RunWslBashCaptureAsync(
+                "grep -q '^FP_API_KEY=.' /home/falconpulsar/.env");
+            return rc == 0;
+        }
+
+        private async Task<int> WslWriteTokenAsync(string token)
+        {
+            var safe = token.Replace("'", "'\"'\"'");
+            var script =
+                $"TOKEN='{safe}'\n" +
+                "grep -v '^FP_API_KEY=' /home/falconpulsar/.env > /tmp/fp_env.new 2>/dev/null || true\n" +
+                "echo \"FP_API_KEY=$TOKEN\" >> /tmp/fp_env.new\n" +
+                "mv /tmp/fp_env.new /home/falconpulsar/.env\n";
+            var (rc, _) = await RunWslBashCaptureAsync(script);
+            return rc;
+        }
+
+        // ── Service token creation (mirrors fp_bootstrap_gateway_token)
+
+        private async Task<string> CreateGatewayServiceTokenAsync(string jwt)
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Post,
+                $"{ConfigBackup.CoreBaseUrl}/api/v1/tokens");
+            req.Headers.Authorization =
+                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", jwt);
+            var body = JsonSerializer.Serialize(new Dictionary<string, object>
+            {
+                ["name"] = "ai-gateway-token",
+                ["expires_days"] = 0,
+                ["permissions"] = new[] { "read", "query" }
+            });
+            req.Content = new StringContent(body, System.Text.Encoding.UTF8, "application/json");
+
+            using var resp = await _http.SendAsync(req);
+            var respBody = await resp.Content.ReadAsStringAsync();
+            if (!resp.IsSuccessStatusCode)
+                throw new Exception(
+                    $"Could not create AI gateway service token (HTTP {(int)resp.StatusCode}).");
+            using var doc = JsonDocument.Parse(respBody);
+            if (!doc.RootElement.TryGetProperty("token", out var tok) ||
+                string.IsNullOrEmpty(tok.GetString()))
+                throw new Exception("Service token response missing 'token' field.");
+            return tok.GetString();
+        }
+
+        // ── Streaming docker-action form (used by enable/disable AI)
+
+        private async Task RunWslStreamingActionAsync(string title, string marker,
+                                                     string bashScript, string successMessage)
+        {
+            using var form = new Form
+            {
+                Text = title,
+                Width = 620,
+                Height = 420,
+                FormBorderStyle = FormBorderStyle.FixedDialog,
+                StartPosition = FormStartPosition.CenterScreen,
+                MinimizeBox = false,
+                MaximizeBox = false,
+                // TopMost so the streaming log stays visible — the tray app
+                // lives in the notification area and doesn't own the
+                // foreground, so without this the Form can be buried behind
+                // whatever window the user was last interacting with.
+                TopMost = true,
+            };
+            var output = new RichTextBox
+            {
+                ReadOnly = true,
+                Dock = DockStyle.Top,
+                Width = 600,
+                Height = 330,
+                BackColor = Color.FromArgb(25, 25, 25),
+                ForeColor = Color.White,
+                Font = new Font(FontFamily.GenericMonospace, 9),
+                ScrollBars = RichTextBoxScrollBars.Vertical,
+            };
+            var closeBtn = new Button
+            {
+                Text = "Close",
+                DialogResult = DialogResult.OK,
+                Width = 90,
+                Top = 345,
+                Left = 500,
+                Enabled = false,
+            };
+            form.Controls.Add(output);
+            form.Controls.Add(closeBtn);
+
+            var log = InstallLogBegin(marker);
+
+            void OnLine(string line)
+            {
+                if (line == null) return;
+                var text = line + Environment.NewLine;
+                InstallLogAppend(log, text);
+                if (form.IsHandleCreated)
+                {
+                    try
+                    {
+                        form.BeginInvoke(new Action(() =>
+                        {
+                            output.AppendText(text);
+                            output.ScrollToCaret();
+                        }));
+                    }
+                    catch { }
+                }
+            }
+
+            _ = Task.Run(async () =>
+            {
+                var psi = new ProcessStartInfo
+                {
+                    FileName = "wsl.exe",
+                    Arguments = $"-d {_distro} -u falconpulsar -- bash",
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    RedirectStandardInput = true,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                };
+                using var proc = new Process { StartInfo = psi };
+                proc.OutputDataReceived += (s, e) => OnLine(e.Data);
+                proc.ErrorDataReceived += (s, e) => OnLine(e.Data);
+                proc.Start();
+                proc.BeginOutputReadLine();
+                proc.BeginErrorReadLine();
+                await proc.StandardInput.WriteAsync(bashScript);
+                proc.StandardInput.Close();
+                await proc.WaitForExitAsync();
+                int code = proc.ExitCode;
+                InstallLogEnd(log, code);
+                if (form.IsHandleCreated)
+                {
+                    try
+                    {
+                        form.BeginInvoke(new Action(() =>
+                        {
+                            output.AppendText(
+                                $"{Environment.NewLine}--- Done (exit {code}) ---{Environment.NewLine}");
+                            output.AppendText((code == 0
+                                ? successMessage
+                                : "Action may have failed. Check the log above.") + Environment.NewLine);
+                            closeBtn.Enabled = true;
+
+                            // On success show a prominent confirmation dialog
+                            // so the user doesn't have to read the streaming
+                            // log, with a one-click shortcut to the Web UI.
+                            if (code == 0)
+                            {
+                                var choice = MessageBox.Show(
+                                    successMessage + Environment.NewLine + Environment.NewLine +
+                                    "Open the Web UI now?",
+                                    "FalconPulsar",
+                                    MessageBoxButtons.YesNo,
+                                    MessageBoxIcon.Information);
+                                if (choice == DialogResult.Yes)
+                                {
+                                    try
+                                    {
+                                        Process.Start(new ProcessStartInfo(
+                                            "http://localhost:8080")
+                                        { UseShellExecute = true });
+                                    }
+                                    catch { }
+                                }
+                            }
+                        }));
+                    }
+                    catch { }
+                }
+            });
+
+            form.ShowDialog();
+            await PollHealth();
+            _trayIcon.ContextMenuStrip = BuildMenu();
         }
 
         private async Task EnableAIGatewayAsync()
         {
-            EnsureGatewayConfig();
+            // Core must be running so we can authenticate against its REST API.
+            if (!_coreRunning)
+            {
+                MessageBox.Show(
+                    "FalconPulsar Core must be running before AI Capabilities can be enabled. Start the stack first, then try again.",
+                    "Core service not running",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            // Admin authentication gate — every enable operation requires admin
+            // credentials, matching the uninstall flow.
+            var authed = await AuthenticateWithRetryAsync(
+                "Enable AI Capabilities",
+                "Enter admin credentials to authorize enabling AI Capabilities.");
+            if (authed == null) return;   // cancelled or exhausted retries
+
+            // First-time setup only: create the service token now that we have
+            // an authenticated admin JWT in hand.
+            if (!await WslGatewayTokenExistsAsync())
+            {
+                try
+                {
+                    var token = await CreateGatewayServiceTokenAsync(authed.Token);
+                    var rc = await WslWriteTokenAsync(token);
+                    if (rc != 0)
+                        throw new Exception("Failed to write FP_API_KEY to WSL /home/falconpulsar/.env");
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show(ex.Message, "Token setup failed",
+                        MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return;
+                }
+            }
+
+            // Mirror the flag to the Windows side so the tray/fp.exe can read it.
             SetEnvValue("FP_AI_GATEWAY_ENABLED", "true");
-            _trayIcon.ShowBalloonTip(5000, "FalconPulsar",
-                "Starting AI Capabilities… this may take a moment.", ToolTipIcon.Info);
-            await RunComposeCommand("--profile ai up -d");
-            _trayIcon.ContextMenuStrip = BuildMenu();
-            _trayIcon.ShowBalloonTip(5000, "FalconPulsar",
-                "AI Capabilities is running. Configure LLM providers in the Web UI.", ToolTipIcon.Info);
+
+            // Target the ai-gateway service explicitly so core/ui are never touched.
+            var script =
+                "export BUILDKIT_PROGRESS=plain\n" +
+                "export DOCKER_CLI_HINTS=false\n" +
+                "cd /home/falconpulsar || exit 1\n" +
+                "if [ ! -f gateway.yaml ]; then\n" +
+                "  cat > gateway.yaml <<'EOF'\n" +
+                "# FalconPulsar AI Gateway — default configuration.\n" +
+                "# Providers and models are managed via the Web UI.\n" +
+                "server:\n  host: \"0.0.0.0\"\n  port: 7436\n" +
+                "falconpulsar:\n  url: \"http://localhost:7433\"\n  timeout: 30\n" +
+                "context:\n  schema_cache_ttl: 300\n  max_conversation_tokens: 100000\n" +
+                "logging:\n  level: \"INFO\"\n" +
+                "EOF\n" +
+                "fi\n" +
+                "echo '[enable-ai] pulling AI gateway image…'\n" +
+                "docker compose --profile ai pull ai-gateway 2>&1\n" +
+                "echo '[enable-ai] starting ai-gateway container…'\n" +
+                "docker compose --profile ai up -d ai-gateway 2>&1\n";
+
+            await RunWslStreamingActionAsync(
+                "Enabling AI Capabilities…",
+                "enable-ai",
+                script,
+                "AI Capabilities enabled.\r\n\r\nClose any open FalconPulsar Web UI sessions and sign in again to see the AI features, then configure LLM providers.");
         }
 
-        private void DisableAIGateway()
+        private async Task DisableAIGatewayAsync()
         {
+            // Core must be running so we can authenticate the admin password.
+            if (!_coreRunning)
+            {
+                MessageBox.Show(
+                    "FalconPulsar Core must be running to authorize disabling AI Capabilities. Start the stack first, then try again.",
+                    "Core service not running",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            // Admin authentication gate — every disable operation requires
+            // admin credentials, matching the uninstall flow.
+            var authed = await AuthenticateWithRetryAsync(
+                "Disable AI Capabilities",
+                "Enter admin credentials to authorize disabling AI Capabilities.");
+            if (authed == null) return;
+
             var result = MessageBox.Show(
-                "Chat features will be hidden in the Web UI until re-enabled.\n\nDisable AI Capabilities?",
+                "This will stop and remove the AI gateway container, delete its data directory and gateway.yaml, clear the service token, and delete the AI gateway image (re-enabling later will re-download it).\n\n" +
+                "Core and UI stay running and untouched. Your time-series data is unaffected.\n\n" +
+                "Disable and Remove AI Capabilities?",
                 "Disable AI Capabilities",
                 MessageBoxButtons.OKCancel, MessageBoxIcon.Warning);
             if (result != DialogResult.OK) return;
 
             SetEnvValue("FP_AI_GATEWAY_ENABLED", "false");
-            Task.Run(async () => await RunComposeCommand("stop ai-gateway"));
-            _trayIcon.ContextMenuStrip = BuildMenu();
+
+            // Surgical: act only on the ai-gateway service and its host bind-mount
+            // data dir inside WSL. Never uses `down -v` because that would also
+            // stop core/ui (they have no compose profile → always-active).
+            var script =
+                "cd /home/falconpulsar || exit 1\n" +
+                "echo '[disable-ai] loading environment from .env…'\n" +
+                "set -a\n" +
+                ". /home/falconpulsar/.env 2>/dev/null || true\n" +
+                "set +a\n" +
+                "IMAGE_REF=\"${FP_REGISTRY:-falconpulsar}/ai-gateway:${FP_VERSION:-latest}\"\n" +
+                "GATEWAY_DATA=\"${FP_GATEWAY_DATA_DIR:-${FP_DATA_DIR}/../ai-gateway-data}\"\n" +
+                "echo '[disable-ai] stopping and removing ai-gateway container (core/ui untouched)…'\n" +
+                "docker compose --profile ai rm -f -s -v ai-gateway 2>&1\n" +
+                "if [ -n \"$GATEWAY_DATA\" ] && [ \"$GATEWAY_DATA\" != / ] && [ -d \"$GATEWAY_DATA\" ]; then\n" +
+                "  echo \"[disable-ai] removing AI gateway data directory: $GATEWAY_DATA\"\n" +
+                "  rm -rf \"$GATEWAY_DATA\"\n" +
+                "fi\n" +
+                "echo '[disable-ai] removing gateway.yaml…'\n" +
+                "rm -f /home/falconpulsar/gateway.yaml\n" +
+                "echo '[disable-ai] clearing FP_API_KEY from .env…'\n" +
+                "grep -v '^FP_API_KEY=' /home/falconpulsar/.env > /tmp/fp_env.new 2>/dev/null && mv /tmp/fp_env.new /home/falconpulsar/.env\n" +
+                "echo \"[disable-ai] removing AI gateway image: $IMAGE_REF\"\n" +
+                "docker rmi -f \"$IMAGE_REF\" 2>&1 || true\n" +
+                "echo '[disable-ai] cleanup complete. Core and UI were not touched.'\n";
+
+            await RunWslStreamingActionAsync(
+                "Disabling AI Capabilities…",
+                "disable-ai",
+                script,
+                "AI Capabilities disabled and removed.");
         }
 
         // ────────────────────────── Configuration Backup ──────────────────────────
 
-        private static (string user, string pass)? PromptAdminCredentials(string title, string message)
+        private static (string user, string pass)? PromptAdminCredentials(string title, string message,
+                                                                         string errorText = null,
+                                                                         string prefillUser = "admin")
         {
+            bool hasError = !string.IsNullOrEmpty(errorText);
+            int errorOffset = hasError ? 28 : 0;
             using var form = new Form
             {
                 Text = title,
                 Width = 380,
-                Height = 220,
+                Height = 220 + errorOffset,
                 FormBorderStyle = FormBorderStyle.FixedDialog,
                 StartPosition = FormStartPosition.CenterScreen,
                 MinimizeBox = false,
                 MaximizeBox = false,
             };
             var msg = new Label { Text = message, AutoSize = false, Width = 340, Height = 40, Top = 10, Left = 15 };
-            var userLabel = new Label { Text = "Admin username:", Width = 120, Top = 60, Left = 15 };
-            var userBox = new TextBox { Width = 220, Top = 58, Left = 140, Text = "admin" };
-            var passLabel = new Label { Text = "Admin password:", Width = 120, Top = 92, Left = 15 };
-            var passBox = new TextBox { Width = 220, Top = 90, Left = 140, UseSystemPasswordChar = true };
-            var okBtn = new Button { Text = "Continue", DialogResult = DialogResult.OK, Width = 90, Top = 135, Left = 175 };
-            var cancelBtn = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, Width = 90, Top = 135, Left = 270 };
-            form.Controls.AddRange(new Control[] { msg, userLabel, userBox, passLabel, passBox, okBtn, cancelBtn });
+            var controls = new List<Control> { msg };
+            if (hasError)
+            {
+                var errorLabel = new Label
+                {
+                    Text = errorText,
+                    AutoSize = false,
+                    Width = 340,
+                    Height = 22,
+                    Top = 52,
+                    Left = 15,
+                    ForeColor = Color.Firebrick,
+                    Font = new Font(SystemFonts.DefaultFont, FontStyle.Bold),
+                };
+                controls.Add(errorLabel);
+            }
+            var userLabel = new Label { Text = "Admin username:", Width = 120, Top = 60 + errorOffset, Left = 15 };
+            var userBox = new TextBox { Width = 220, Top = 58 + errorOffset, Left = 140, Text = prefillUser };
+            var passLabel = new Label { Text = "Admin password:", Width = 120, Top = 92 + errorOffset, Left = 15 };
+            var passBox = new TextBox { Width = 220, Top = 90 + errorOffset, Left = 140, UseSystemPasswordChar = true };
+            var okBtn = new Button { Text = "Continue", DialogResult = DialogResult.OK, Width = 90, Top = 135 + errorOffset, Left = 175 };
+            var cancelBtn = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, Width = 90, Top = 135 + errorOffset, Left = 270 };
+            controls.AddRange(new Control[] { userLabel, userBox, passLabel, passBox, okBtn, cancelBtn });
+            form.Controls.AddRange(controls.ToArray());
             form.AcceptButton = okBtn;
             form.CancelButton = cancelBtn;
 
@@ -836,17 +1203,48 @@ namespace FalconPulsar.Tray
                 : ((string, string)?)null;
         }
 
+        /// Prompt for admin credentials and authenticate; re-prompt with an inline
+        /// red error up to maxAttempts. Returns null if the user cancels or
+        /// exhausts attempts (latter shows a final alert).
+        private async Task<ConfigBackup.AdminCredentials> AuthenticateWithRetryAsync(
+            string title, string message, int maxAttempts = 3)
+        {
+            int attempt = 0;
+            string lastUser = "admin";
+            string errorText = null;
+            while (attempt < maxAttempts)
+            {
+                var creds = PromptAdminCredentials(title, message, errorText, lastUser);
+                if (creds is null) return null;   // user cancelled
+                lastUser = creds.Value.user;
+                try
+                {
+                    return await ConfigBackup.AuthenticateAsAdminAsync(
+                        creds.Value.user, creds.Value.pass);
+                }
+                catch (Exception ex)
+                {
+                    attempt++;
+                    errorText = ex.Message;
+                    if (attempt >= maxAttempts) break;
+                }
+            }
+            MessageBox.Show(
+                "Please verify your admin credentials and try again later.",
+                "Too many failed attempts",
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return null;
+        }
+
         private async Task ExportConfigurationAsync()
         {
-            var creds = PromptAdminCredentials(
+            var authed = await AuthenticateWithRetryAsync(
                 "Export Configuration",
                 "Enter admin credentials. They authorize the export and will also encrypt the backup file.");
-            if (creds is null) return;
+            if (authed == null) return;
 
             try
             {
-                var authed = await ConfigBackup.AuthenticateAsAdminAsync(creds.Value.user, creds.Value.pass);
-
                 using var dlg = new SaveFileDialog
                 {
                     Filter = "FalconPulsar Config (*.fpconfig)|*.fpconfig",
@@ -884,14 +1282,13 @@ namespace FalconPulsar.Tray
                 MessageBoxButtons.OKCancel, MessageBoxIcon.Warning);
             if (confirm != DialogResult.OK) return;
 
-            var creds = PromptAdminCredentials(
+            var authed = await AuthenticateWithRetryAsync(
                 "Import Configuration",
                 "Enter the admin credentials used when this backup was exported. They're required to decrypt the file and apply the changes.");
-            if (creds is null) return;
+            if (authed == null) return;
 
             try
             {
-                var authed = await ConfigBackup.AuthenticateAsAdminAsync(creds.Value.user, creds.Value.pass);
                 await ConfigBackup.ImportAsync(dlg.FileName, authed);
 
                 MessageBox.Show(

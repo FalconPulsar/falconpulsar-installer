@@ -1,6 +1,23 @@
 import Foundation
 
 enum InstallRunner {
+    // Held so app termination can kill any running bash installer to avoid
+    // orphaned subprocesses leaving the stack half-configured.
+    static var activeProcess: Process?
+
+    /// Kill any in-flight install.sh subprocess. Called from AppActivator
+    /// on applicationWillTerminate.
+    static func killActiveProcess() {
+        guard let p = activeProcess, p.isRunning else { return }
+        p.terminate()
+        // Give bash a moment to clean up, then SIGKILL if still alive.
+        DispatchQueue.global().asyncAfter(deadline: .now() + 2) {
+            if p.isRunning {
+                kill(p.processIdentifier, SIGKILL)
+            }
+        }
+    }
+
     static func run(state: InstallerState) {
         let logFile = "/tmp/falconpulsar-install.log"
 
@@ -205,21 +222,53 @@ enum InstallRunner {
         let repoRoot = (scriptPath as NSString).deletingLastPathComponent
         let parentRoot = (repoRoot as NSString).deletingLastPathComponent
 
-        // Build the install command with env vars
-        let envVars = [
-            "FP_ASSUME_YES=1",
-            "FP_LEGAL_ACCEPTED=1",
-            "FP_ADMIN_USER='\(state.adminUser)'",
-            "FP_ADMIN_PASS='\(state.adminPass.replacingOccurrences(of: "'", with: "'\\''"))'",
-            "FP_REGISTRY='\(state.registryUrl)'",
-            "FP_REGISTRY_USER='\(state.registryUser)'",
-            "FP_REGISTRY_PASS='\(state.registryPass.replacingOccurrences(of: "'", with: "'\\''"))'",
-            state.registrySkip ? "FP_REGISTRY_SKIP=1" : "",
-            "FP_AI_GATEWAY_ENABLED=\(state.aiGatewayEnabled ? "true" : "false")"
-        ].filter { !$0.isEmpty }.joined(separator: " ")
+        // Build the install env. We write the secrets to a 0600-mode temp
+        // file and source it from inside bash — this keeps FP_ADMIN_PASS
+        // and FP_REGISTRY_PASS off the bash subprocess command line where
+        // `ps eww` could harvest them.
+        func sh(_ s: String) -> String {
+            // Single-quote escape for bash: ' -> '\''
+            return s.replacingOccurrences(of: "'", with: "'\\''")
+        }
+        let envLines = [
+            "export FP_ASSUME_YES=1",
+            "export FP_LEGAL_ACCEPTED=1",
+            "export FP_INSTALL_ACTION='\(sh(state.installAction.rawValue))'",
+            "export FP_ADMIN_USER='\(sh(state.adminUser))'",
+            "export FP_ADMIN_PASS='\(sh(state.adminPass))'",
+            "export FP_REGISTRY='\(sh(state.registryUrl))'",
+            "export FP_REGISTRY_USER='\(sh(state.registryUser))'",
+            "export FP_REGISTRY_PASS='\(sh(state.registryPass))'",
+            state.registrySkip ? "export FP_REGISTRY_SKIP=1" : "",
+            "export FP_AI_GATEWAY_ENABLED=\(state.aiGatewayEnabled ? "true" : "false")"
+        ].filter { !$0.isEmpty }.joined(separator: "\n") + "\n"
+
+        let envFile = "/tmp/fp-install-env-\(getpid()).sh"
+        do {
+            // Create with restrictive perms FIRST (don't open + chmod, as the
+            // window between open and chmod is when the secret is exposed).
+            FileManager.default.createFile(atPath: envFile, contents: Data(),
+                                           attributes: [.posixPermissions: 0o600])
+            try envLines.write(toFile: envFile, atomically: true, encoding: .utf8)
+            // Re-apply perms after `write(toFile:atomically:)` (atomic write
+            // recreates the inode and may use the default umask).
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o600], ofItemAtPath: envFile)
+        } catch {
+            log("[error] Failed to stage installer env: \(error)")
+            finish(state: state, success: false, error: "Failed to stage installer environment.")
+            return
+        }
 
         let pathExport = "export PATH=\"/Applications/Docker.app/Contents/Resources/bin:/usr/local/bin:/opt/homebrew/bin:$PATH\""
-        let cmd = "\(pathExport) && cd '\(parentRoot)' && \(envVars) bash '\(scriptPath)' --yes 2>&1"
+        // Source the env file then immediately rm it; if the bash exits
+        // unexpectedly the temp file is also wiped by InstallRunner cleanup
+        // below (defer-style via removeItem after waitUntilExit).
+        let cmd = """
+        \(pathExport) && cd '\(parentRoot)' && \
+        source '\(envFile)' && rm -f '\(envFile)' && \
+        bash '\(scriptPath)' --yes 2>&1
+        """
         log("[info] Running: bash install.sh --yes")
 
         let process = Process()
@@ -258,16 +307,26 @@ enum InstallRunner {
             }
         }
 
+        // Track the running subprocess so we can kill it if the user quits
+        // the app mid-install. Otherwise bash keeps running as an orphan,
+        // potentially leaving containers in a half-up state.
+        InstallRunner.activeProcess = process
+
         do {
             try process.run()
             process.waitUntilExit()
         } catch {
             log("[error] Failed to run install.sh: \(error)")
             updateStep(3, .failed)
+            InstallRunner.activeProcess = nil
             finish(state: state, success: false, error: "Failed to launch installer: \(error.localizedDescription)")
             return
         }
 
+        InstallRunner.activeProcess = nil
+        // Belt-and-braces: ensure the env file is gone even if bash crashed
+        // before reaching the inline `rm -f`.
+        try? FileManager.default.removeItem(atPath: envFile)
         pipe.fileHandleForReading.readabilityHandler = nil
 
         let exitCode = process.terminationStatus

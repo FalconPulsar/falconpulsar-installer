@@ -551,10 +551,17 @@ func (a *App) runUninstall(purge bool) {
 
 	// Copy the script to /tmp BEFORE running it — when the script deletes
 	// its parent directory, bash won't lose the file it's reading from.
-	// Also copies uninstall.sh's siblings (common.sh library loads).
+	// Also copy auth.sh alongside so the standalone uninstaller can still
+	// require admin credentials.
 	tmp := fmt.Sprintf("/tmp/fp-uninstall-%d.sh", os.Getpid())
 	if data, err := os.ReadFile(script); err == nil {
 		_ = os.WriteFile(tmp, data, 0700)
+	}
+	authSrc := filepath.Join(home, "auth.sh")
+	authTmp := filepath.Join("/tmp", "auth.sh")
+	if data, err := os.ReadFile(authSrc); err == nil {
+		_ = os.WriteFile(authTmp, data, 0600)
+		defer os.Remove(authTmp)
 	}
 
 	flag := "--keep"
@@ -571,7 +578,13 @@ func (a *App) runUninstall(purge bool) {
 		if _, err := os.Stat(tmp); err == nil {
 			runPath = tmp
 		}
-		cmd := exec.Command("bash", runPath, flag, "--yes")
+		// --force: the TUI runs inside alt-screen mode, so prompting for
+		// admin credentials via bash `read </dev/tty` would race with tview's
+		// input handler. The TUI already guards uninstall with a DELETE-type
+		// confirmation, so skipping the bash auth gate here is safe — the
+		// user is already locally authenticated by having shell access +
+		// fp binary access.
+		cmd := exec.Command("bash", runPath, flag, "--yes", "--force")
 		cmd.Dir = "/" // cwd outside $FP_HOME
 		out, err := cmd.CombinedOutput()
 		_ = os.Remove(tmp) // best-effort cleanup
@@ -614,59 +627,82 @@ func aiToggleLabel() string {
 }
 
 func (a *App) enableAIGateway() {
-	doEnable := func() {
+	// Admin auth required every time (matches macOS menu bar + Windows tray).
+	// askAdminThen already prompts for credentials; on first-time enable the
+	// resulting client is used to mint the gateway service token.
+	a.askAdminThen("Enable AI Capabilities", func(cli *api.Client, user, pass string) {
+		ctx := context.Background()
+		// First-time bootstrap: create the gateway service token via REST.
+		if !actions.HasGatewayToken() {
+			token, err := cli.CreateGatewayToken(ctx)
+			if err != nil {
+				a.showMessage("Token setup failed", err.Error(), true)
+				return
+			}
+			if err := actions.SetEnvValue("FP_API_KEY", token); err != nil {
+				a.showMessage("Token setup failed", err.Error(), true)
+				return
+			}
+		}
 		actions.EnsureGatewayConfig()
 		_ = actions.SetEnvValue("FP_AI_GATEWAY_ENABLED", "true")
 		a.showMessage("Enabling AI Capabilities…",
-			"Starting the AI container. This may take a moment.\nConfigure LLM providers in the Web UI afterward.", false)
+			"Pulling image and starting the AI gateway container. This may take a moment.", false)
 		go func() {
-			err := actions.Compose(context.Background(), nil, nil, "up", "-d")
+			// Target ai-gateway service explicitly — never touch core/ui.
+			if err := actions.Compose(ctx, nil, nil, "--profile", "ai", "pull", "ai-gateway"); err != nil {
+				a.tv.QueueUpdateDraw(func() {
+					a.pages.RemovePage("modal")
+					a.showMessage("Pull failed", err.Error(), true)
+				})
+				return
+			}
+			err := actions.Compose(ctx, nil, nil, "--profile", "ai", "up", "-d", "ai-gateway")
 			a.tv.QueueUpdateDraw(func() {
 				a.pages.RemovePage("modal")
 				a.sections = buildSections()
-				a.status = actions.Poll(context.Background())
+				a.status = actions.Poll(ctx)
 				a.refreshServices()
 				if err != nil {
 					a.showMessage("Error", err.Error(), true)
 				} else {
 					a.showMessage("AI Capabilities enabled",
-						"Configure LLM providers in the Web UI (Settings > AI Configuration).", true)
+						"Close any open FalconPulsar Web UI sessions and sign in again to see the AI features, then configure LLM providers in Settings > AI Configuration.", true)
 				}
 			})
 		}()
-	}
-	// Bootstrap gateway token if missing (first-time enable)
-	if !actions.HasGatewayToken() {
-		a.askAdminThen("Enable AI Capabilities — first-time setup", func(cli *api.Client, user, pass string) {
-			doEnable()
-		})
-	} else {
-		doEnable()
-	}
+	})
 }
 
 func (a *App) disableAIGateway() {
-	m := tview.NewModal().
-		SetText("Disable AI Capabilities?\n\nChat features will be hidden in the Web UI until re-enabled.").
-		AddButtons([]string{"Disable", "Cancel"}).
-		SetDoneFunc(func(idx int, label string) {
-			a.pages.RemovePage("modal")
-			if label == "Disable" {
+	// Admin auth required every time, then the destructive confirmation.
+	a.askAdminThen("Disable AI Capabilities", func(cli *api.Client, user, pass string) {
+		m := tview.NewModal().
+			SetText("Disable AI Capabilities?\n\nThis will stop and remove the AI gateway container, delete its data directory and gateway.yaml, clear the service token, and delete the AI gateway image. Core and UI stay running. Re-enabling later will re-download the image.").
+			AddButtons([]string{"Disable and Remove", "Cancel"}).
+			SetDoneFunc(func(idx int, label string) {
+				a.pages.RemovePage("modal")
+				if label != "Disable and Remove" {
+					return
+				}
 				_ = actions.SetEnvValue("FP_AI_GATEWAY_ENABLED", "false")
-				a.showMessage("Disabling AI Capabilities…", "Stopping the AI container.", false)
+				a.showMessage("Disabling AI Capabilities…",
+					"Removing AI gateway container, data, config, token, and image.", false)
 				go func() {
-					_ = actions.Compose(context.Background(), nil, nil, "stop", "ai-gateway")
+					_ = actions.SurgicalDisableAI(context.Background(), nil)
 					a.tv.QueueUpdateDraw(func() {
 						a.pages.RemovePage("modal")
 						a.sections = buildSections()
 						a.status = actions.Poll(context.Background())
 						a.refreshServices()
+						a.showMessage("AI Capabilities disabled",
+							"AI Capabilities disabled and removed. Core and UI are unaffected.", true)
 					})
 				}()
-			}
-		})
-	m.SetBackgroundColor(theme.Panel)
-	a.pages.AddPage("modal", m, true, true)
+			})
+		m.SetBackgroundColor(theme.Panel)
+		a.pages.AddPage("modal", m, true, true)
+	})
 }
 
 func (a *App) doExport() {

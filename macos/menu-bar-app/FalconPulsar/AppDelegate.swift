@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import UniformTypeIdentifiers
 import UserNotifications
 
 enum StackStatus {
@@ -9,6 +10,11 @@ enum StackStatus {
 class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var pollTimer: Timer?
+    // Strong ref to the active streaming panel. Without this the NSPanel is
+    // deallocated the moment runDockerActionPanel returns (subviews hold only
+    // a weak ref back to their window), which is why the window "flashes"
+    // open and vanishes.
+    private var activeActionPanel: NSPanel?
 
     private var coreRunning = false
     private var uiRunning = false
@@ -551,7 +557,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func setEnvValue(_ key: String, _ value: String) {
         let envPath = "\(homeDir)/.env"
-        guard var data = try? String(contentsOfFile: envPath, encoding: .utf8) else { return }
+        guard let data = try? String(contentsOfFile: envPath, encoding: .utf8) else { return }
         var lines = data.components(separatedBy: "\n")
         var found = false
         for i in 0..<lines.count {
@@ -563,6 +569,203 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if !found { lines.append("\(key)=\(value)") }
         try? lines.joined(separator: "\n").write(toFile: envPath, atomically: true, encoding: .utf8)
+    }
+
+    private func removeEnvValue(_ key: String) {
+        let envPath = "\(homeDir)/.env"
+        guard let data = try? String(contentsOfFile: envPath, encoding: .utf8) else { return }
+        let lines = data.components(separatedBy: "\n").filter {
+            !$0.trimmingCharacters(in: .whitespaces).hasPrefix("\(key)=")
+        }
+        try? lines.joined(separator: "\n").write(toFile: envPath, atomically: true, encoding: .utf8)
+    }
+
+    // MARK: - Install log tee (shared with installer-app: /tmp/falconpulsar-install.log)
+
+    private static let installLogPath = "/tmp/falconpulsar-install.log"
+
+    private func installLogBegin(action: String) -> FileHandle? {
+        let fm = FileManager.default
+        // Rotate at 5 MiB, keep 3 archives (.1 .2 .3).
+        if let attrs = try? fm.attributesOfItem(atPath: Self.installLogPath),
+           let size = attrs[.size] as? UInt64, size > 5 * 1024 * 1024 {
+            for i in stride(from: 2, through: 1, by: -1) {
+                let src = "\(Self.installLogPath).\(i)"
+                let dst = "\(Self.installLogPath).\(i + 1)"
+                if fm.fileExists(atPath: src) {
+                    try? fm.removeItem(atPath: dst)
+                    try? fm.moveItem(atPath: src, toPath: dst)
+                }
+            }
+            try? fm.moveItem(atPath: Self.installLogPath,
+                             toPath: "\(Self.installLogPath).1")
+        }
+        if !fm.fileExists(atPath: Self.installLogPath) {
+            // Create with 0600 — contains admin usernames + partial errors.
+            fm.createFile(atPath: Self.installLogPath, contents: nil,
+                          attributes: [.posixPermissions: 0o600])
+        } else {
+            // Existing file might have been created by the Swift installer
+            // or a shell script with a looser umask. Lock it down.
+            try? fm.setAttributes([.posixPermissions: 0o600],
+                                  ofItemAtPath: Self.installLogPath)
+        }
+        guard let fh = FileHandle(forWritingAtPath: Self.installLogPath) else { return nil }
+        fh.seekToEndOfFile()
+        let fmt = ISO8601DateFormatter()
+        let header = "\n=== \(fmt.string(from: Date()))  \(action) (platform=macos-menubar, pid=\(getpid())) ===\n"
+        fh.write(header.data(using: .utf8) ?? Data())
+        return fh
+    }
+
+    private func installLogAppend(_ fh: FileHandle?, _ text: String) {
+        guard let fh = fh, let data = text.data(using: .utf8) else { return }
+        fh.write(data)
+    }
+
+    private func installLogEnd(_ fh: FileHandle?, exit code: Int32) {
+        guard let fh = fh else { return }
+        let footer = "=== end (exit \(code)) ===\n"
+        fh.write(footer.data(using: .utf8) ?? Data())
+        try? fh.close()
+    }
+
+    // MARK: - AI Gateway service token (mirrors fp_bootstrap_gateway_token)
+
+    /// Creates the AI gateway service token via REST using a pre-authenticated admin JWT.
+    private func createGatewayServiceToken(jwt: String) throws -> String {
+        let url = URL(string: "http://localhost:7433/api/v1/tokens")!
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.addValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.addValue("Bearer \(jwt)", forHTTPHeaderField: "Authorization")
+        req.httpBody = try JSONSerialization.data(withJSONObject: [
+            "name": "ai-gateway-token",
+            "expires_days": 0,
+            "permissions": ["read", "query"]
+        ])
+
+        let sem = DispatchSemaphore(value: 0)
+        var body: Data?
+        var err: Error?
+        var status = 0
+        URLSession.shared.dataTask(with: req) { d, resp, e in
+            body = d; err = e
+            status = (resp as? HTTPURLResponse)?.statusCode ?? 0
+            sem.signal()
+        }.resume()
+        sem.wait()
+
+        if let err = err { throw err }
+        guard (200..<300).contains(status),
+              let data = body,
+              let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let tok = j["token"] as? String, !tok.isEmpty else {
+            throw NSError(domain: "FalconPulsar", code: status, userInfo: [
+                NSLocalizedDescriptionKey: "Could not create AI gateway service token (HTTP \(status))."
+            ])
+        }
+        return tok
+    }
+
+    // MARK: - Streaming docker-action panel (used by enable/disable AI)
+
+    private func runDockerActionPanel(title: String, marker: String,
+                                      command: String, successMessage: String) {
+        let panel = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 550, height: 350),
+            styleMask: [.titled, .closable],
+            backing: .buffered, defer: false)
+        panel.title = title
+        panel.isReleasedWhenClosed = false
+        // NSPanels hide on deactivate by default. Menu-bar apps run as
+        // .accessory so they constantly gain/lose focus — that caused the
+        // panel to flash open and vanish. Keep it visible until the user
+        // explicitly closes it.
+        panel.hidesOnDeactivate = false
+        panel.becomesKeyOnlyIfNeeded = false
+        panel.center()
+        // Retain the panel so ARC doesn't deallocate it when this function
+        // returns (subviews only weakly reference their window).
+        activeActionPanel = panel
+
+        let scrollView = NSScrollView(frame: NSRect(x: 10, y: 40, width: 530, height: 300))
+        let logView = NSTextView(frame: scrollView.bounds)
+        logView.isEditable = false
+        logView.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+        logView.backgroundColor = NSColor(white: 0.1, alpha: 1)
+        logView.textColor = NSColor.white
+        scrollView.documentView = logView
+        scrollView.hasVerticalScroller = true
+        panel.contentView?.addSubview(scrollView)
+
+        let closeBtn = NSButton(frame: NSRect(x: 440, y: 5, width: 80, height: 30))
+        closeBtn.title = "Close"
+        closeBtn.bezelStyle = .rounded
+        closeBtn.isEnabled = false
+        closeBtn.target = panel
+        closeBtn.action = #selector(NSPanel.orderOut(_:))
+        panel.contentView?.addSubview(closeBtn)
+        // Menu-bar apps run as .accessory, so their windows don't auto-front.
+        // Activate the app and float the panel so the user actually sees progress.
+        panel.level = .floating
+        NSApp.activate(ignoringOtherApps: true)
+        panel.makeKeyAndOrderFront(nil)
+
+        let logHandle = installLogBegin(action: marker)
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
+            let process = Process()
+            let pipe = Pipe()
+            process.launchPath = "/bin/bash"
+            process.arguments = ["-c", command]
+            process.standardOutput = pipe
+            process.standardError = pipe
+
+            pipe.fileHandleForReading.readabilityHandler = { handle in
+                let data = handle.availableData
+                guard !data.isEmpty, let line = String(data: data, encoding: .utf8) else { return }
+                self.installLogAppend(logHandle, line)
+                DispatchQueue.main.async {
+                    logView.string += line
+                    logView.scrollToEndOfDocument(nil)
+                }
+            }
+
+            try? process.run()
+            process.waitUntilExit()
+            pipe.fileHandleForReading.readabilityHandler = nil
+            let exitCode = process.terminationStatus
+            self.installLogEnd(logHandle, exit: exitCode)
+
+            DispatchQueue.main.async {
+                logView.string += "\n--- Done (exit \(exitCode)) ---\n"
+                logView.string += exitCode == 0
+                    ? "\(successMessage)\n"
+                    : "Action may have failed. Check the log above.\n"
+                closeBtn.isEnabled = true
+                self.buildMenu()
+                self.pollHealth()
+
+                // On success show a prominent confirmation dialog so the user
+                // doesn't have to read the streaming log to know it worked,
+                // and give them a one-click path to the Web UI.
+                if exitCode == 0 {
+                    let alert = NSAlert()
+                    alert.messageText = "FalconPulsar"
+                    alert.informativeText = successMessage
+                    alert.alertStyle = .informational
+                    alert.addButton(withTitle: "Open Web UI")
+                    alert.addButton(withTitle: "OK")
+                    NSApp.activate(ignoringOtherApps: true)
+                    if alert.runModal() == .alertFirstButtonReturn,
+                       let url = URL(string: "http://localhost:8080") {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
+            }
+        }
     }
 
     private func ensureGatewayConfig() {
@@ -626,139 +829,158 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func enableAIGateway() {
-        // Bootstrap the service token if this is the first time AI is enabled
+        // Core must be running so we can authenticate against its REST API.
+        guard coreRunning else {
+            let alert = NSAlert()
+            alert.messageText = "Core service not running"
+            alert.informativeText = "FalconPulsar Core must be running before AI Capabilities can be enabled. Start the stack first, then try again."
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
+            return
+        }
+
+        // Admin authentication gate — every enable operation requires admin
+        // credentials, matching the uninstall flow. Matches 3-attempt retry.
+        guard let authed = authenticateWithRetry(
+            title: "Enable AI Capabilities",
+            message: "Enter admin credentials to authorize enabling AI Capabilities."
+        ) else { return }   // user cancelled or exhausted retries
+
+        // First-time setup only: create the service token now that we have
+        // an authenticated admin JWT in hand.
         if !hasGatewayToken() {
-            guard let creds = promptAdminCredentials(
-                title: "Enable AI Capabilities",
-                message: "First-time setup: admin credentials are needed to create the AI service token. This only happens once."
-            ) else { return }
-            // Bootstrap: the install.sh function fp_bootstrap_gateway_token does
-            // this via bash. We replicate the essential call here.
-            _ = self.shell("""
-                cd '\(homeDir)' && \
-                export PATH="/Applications/Docker.app/Contents/Resources/bin:/usr/local/bin:/opt/homebrew/bin:$PATH" && \
-                source ../shared/lib/common.sh 2>/dev/null; \
-                source ../shared/lib/bootstrap.sh 2>/dev/null; \
-                fp_bootstrap_gateway_token '\(homeDir)/.env' 2>&1 || \
-                echo '[warn] token bootstrap via lib failed, trying direct curl' && \
-                TOKEN=$(curl -sf -X POST http://localhost:7433/api/v1/auth/login \
-                  -H 'Content-Type: application/json' \
-                  -d '{"username":"\(creds.user)","password":"\(creds.pass.replacingOccurrences(of: "\"", with: "\\\""))"}' \
-                  | grep -o '"token":"[^"]*"' | cut -d'"' -f4) && \
-                API_KEY=$(curl -sf -X POST http://localhost:7433/api/v1/tokens \
-                  -H "Authorization: Bearer $TOKEN" \
-                  -H 'Content-Type: application/json' \
-                  -d '{"name":"ai-gateway","permissions":["read","query"]}' \
-                  | grep -o '"token":"[^"]*"' | cut -d'"' -f4) && \
-                echo "FP_API_KEY=$API_KEY" >> '\(homeDir)/.env'
-            """)
+            do {
+                let apiKey = try createGatewayServiceToken(jwt: authed.token)
+                setEnvValue("FP_API_KEY", apiKey)
+            } catch {
+                showError(error, title: "Enable AI Capabilities")
+                return
+            }
         }
 
         ensureGatewayConfig()
         setEnvValue("FP_AI_GATEWAY_ENABLED", "true")
 
-        // Progress window with streaming log output
-        let panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 550, height: 350),
-            styleMask: [.titled, .closable],
-            backing: .buffered, defer: false)
-        panel.title = "Enabling AI Capabilities…"
-        panel.center()
+        // Target the ai-gateway service explicitly so core/ui are never touched.
+        // BUILDKIT_PROGRESS=plain forces line-buffered output over our pipe.
+        let command = """
+        export BUILDKIT_PROGRESS=plain
+        export DOCKER_CLI_HINTS=false
+        export PATH='/Applications/Docker.app/Contents/Resources/bin:/usr/local/bin:/opt/homebrew/bin':"$PATH"
+        cd '\(homeDir)' || exit 1
+        echo '[enable-ai] pulling AI gateway image…'
+        docker compose --profile ai pull ai-gateway 2>&1
+        echo '[enable-ai] starting ai-gateway container…'
+        docker compose --profile ai up -d ai-gateway 2>&1
+        """
 
-        let scrollView = NSScrollView(frame: NSRect(x: 10, y: 40, width: 530, height: 300))
-        let logView = NSTextView(frame: scrollView.bounds)
-        logView.isEditable = false
-        logView.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
-        logView.backgroundColor = NSColor(white: 0.1, alpha: 1)
-        logView.textColor = NSColor.white
-        scrollView.documentView = logView
-        scrollView.hasVerticalScroller = true
-        panel.contentView?.addSubview(scrollView)
-
-        let closeBtn = NSButton(frame: NSRect(x: 440, y: 5, width: 80, height: 30))
-        closeBtn.title = "Close"
-        closeBtn.bezelStyle = .rounded
-        closeBtn.isEnabled = false
-        closeBtn.target = panel
-        closeBtn.action = #selector(NSPanel.orderOut(_:))
-        panel.contentView?.addSubview(closeBtn)
-
-        panel.makeKeyAndOrderFront(nil)
-
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            guard let self = self else { return }
-            let process = Process()
-            let pipe = Pipe()
-            process.launchPath = "/bin/bash"
-            process.arguments = ["-c",
-                "export PATH='/Applications/Docker.app/Contents/Resources/bin:/usr/local/bin:/opt/homebrew/bin:$PATH' && " +
-                "cd '\(self.homeDir)' && docker compose --profile ai up -d 2>&1"
-            ]
-            process.standardOutput = pipe
-            process.standardError = pipe
-
-            pipe.fileHandleForReading.readabilityHandler = { handle in
-                let data = handle.availableData
-                guard !data.isEmpty, let line = String(data: data, encoding: .utf8) else { return }
-                DispatchQueue.main.async {
-                    logView.string += line
-                    logView.scrollToEndOfDocument(nil)
-                }
-            }
-
-            try? process.run()
-            process.waitUntilExit()
-            pipe.fileHandleForReading.readabilityHandler = nil
-
-            DispatchQueue.main.async {
-                let exitCode = process.terminationStatus
-                logView.string += "\n--- Done (exit \(exitCode)) ---\n"
-                if exitCode == 0 {
-                    logView.string += "AI Capabilities enabled. Configure LLM providers in the Web UI.\n"
-                } else {
-                    logView.string += "Enable may have failed. Check the log above.\n"
-                }
-                closeBtn.isEnabled = true
-                self.buildMenu()
-                self.pollHealth()
-            }
-        }
+        runDockerActionPanel(
+            title: "Enabling AI Capabilities…",
+            marker: "enable-ai",
+            command: command,
+            successMessage: "AI Capabilities enabled.\n\nClose any open FalconPulsar Web UI sessions and sign in again to see the AI features, then configure LLM providers."
+        )
     }
 
     @objc func disableAIGateway() {
+        // Core must be running so we can authenticate. If it isn't, we have
+        // no way to verify the admin password — bail with a friendly notice.
+        guard coreRunning else {
+            let alert = NSAlert()
+            alert.messageText = "Core service not running"
+            alert.informativeText = "FalconPulsar Core must be running to authorize disabling AI Capabilities. Start the stack first, then try again."
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
+            return
+        }
+
+        // Admin authentication gate — every disable operation requires admin
+        // credentials, matching the uninstall flow.
+        guard authenticateWithRetry(
+            title: "Disable AI Capabilities",
+            message: "Enter admin credentials to authorize disabling AI Capabilities."
+        ) != nil else { return }
+
         let alert = NSAlert()
         alert.messageText = "Disable AI Capabilities?"
-        alert.informativeText = "Chat features will be hidden in the Web UI until re-enabled."
+        alert.informativeText = "This will stop and remove the AI gateway container, delete its data directory and gateway.yaml, clear the service token, and delete the AI gateway image (re-enabling later will re-download it). Core and UI stay running and untouched. Your time-series data is unaffected."
         alert.alertStyle = .warning
-        alert.addButton(withTitle: "Disable")
+        alert.addButton(withTitle: "Disable and Remove")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
         setEnvValue("FP_AI_GATEWAY_ENABLED", "false")
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            guard let self = self else { return }
-            self.shell("cd '\(self.homeDir)' && docker compose stop ai-gateway 2>&1")
-            DispatchQueue.main.async {
-                self.buildMenu()
-                self.pollHealth()
-            }
-        }
+        removeEnvValue("FP_API_KEY")
+        try? FileManager.default.removeItem(atPath: "\(homeDir)/gateway.yaml")
+
+        // Surgical: act only on the ai-gateway service and its host bind-mount data dir.
+        // Never uses `down -v` because that would also stop core/ui (they have no profile
+        // so compose treats them as always-active).
+        let command = """
+        export PATH='/Applications/Docker.app/Contents/Resources/bin:/usr/local/bin:/opt/homebrew/bin':"$PATH"
+        cd '\(homeDir)' || exit 1
+
+        echo '[disable-ai] loading environment from .env…'
+        set -a
+        . '\(homeDir)/.env' 2>/dev/null || true
+        set +a
+        IMAGE_REF="${FP_REGISTRY:-falconpulsar}/ai-gateway:${FP_VERSION:-latest}"
+        GATEWAY_DATA="${FP_GATEWAY_DATA_DIR:-${FP_DATA_DIR}/../ai-gateway-data}"
+
+        echo '[disable-ai] stopping and removing ai-gateway container (core/ui untouched)…'
+        docker compose --profile ai rm -f -s -v ai-gateway 2>&1
+
+        if [ -n "$GATEWAY_DATA" ] && [ "$GATEWAY_DATA" != "/" ] && [ -d "$GATEWAY_DATA" ]; then
+          echo "[disable-ai] removing AI gateway data directory: $GATEWAY_DATA"
+          rm -rf "$GATEWAY_DATA"
+        fi
+
+        echo "[disable-ai] removing AI gateway image: $IMAGE_REF"
+        docker rmi -f "$IMAGE_REF" 2>&1 || true
+
+        echo '[disable-ai] cleanup complete. Core and UI were not touched.'
+        """
+
+        runDockerActionPanel(
+            title: "Disabling AI Capabilities…",
+            marker: "disable-ai",
+            command: command,
+            successMessage: "AI Capabilities disabled and removed."
+        )
     }
 
     // MARK: - Configuration Backup
 
-    private func promptAdminCredentials(title: String, message: String) -> (user: String, pass: String)? {
+    private func promptAdminCredentials(title: String, message: String,
+                                        errorText: String? = nil,
+                                        prefillUser: String = "admin")
+        -> (user: String, pass: String)?
+    {
         let alert = NSAlert()
         alert.messageText = title
         alert.informativeText = message
-        alert.alertStyle = .informational
+        alert.alertStyle = errorText == nil ? .informational : .warning
         alert.addButton(withTitle: "Continue")
         alert.addButton(withTitle: "Cancel")
 
-        let container = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 64))
+        let hasError = errorText != nil
+        let errorHeight: CGFloat = hasError ? 24 : 0
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 64 + errorHeight))
+        if let errorText = errorText {
+            let errorLabel = NSTextField(frame: NSRect(x: 0, y: 64, width: 300, height: 22))
+            errorLabel.isEditable = false
+            errorLabel.isBordered = false
+            errorLabel.drawsBackground = false
+            errorLabel.textColor = NSColor.systemRed
+            errorLabel.font = NSFont.systemFont(ofSize: 11, weight: .semibold)
+            errorLabel.stringValue = errorText
+            container.addSubview(errorLabel)
+        }
         let userField = NSTextField(frame: NSRect(x: 0, y: 34, width: 300, height: 24))
         userField.placeholderString = "Admin username"
-        userField.stringValue = "admin"
+        userField.stringValue = prefillUser
         let passField = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 24))
         passField.placeholderString = "Admin password"
         container.addSubview(userField)
@@ -769,23 +991,57 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         return (userField.stringValue, passField.stringValue)
     }
 
-    private func showError(_ err: Error) {
+    /// Prompt for admin credentials and authenticate. On failure, re-prompt with
+    /// an inline error (in red) up to `maxAttempts`. Returns nil if the user
+    /// cancels or exhausts attempts. Exhaustion shows a final alert.
+    private func authenticateWithRetry(title: String,
+                                       message: String,
+                                       maxAttempts: Int = 3)
+        -> ConfigBackup.AdminCredentials?
+    {
+        var attempt = 0
+        var lastUser = "admin"
+        var errorText: String? = nil
+        while attempt < maxAttempts {
+            guard let creds = promptAdminCredentials(
+                title: title,
+                message: message,
+                errorText: errorText,
+                prefillUser: lastUser
+            ) else { return nil }   // user cancelled
+            lastUser = creds.user
+            do {
+                return try ConfigBackup.authenticateAsAdmin(
+                    username: creds.user, password: creds.pass)
+            } catch {
+                attempt += 1
+                errorText = error.localizedDescription
+                if attempt >= maxAttempts { break }
+            }
+        }
+        let final = NSAlert()
+        final.messageText = "Too many failed attempts"
+        final.informativeText = "Please verify your admin credentials and try again later."
+        final.alertStyle = .critical
+        final.runModal()
+        return nil
+    }
+
+    private func showError(_ err: Error, title: String = "FalconPulsar error") {
         let alert = NSAlert()
-        alert.messageText = "Configuration backup error"
+        alert.messageText = title
         alert.informativeText = err.localizedDescription
         alert.alertStyle = .critical
         alert.runModal()
     }
 
     @objc func exportConfiguration() {
-        guard let creds = promptAdminCredentials(
+        guard let authed = authenticateWithRetry(
             title: "Export Configuration",
             message: "Enter admin credentials. They authorize the export and will also encrypt the backup file."
         ) else { return }
 
         do {
-            let authed = try ConfigBackup.authenticateAsAdmin(username: creds.user, password: creds.pass)
-
             let panel = NSSavePanel()
             panel.title = "Save Configuration Backup"
             panel.allowedContentTypes = []
@@ -803,7 +1059,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 NSWorkspace.shared.activateFileViewerSelecting([url])
             }
         } catch {
-            showError(error)
+            showError(error, title: "Configuration backup error")
         }
     }
 
@@ -813,7 +1069,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
-        panel.allowedFileTypes = ["fpconfig"]
+        if let fpconfigType = UTType(filenameExtension: "fpconfig") {
+            panel.allowedContentTypes = [fpconfigType]
+        }
         guard panel.runModal() == .OK, let url = panel.url else { return }
 
         let confirm = NSAlert()
@@ -824,13 +1082,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         confirm.addButton(withTitle: "Cancel")
         guard confirm.runModal() == .alertFirstButtonReturn else { return }
 
-        guard let creds = promptAdminCredentials(
+        guard let authed = authenticateWithRetry(
             title: "Import Configuration",
             message: "Enter the admin credentials used when this backup was exported. They're required to decrypt the file and apply the changes."
         ) else { return }
 
         do {
-            let authed = try ConfigBackup.authenticateAsAdmin(username: creds.user, password: creds.pass)
             try ConfigBackup.importBackup(from: url.path, creds: authed)
 
             let ok = NSAlert()
@@ -839,7 +1096,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             ok.addButton(withTitle: "OK")
             ok.runModal()
         } catch {
-            showError(error)
+            showError(error, title: "Configuration backup error")
         }
     }
 
@@ -1042,24 +1299,51 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         let response = alert.runModal()
 
+        let wantsPurge: Bool
         switch response {
         case .alertFirstButtonReturn:
-            // Keep data
-            runUninstall(purge: false)
+            wantsPurge = false   // keep data
         case .alertSecondButtonReturn:
-            // Remove everything
+            // Remove everything — extra destructive confirmation.
             let confirm = NSAlert()
             confirm.messageText = "Are you sure?"
             confirm.informativeText = "This will permanently delete your FalconPulsar database and all data. This cannot be undone."
             confirm.alertStyle = .critical
             confirm.addButton(withTitle: "Delete Everything")
             confirm.addButton(withTitle: "Cancel")
-            if confirm.runModal() == .alertFirstButtonReturn {
-                runUninstall(purge: true)
-            }
+            guard confirm.runModal() == .alertFirstButtonReturn else { return }
+            wantsPurge = true
         default:
-            break
+            return
         }
+
+        // Admin authentication gate — require admin credentials before any
+        // destructive uninstall action, matching the bash uninstall.sh. If
+        // Core is not running, fall back to an explicit YES-word confirmation
+        // (we can't verify credentials without Core).
+        if coreRunning {
+            guard authenticateWithRetry(
+                title: "Uninstall FalconPulsar",
+                message: "Enter admin credentials to authorize uninstallation. This prevents accidental removal of the stack."
+            ) != nil else { return }   // cancelled or exhausted retries
+        } else {
+            let warn = NSAlert()
+            warn.messageText = "Core is not running"
+            warn.informativeText = "FalconPulsar Core is not running, so the admin password cannot be verified. To authorize this uninstall anyway, type exactly YES (uppercase):"
+            warn.alertStyle = .warning
+            warn.addButton(withTitle: "Continue")
+            warn.addButton(withTitle: "Cancel")
+
+            let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 200, height: 24))
+            field.placeholderString = "Type YES"
+            warn.accessoryView = field
+
+            guard warn.runModal() == .alertFirstButtonReturn, field.stringValue == "YES" else {
+                return
+            }
+        }
+
+        runUninstall(purge: wantsPurge)
     }
 
     private func runUninstall(purge: Bool) {
@@ -1084,7 +1368,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
 
             if let scriptPath = script {
-                self?.shell("bash '\(scriptPath)' \(purgeFlag) --yes 2>&1")
+                // Pass --force: the menu bar already authenticated the admin
+                // in Swift (authenticateWithRetry or YES-bypass), so the bash
+                // script should not try to prompt for credentials again via
+                // /dev/tty (which isn't attached in a GUI-launched shell and
+                // would just fail + exit without cleanup).
+                self?.shell("bash '\(scriptPath)' \(purgeFlag) --yes --force 2>&1")
             } else {
                 // Inline uninstall if script not found. On purge, use
                 // `compose down --volumes` and prune any orphan volumes +

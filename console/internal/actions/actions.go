@@ -4,6 +4,7 @@ package actions
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -93,6 +94,115 @@ func SetEnvValue(key, value string) error {
 		lines = append(lines, key+"="+value)
 	}
 	return os.WriteFile(envPath, []byte(strings.Join(lines, "\n")), 0600)
+}
+
+// RemoveEnvValue strips the given key's line from ~/falconpulsar/.env.
+func RemoveEnvValue(key string) error {
+	envPath := filepath.Join(HomeDir(), ".env")
+	data, err := os.ReadFile(envPath)
+	if err != nil {
+		return err
+	}
+	var kept []string
+	for _, line := range strings.Split(string(data), "\n") {
+		if !strings.HasPrefix(strings.TrimSpace(line), key+"=") {
+			kept = append(kept, line)
+		}
+	}
+	return os.WriteFile(envPath, []byte(strings.Join(kept, "\n")), 0600)
+}
+
+// parseEnvFile reads .env into a map. Doesn't interpret quoting — good enough
+// for the few keys we care about in AI gateway teardown (FP_REGISTRY,
+// FP_VERSION, FP_DATA_DIR, FP_GATEWAY_DATA_DIR).
+func parseEnvFile() map[string]string {
+	result := make(map[string]string)
+	data, err := os.ReadFile(filepath.Join(HomeDir(), ".env"))
+	if err != nil {
+		return result
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if i := strings.Index(line, "="); i > 0 {
+			key := strings.TrimSpace(line[:i])
+			val := strings.TrimSpace(line[i+1:])
+			val = strings.TrimPrefix(val, `"`)
+			val = strings.TrimSuffix(val, `"`)
+			val = strings.TrimPrefix(val, `'`)
+			val = strings.TrimSuffix(val, `'`)
+			result[key] = val
+		}
+	}
+	return result
+}
+
+// SurgicalDisableAI removes only the AI gateway service + its host bind-mount
+// data dir, gateway.yaml, image, and FP_API_KEY from .env. NEVER runs
+// `compose down -v` because that would stop core + ui too.
+//
+// Matches the macOS menu-bar and Windows tray surgical flow exactly.
+func SurgicalDisableAI(ctx context.Context, out io.Writer) error {
+	env := parseEnvFile()
+
+	write := func(s string) {
+		if out != nil {
+			_, _ = io.WriteString(out, s)
+		}
+	}
+
+	write("[disable-ai] stopping and removing ai-gateway container (core/ui untouched)…\n")
+	cmd := exec.CommandContext(ctx, dockerPath(), "compose", "--profile", "ai",
+		"rm", "-f", "-s", "-v", "ai-gateway")
+	cmd.Dir = HomeDir()
+	cmd.Stdout = out
+	cmd.Stderr = out
+	_ = cmd.Run()
+
+	// Bind-mount data directory — respect .env overrides.
+	dataDir := env["FP_GATEWAY_DATA_DIR"]
+	if dataDir == "" {
+		base := env["FP_DATA_DIR"]
+		if base == "" {
+			base = filepath.Join(HomeDir(), "data")
+		}
+		dataDir = filepath.Join(base, "..", "ai-gateway-data")
+	}
+	if dataDir != "" && dataDir != "/" {
+		if st, err := os.Stat(dataDir); err == nil && st.IsDir() {
+			write(fmt.Sprintf("[disable-ai] removing AI gateway data directory: %s\n", dataDir))
+			_ = os.RemoveAll(dataDir)
+		}
+	}
+
+	// gateway.yaml
+	write("[disable-ai] removing gateway.yaml…\n")
+	_ = os.Remove(filepath.Join(HomeDir(), "gateway.yaml"))
+
+	// FP_API_KEY from .env
+	write("[disable-ai] clearing FP_API_KEY from .env…\n")
+	_ = RemoveEnvValue("FP_API_KEY")
+
+	// Image
+	registry := env["FP_REGISTRY"]
+	if registry == "" {
+		registry = "falconpulsar"
+	}
+	version := env["FP_VERSION"]
+	if version == "" {
+		version = "latest"
+	}
+	imageRef := fmt.Sprintf("%s/ai-gateway:%s", registry, version)
+	write(fmt.Sprintf("[disable-ai] removing AI gateway image: %s\n", imageRef))
+	rmi := exec.CommandContext(ctx, dockerPath(), "rmi", "-f", imageRef)
+	rmi.Stdout = out
+	rmi.Stderr = out
+	_ = rmi.Run()
+
+	write("[disable-ai] cleanup complete. Core and UI were not touched.\n")
+	return nil
 }
 
 // composeProfileArgs returns the --profile flags needed based on .env state.

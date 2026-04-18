@@ -189,3 +189,72 @@ detect_os() {
         *)       echo unknown ;;
     esac
 }
+
+# fp_compose_pull_with_retry <home> [attempts] [run_as_user]
+#   Run `docker compose pull` up to `attempts` times with exponential-ish
+#   backoff (2s, 4s, 8s). Returns 0 on any successful attempt, non-zero
+#   after all retries fail. If `run_as_user` is set, re-execs via
+#   `sudo -u $user -H sg docker -c` (Linux install path); otherwise runs
+#   directly (macOS / non-system-user install).
+#
+# Used by install.sh and existing.sh's upgrade fast-path so a transient
+# network flap doesn't abort the install and force the user to start over.
+fp_compose_pull_with_retry() {
+    local home="$1"
+    local attempts="${2:-3}"
+    local run_as="${3:-}"
+    local attempt=0
+    local rc
+    while [ "$attempt" -lt "$attempts" ]; do
+        attempt=$((attempt + 1))
+        if [ -n "$run_as" ]; then
+            ( sudo -u "$run_as" -H sg docker -c "cd '${home}' && docker compose pull" )
+            rc=$?
+        else
+            ( cd "$home" && docker compose pull )
+            rc=$?
+        fi
+        if [ "$rc" = 0 ]; then
+            return 0
+        fi
+        if [ "$attempt" -lt "$attempts" ]; then
+            local delay=$((2 ** attempt))
+            log_warn "docker compose pull failed (attempt $attempt/$attempts) — retrying in ${delay}s"
+            sleep "$delay"
+        fi
+    done
+    return "${rc:-1}"
+}
+
+# fp_rotate_log <path> [max_bytes] [keep]
+#   Rotate the install log if it's larger than max_bytes (default 5 MiB).
+#   Keeps the last N archives (default 3) as .1 .2 .3. Silent + best-effort:
+#   any failure (permission, disk full) leaves the original in place.
+#   Also ensures the (possibly new) log file is mode 0600 — it contains
+#   admin usernames and partial error output.
+fp_rotate_log() {
+    local path="$1"
+    local max="${2:-5242880}"   # 5 MiB
+    local keep="${3:-3}"
+    [ -n "$path" ] || return 0
+    if [ -f "$path" ]; then
+        local size
+        # stat flags differ between BSD (macOS) and GNU (Linux).
+        size=$(stat -f%z "$path" 2>/dev/null || stat -c%s "$path" 2>/dev/null || echo 0)
+        if [ "${size:-0}" -gt "$max" ] 2>/dev/null; then
+            local i=$((keep - 1))
+            # Shift archives up: .N-1 -> .N, ..., .1 -> .2
+            while [ "$i" -ge 1 ]; do
+                if [ -f "${path}.${i}" ]; then
+                    mv -f "${path}.${i}" "${path}.$((i + 1))" 2>/dev/null || true
+                fi
+                i=$((i - 1))
+            done
+            mv -f "$path" "${path}.1" 2>/dev/null || true
+        fi
+    fi
+    if [ ! -f "$path" ]; then
+        (umask 077 && : > "$path") 2>/dev/null || true
+    fi
+    chmod 0600 "$path" 2>/dev/null || true
+}

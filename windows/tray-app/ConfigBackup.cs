@@ -62,29 +62,48 @@ namespace FalconPulsar.Tray
         {
             using var http = new HttpClient();
             var loginBody = JsonSerializer.Serialize(new { username = user, password = pass });
-            var loginResp = await http.PostAsync(
-                $"{CoreBaseUrl}/api/v1/auth/login",
-                new StringContent(loginBody, Encoding.UTF8, "application/json"));
+            HttpResponseMessage loginResp;
+            try
+            {
+                loginResp = await http.PostAsync(
+                    $"{CoreBaseUrl}/api/v1/auth/login",
+                    new StringContent(loginBody, Encoding.UTF8, "application/json"));
+            }
+            catch (HttpRequestException)
+            {
+                throw new BackupException(
+                    "Cannot reach FalconPulsar Core at http://localhost:7433.");
+            }
+
             if (!loginResp.IsSuccessStatusCode)
-                throw new BackupException($"Login failed: HTTP {(int)loginResp.StatusCode}");
+            {
+                var status = (int)loginResp.StatusCode;
+                if (status == 401)
+                    throw new BackupException("Incorrect username or password.");
+                if (status == 403)
+                    throw new BackupException("Access denied.");
+                throw new BackupException(
+                    $"Cannot reach FalconPulsar Core (HTTP {status}). Check that the stack is running.");
+            }
 
             var loginJson = JsonNode.Parse(await loginResp.Content.ReadAsStringAsync());
             var token = loginJson?["token"]?.GetValue<string>();
             if (string.IsNullOrEmpty(token))
-                throw new BackupException("Login failed: no token returned");
+                throw new BackupException("No token returned by server.");
 
             using var meReq = new HttpRequestMessage(HttpMethod.Get, $"{CoreBaseUrl}/api/v1/auth/me");
             meReq.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
             var meResp = await http.SendAsync(meReq);
             if (!meResp.IsSuccessStatusCode)
-                throw new BackupException("Could not read user role");
+                throw new BackupException("Could not read user role.");
 
             var meJson = JsonNode.Parse(await meResp.Content.ReadAsStringAsync());
             var role = meJson?["role"]?.GetValue<string>();
             if (role == null && meJson?["roles"] is JsonArray arr && arr.Count > 0)
                 role = arr[0]?.GetValue<string>();
             if (!string.Equals(role, "admin", StringComparison.OrdinalIgnoreCase))
-                throw new BackupException("Only administrator accounts can export or import configuration.");
+                throw new BackupException(
+                    "This account is not an administrator. Ask your administrator for help.");
 
             return new AdminCredentials { Username = user, Password = pass, Token = token };
         }
@@ -93,9 +112,18 @@ namespace FalconPulsar.Tray
 
         private static byte[] DeriveKey(string user, string pass, byte[] salt)
         {
+            // The passphrase buffer holds cleartext "user:pass" during PBKDF2.
+            // Zero it immediately after use so it doesn't linger on the heap.
             var passphrase = Encoding.UTF8.GetBytes($"{user}:{pass}");
-            using var kdf = new Rfc2898DeriveBytes(passphrase, salt, Iterations, HashAlgorithmName.SHA256);
-            return kdf.GetBytes(32);
+            try
+            {
+                using var kdf = new Rfc2898DeriveBytes(passphrase, salt, Iterations, HashAlgorithmName.SHA256);
+                return kdf.GetBytes(32);
+            }
+            finally
+            {
+                Array.Clear(passphrase, 0, passphrase.Length);
+            }
         }
 
         public static byte[] Encrypt(byte[] plaintext, string user, string pass)
@@ -105,18 +133,28 @@ namespace FalconPulsar.Tray
             var key   = DeriveKey(user, pass, salt);
             var ciphertext = new byte[plaintext.Length];
             var tag = new byte[TagLength];
-            using (var gcm = new AesGcm(key, TagLength))
+            try
             {
-                gcm.Encrypt(nonce, plaintext, ciphertext, tag);
+                using (var gcm = new AesGcm(key, TagLength))
+                {
+                    gcm.Encrypt(nonce, plaintext, ciphertext, tag);
+                }
+                using var ms = new MemoryStream();
+                ms.Write(Magic, 0, Magic.Length);
+                ms.WriteByte(FormatVersion);
+                ms.Write(salt, 0, salt.Length);
+                ms.Write(nonce, 0, nonce.Length);
+                ms.Write(ciphertext, 0, ciphertext.Length);
+                ms.Write(tag, 0, tag.Length);
+                return ms.ToArray();
             }
-            using var ms = new MemoryStream();
-            ms.Write(Magic, 0, Magic.Length);
-            ms.WriteByte(FormatVersion);
-            ms.Write(salt, 0, salt.Length);
-            ms.Write(nonce, 0, nonce.Length);
-            ms.Write(ciphertext, 0, ciphertext.Length);
-            ms.Write(tag, 0, tag.Length);
-            return ms.ToArray();
+            finally
+            {
+                // Zero the derived key and the plaintext buffer — both
+                // contain sensitive material from the backup.
+                Array.Clear(key, 0, key.Length);
+                Array.Clear(plaintext, 0, plaintext.Length);
+            }
         }
 
         public static byte[] Decrypt(byte[] data, string user, string pass)
@@ -144,12 +182,19 @@ namespace FalconPulsar.Tray
             {
                 using var gcm = new AesGcm(key, TagLength);
                 gcm.Decrypt(nonce, ciphertext, tag, plaintext);
+                return plaintext;
             }
             catch (CryptographicException)
             {
+                Array.Clear(plaintext, 0, plaintext.Length);
                 throw new BackupException("Decryption failed — wrong admin credentials or corrupted file.");
             }
-            return plaintext;
+            finally
+            {
+                // The caller owns the returned plaintext from here; we only
+                // need to wipe the derived key in this scope.
+                Array.Clear(key, 0, key.Length);
+            }
         }
 
         // ---- Export / Import ----

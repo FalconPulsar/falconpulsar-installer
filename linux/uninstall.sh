@@ -49,18 +49,22 @@ trap 'on_error $LINENO' ERR
 FP_USER="${FP_USER:-falconpulsar}"
 FP_HOME="${FP_HOME:-/home/${FP_USER}}"
 FP_PURGE=0
+FP_FORCE=0
+FP_LOG_FILE="${FP_LOG_FILE:-/tmp/falconpulsar-install.log}"
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --user)   FP_USER="$2"; FP_HOME="/home/${FP_USER}"; shift 2 ;;
         --purge)  FP_PURGE=1; shift ;;
         -y|--yes) FP_ASSUME_YES=1; shift ;;
+        --force)  FP_FORCE=1; shift ;;
         -h|--help)
             cat <<'EOF'
 Usage: uninstall.sh [options]
   --user <name>   System user to remove (default: falconpulsar)
   --purge         Also delete data directory and the system user
   --yes, -y       Assume yes to all prompts
+  --force         Skip admin authentication (emergency use only)
 EOF
             exit 0
             ;;
@@ -75,6 +79,61 @@ if ! id "$FP_USER" >/dev/null 2>&1; then
     log_warn "user ${FP_USER} does not exist — nothing to uninstall"
     exit 0
 fi
+
+# Admin authentication gate — require the FalconPulsar admin password before
+# any destructive action. --force bypasses for emergencies (broken Core).
+if [ "$FP_FORCE" = "1" ]; then
+    log_warn "--force supplied: skipping admin authentication"
+else
+    AUTH_SH=""
+    for candidate in \
+        "${SCRIPT_DIR}/auth.sh" \
+        "${REPO_ROOT}/shared/lib/auth.sh"; do
+        if [ -f "$candidate" ]; then AUTH_SH="$candidate"; break; fi
+    done
+    if [ -n "$AUTH_SH" ]; then
+        # shellcheck disable=SC1090
+        . "$AUTH_SH"
+        auth_rc=0
+        fp_authenticate_admin 3 || auth_rc=$?
+        case "$auth_rc" in
+            0) ;;
+            2)
+                # Core not reachable — fall back to explicit confirmation
+                # (or accept --yes as implicit bypass for automation).
+                if [ "${FP_ASSUME_YES:-0}" = "1" ]; then
+                    log_warn "Core unreachable — proceeding because --yes was supplied."
+                else
+                    printf '\n' >&2
+                    printf 'FalconPulsar Core is not running, so the admin password cannot be verified.\n' >&2
+                    printf 'To authorize this uninstall anyway, type exactly YES (uppercase): ' >&2
+                    confirm=''
+                    read -r confirm </dev/tty 2>/dev/null || confirm=''
+                    if [ "$confirm" != 'YES' ]; then
+                        printf '[error] Confirmation not received — aborting.\n' >&2
+                        exit 1
+                    fi
+                fi
+                ;;
+            *) exit 1 ;;
+        esac
+    else
+        log_warn "auth.sh not found — proceeding without admin auth"
+    fi
+fi
+
+# Append a run marker to the install log (best-effort). Earlier versions
+# redirected all stdout through tee via `exec > >(tee -a …)`, but if tee
+# couldn't open the log file SIGPIPE + errexit silently aborted the rest
+# of the uninstall (image/volume cleanup never ran). Keep it simple.
+if declare -f fp_rotate_log >/dev/null 2>&1; then
+    fp_rotate_log "$FP_LOG_FILE"
+fi
+{
+    printf '\n=== %s  uninstall (platform=linux, pid=%d, mode=%s) ===\n' \
+        "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$$" \
+        "$([ "$FP_PURGE" -eq 1 ] && echo purge || echo keep)"
+} >> "$FP_LOG_FILE" 2>/dev/null || true
 
 FP_UID="$(id -u "$FP_USER")"
 
@@ -159,3 +218,20 @@ else
 fi
 
 log_success "uninstall complete"
+
+# Close the run marker and surface the full install log so the user has a
+# single record of everything that happened (install → uninstall).
+printf '=== end ===\n' >> "$FP_LOG_FILE" 2>/dev/null || true
+echo ""
+echo "  Full log: $FP_LOG_FILE"
+
+# Best-effort: open the log for the user. Prefer xdg-open (graphical session)
+# then fall back to printing the tail. Skipped under --yes (non-interactive).
+if [ "${FP_ASSUME_YES:-0}" != "1" ] && [ -f "$FP_LOG_FILE" ]; then
+    if command -v xdg-open >/dev/null 2>&1 && [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
+        xdg-open "$FP_LOG_FILE" >/dev/null 2>&1 &
+    else
+        echo ""
+        echo "  (no graphical session detected — run 'less $FP_LOG_FILE' to review)"
+    fi
+fi

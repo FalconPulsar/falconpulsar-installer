@@ -188,7 +188,11 @@ fp_try_upgrade_fastpath() {
     if [ "${FP_INSTALL_ACTION:-}" != "upgrade" ]; then return 1; fi
     if [ ! -f "${home}/compose.yml" ]; then return 1; fi
     log_step "Upgrade in place: pulling latest images"
-    ( cd "$home" && docker compose pull ) || return 1
+    if declare -f fp_compose_pull_with_retry >/dev/null 2>&1; then
+        fp_compose_pull_with_retry "$home" || return 1
+    else
+        ( cd "$home" && docker compose pull ) || return 1
+    fi
     log_step "Upgrade in place: recreating containers"
     ( cd "$home" && docker compose up -d ) || return 1
     return 0

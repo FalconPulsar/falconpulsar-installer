@@ -120,6 +120,30 @@ func (c *Client) GetRaw(ctx context.Context, path string) ([]byte, error) {
 	return io.ReadAll(resp.Body)
 }
 
+// CreateGatewayToken mints the AI gateway service token via the tokens API
+// using the current client's admin JWT. Returns the raw token string.
+// Mirrors fp_bootstrap_gateway_token in shared/lib/bootstrap.sh.
+func (c *Client) CreateGatewayToken(ctx context.Context) (string, error) {
+	body, err := c.PostJSON(ctx, "/api/v1/tokens", map[string]any{
+		"name":         "ai-gateway-token",
+		"expires_days": 0,
+		"permissions":  []string{"read", "query"},
+	})
+	if err != nil {
+		return "", err
+	}
+	var resp struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return "", fmt.Errorf("parse token response: %w", err)
+	}
+	if resp.Token == "" {
+		return "", fmt.Errorf("no token in response")
+	}
+	return resp.Token, nil
+}
+
 // PostJSON performs an authenticated POST with the given body.
 func (c *Client) PostJSON(ctx context.Context, path string, body any) ([]byte, error) {
 	raw, _ := json.Marshal(body)

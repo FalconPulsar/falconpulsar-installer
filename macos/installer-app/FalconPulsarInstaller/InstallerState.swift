@@ -54,8 +54,8 @@ class InstallerState: ObservableObject {
     @Published var adminPassConfirm = ""
     @Published var passwordGenerated = false
 
-    // AI Gateway opt-in
-    @Published var aiGatewayEnabled = true
+    // AI Gateway opt-in (disabled by default — users opt in)
+    @Published var aiGatewayEnabled = false
 
     // Environment detection
     @Published var dockerFound = false

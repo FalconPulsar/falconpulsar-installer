@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 
 	"github.com/falconpulsar/falconpulsar-installer/console/internal/actions"
@@ -267,40 +268,74 @@ func cmdAI() *cobra.Command {
 			Short: "Enable AI Capabilities and start the gateway container",
 			RunE: func(cmd *cobra.Command, args []string) error {
 				ctx := context.Background()
-				// Bootstrap gateway service token if missing (first-time enable)
+
+				// Admin auth required every time (matches macOS menu bar
+				// and Windows tray behaviour). On first enable this call
+				// also provides the JWT needed to bootstrap the gateway
+				// service token.
+				reason := "Admin credentials are required to enable AI Capabilities."
 				if !actions.HasGatewayToken() {
-					fmt.Fprintln(os.Stderr, "First-time AI enable — bootstrapping gateway service token…")
-					cli, _, _, err := auth.PromptAdmin(ctx,
-						"Admin credentials are needed to create the AI service token (one-time only).")
-					if err != nil {
-						return err
-					}
-					_ = cli // token bootstrap uses the auth'd client
+					reason = "First-time setup: admin credentials are needed to create the AI service token."
 				}
+				cli, _, _, err := auth.PromptAdminWithRetry(ctx, reason, 3)
+				if err != nil {
+					return err
+				}
+
+				if !actions.HasGatewayToken() {
+					token, err := cli.CreateGatewayToken(ctx)
+					if err != nil {
+						return fmt.Errorf("create gateway service token: %w", err)
+					}
+					if err := actions.SetEnvValue("FP_API_KEY", token); err != nil {
+						return fmt.Errorf("write FP_API_KEY: %w", err)
+					}
+				}
+
 				actions.EnsureGatewayConfig()
 				if err := actions.SetEnvValue("FP_AI_GATEWAY_ENABLED", "true"); err != nil {
 					return err
 				}
 				fmt.Fprintln(os.Stderr, "Enabling AI Capabilities…")
-				if err := actions.Compose(ctx, os.Stdout, os.Stderr, "up", "-d"); err != nil {
+				if err := actions.Compose(ctx, os.Stdout, os.Stderr, "--profile", "ai",
+					"pull", "ai-gateway"); err != nil {
 					return err
 				}
-				fmt.Fprintln(os.Stderr, "AI Capabilities enabled. Configure LLM providers in the Web UI (Settings > AI Configuration).")
+				if err := actions.Compose(ctx, os.Stdout, os.Stderr, "--profile", "ai",
+					"up", "-d", "ai-gateway"); err != nil {
+					return err
+				}
+				fmt.Fprintln(os.Stderr, "")
+				fmt.Fprintln(os.Stderr, "AI Capabilities enabled.")
+				fmt.Fprintln(os.Stderr, "Close any open FalconPulsar Web UI sessions and sign in again to see the AI features, then configure LLM providers in Settings > AI Configuration.")
 				return nil
 			},
 		},
 		&cobra.Command{
 			Use:   "disable",
-			Short: "Disable AI Capabilities (stops the container, hides AI features in the UI)",
+			Short: "Disable AI Capabilities (surgical: removes container, data dir, gateway.yaml, FP_API_KEY, and image)",
 			RunE: func(cmd *cobra.Command, args []string) error {
+				ctx := context.Background()
+
+				// Admin auth required every time (matches macOS / Windows).
+				if _, _, _, err := auth.PromptAdminWithRetry(ctx,
+					"Admin credentials are required to disable AI Capabilities.", 3); err != nil {
+					return err
+				}
+
 				if err := actions.SetEnvValue("FP_AI_GATEWAY_ENABLED", "false"); err != nil {
 					return err
 				}
-				fmt.Fprintln(os.Stderr, "AI Capabilities disabled. Restarting stack…")
-				ctx := context.Background()
-				// Stop gateway explicitly first, then restart without profile
-				_ = actions.Compose(ctx, nil, nil, "stop", "ai-gateway")
-				return actions.Compose(ctx, os.Stdout, os.Stderr, "up", "-d")
+
+				fmt.Fprintln(os.Stderr, "Disabling AI Capabilities…")
+				// Surgical teardown: container + bind-mount data dir +
+				// gateway.yaml + FP_API_KEY + image. Core/UI untouched.
+				if err := actions.SurgicalDisableAI(ctx, os.Stderr); err != nil {
+					return err
+				}
+				fmt.Fprintln(os.Stderr, "")
+				fmt.Fprintln(os.Stderr, "AI Capabilities disabled and removed.")
+				return nil
 			},
 		},
 	)
@@ -344,24 +379,76 @@ func cmdRequestFeature() *cobra.Command {
 }
 
 func cmdUninstall() *cobra.Command {
-	return &cobra.Command{
+	var purge bool
+	var yes bool
+	cmd := &cobra.Command{
 		Use:   "uninstall",
-		Short: "Run the FalconPulsar uninstaller",
+		Short: "Run the FalconPulsar uninstaller (interactive by default)",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Look for uninstall.sh next to the stack; fall back to system path.
 			candidates := []string{
 				filepath.Join(actions.HomeDir(), "uninstall.sh"),
 				"/usr/local/share/falconpulsar/uninstall.sh",
 			}
+			var script string
 			for _, p := range candidates {
 				if _, err := os.Stat(p); err == nil {
-					return actions.EditFile(p) // opens for review; user runs it manually
+					script = p
+					break
 				}
 			}
-			fmt.Fprintln(os.Stderr, "Uninstaller not found. Re-run the installer and choose Uninstall there.")
-			return nil
+			if script == "" {
+				fmt.Fprintln(os.Stderr, "Uninstaller not found at ~/falconpulsar/uninstall.sh.")
+				fmt.Fprintln(os.Stderr, "Re-run the installer to restore it, or run it directly from the installer source tree.")
+				return nil
+			}
+
+			// Run the uninstaller with the user's flags. --yes is required
+			// when --purge is set so the interactive "are you sure?" block
+			// doesn't fire, but the bash script still gates on admin auth
+			// (prompts directly on stdin) unless --force is passed.
+			script = copyToTemp(script)
+			defer os.Remove(script)
+
+			scriptArgs := []string{script}
+			if purge {
+				scriptArgs = append(scriptArgs, "--purge")
+			} else {
+				scriptArgs = append(scriptArgs, "--keep")
+			}
+			if yes {
+				scriptArgs = append(scriptArgs, "--yes")
+			}
+			fmt.Fprintln(os.Stderr, "Launching uninstaller…")
+			fmt.Fprintln(os.Stderr, "")
+
+			sh := exec.Command("bash", scriptArgs...)
+			sh.Dir = "/"
+			sh.Stdin = os.Stdin
+			sh.Stdout = os.Stdout
+			sh.Stderr = os.Stderr
+			return sh.Run()
 		},
 	}
+	cmd.Flags().BoolVar(&purge, "purge", false, "Remove database and all data (not just the application)")
+	cmd.Flags().BoolVar(&yes, "yes", false, "Non-interactive; assume yes to confirmation prompts")
+	return cmd
+}
+
+// copyToTemp duplicates the uninstall script to /tmp so bash doesn't die when
+// the script's parent directory gets wiped mid-execution.
+func copyToTemp(src string) string {
+	dst := filepath.Join("/tmp", fmt.Sprintf("fp-uninstall-%d.sh", os.Getpid()))
+	if data, err := os.ReadFile(src); err == nil {
+		_ = os.WriteFile(dst, data, 0700)
+		// Also copy auth.sh alongside if present, so the standalone
+		// uninstaller can still require admin credentials.
+		if auth, err := os.ReadFile(filepath.Join(filepath.Dir(src), "auth.sh")); err == nil {
+			_ = os.WriteFile(filepath.Join("/tmp", "auth.sh"), auth, 0600)
+		}
+		return dst
+	}
+	return src
 }
 
 // ── small ANSI helpers ─────────────────────────────────────────────────────

@@ -159,7 +159,58 @@ log_step "checking for existing installation"
 fp_detect_existing_install "$FP_HOME"
 if fp_has_existing_install; then
     fp_prompt_existing_action "$FP_HOME"
+
+    # Admin authentication gate — upgrades and reinstalls can overwrite a
+    # running production stack, so require the existing admin's password.
+    # Non-interactive path: if the Inno Setup installer passed FP_ADMIN_USER
+    # and FP_ADMIN_PASS, verify them once. Otherwise prompt interactively.
+    if [ "${FP_FORCE:-0}" != "1" ] && \
+       { [ "${FP_INSTALL_ACTION:-}" = "upgrade" ] || [ "${FP_INSTALL_ACTION:-}" = "reinstall" ]; } && \
+       [ -f "${REPO_ROOT}/shared/lib/auth.sh" ]; then
+        log_step "authorizing ${FP_INSTALL_ACTION}"
+        # shellcheck source=../shared/lib/auth.sh
+        . "${REPO_ROOT}/shared/lib/auth.sh"
+        auth_rc=0
+        if [ -n "${FP_ADMIN_USER:-}" ] && [ -n "${FP_ADMIN_PASS:-}" ]; then
+            fp_verify_admin_credentials "$FP_ADMIN_USER" "$FP_ADMIN_PASS" || auth_rc=$?
+        else
+            fp_authenticate_admin 3 || auth_rc=$?
+        fi
+        case "$auth_rc" in
+            0) ;;
+            2)
+                if [ "${FP_ASSUME_YES:-0}" = "1" ]; then
+                    log_warn "Core unreachable — proceeding because --yes (or FP_ASSUME_YES=1) was supplied."
+                else
+                    printf '\nFalconPulsar Core is not running, so the admin password cannot be verified.\n' >&2
+                    printf 'To authorize this %s anyway, type exactly YES (uppercase): ' "${FP_INSTALL_ACTION}" >&2
+                    confirm=''
+                    read -r confirm </dev/tty 2>/dev/null || confirm=''
+                    if [ "$confirm" != 'YES' ]; then
+                        die "confirmation not received — aborting ${FP_INSTALL_ACTION}"
+                    fi
+                fi
+                ;;
+            *) die "admin authentication failed — aborting ${FP_INSTALL_ACTION}" ;;
+        esac
+    fi
+
     fp_apply_existing_action "$FP_HOME"
+
+    # Refresh uninstall.sh + auth.sh BEFORE the fast-path. Otherwise every
+    # upgrade keeps the user's old (potentially broken) uninstaller on disk.
+    # Mirrors the same fix in macos/install.sh.
+    if [ -f "${SCRIPT_DIR}/uninstall.sh" ] && [ -d "${FP_HOME}" ]; then
+        install -m 0755 -o "${FP_USER}" -g "${FP_USER}" \
+            "${SCRIPT_DIR}/uninstall.sh" "${FP_HOME}/uninstall.sh" 2>/dev/null || \
+            cp "${SCRIPT_DIR}/uninstall.sh" "${FP_HOME}/uninstall.sh" 2>/dev/null || true
+        if [ -f "${REPO_ROOT}/shared/lib/auth.sh" ]; then
+            install -m 0644 -o "${FP_USER}" -g "${FP_USER}" \
+                "${REPO_ROOT}/shared/lib/auth.sh" "${FP_HOME}/auth.sh" 2>/dev/null || \
+                cp "${REPO_ROOT}/shared/lib/auth.sh" "${FP_HOME}/auth.sh" 2>/dev/null || true
+        fi
+    fi
+
     if fp_try_upgrade_fastpath "$FP_HOME"; then
         log_success "Upgrade complete."
         fp_install_cli "$FP_HOME" "${FP_VERSION:-0.1.0}"
@@ -326,9 +377,7 @@ FP_PUBSUB_PORT=${FP_PUBSUB_PORT}
 FP_GATEWAY_PORT=${FP_GATEWAY_PORT}
 FP_UI_PORT=${FP_UI_PORT}
 FP_LOG_LEVEL=${FP_LOG_LEVEL}
-FP_AI_GATEWAY_ENABLED=${FP_AI_GATEWAY_ENABLED:-true}
-ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
-XAI_API_KEY=${XAI_API_KEY:-}
+FP_AI_GATEWAY_ENABLED=${FP_AI_GATEWAY_ENABLED:-false}
 EOF
 chown "${FP_USER}:${FP_USER}" "${FP_HOME}/.env"
 chmod 0600 "${FP_HOME}/.env"
@@ -342,7 +391,7 @@ log_step "step 7/8 — pulling images and starting stack"
 # We use sg here because the falconpulsar user was just added to the docker
 # group in this same session and the new GID isn't in their existing process
 # table yet. `sg docker -c ...` gives us a fresh group context immediately.
-sudo -u "$FP_USER" -H sg docker -c "cd '${FP_HOME}' && docker compose pull"
+fp_compose_pull_with_retry "$FP_HOME" 3 "$FP_USER"
 
 # ── 7a. Start core only with FP_ADMIN_PASS injected from this shell ────────
 # We deliberately do NOT write FP_ADMIN_PASS to .env. Instead we pass it

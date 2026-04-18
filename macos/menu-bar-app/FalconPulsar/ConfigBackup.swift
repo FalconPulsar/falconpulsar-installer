@@ -60,7 +60,7 @@ enum ConfigBackup {
         var errorDescription: String? {
             switch self {
             case .loginFailed(let m):   return "Login failed: \(m)"
-            case .notAdmin:             return "Only administrator accounts can export or import configuration."
+            case .notAdmin:             return "This account is not an administrator. Ask your administrator for help."
             case .apiError(let m):      return "API error: \(m)"
             case .fileError(let m):     return "File error: \(m)"
             case .encryptError(let m):  return "Encryption error: \(m)"
@@ -86,11 +86,30 @@ enum ConfigBackup {
             "username": username,
             "password": password
         ])
-        let (data, token) = try syncRequest(req)
+        // Remap login-endpoint failures to actionable messages. 401 = wrong credentials
+        // (the most common case); other statuses mean Core is up but unhappy; a thrown
+        // URLError typically means Core is not reachable at all.
+        let data: Data
+        let token: String?
+        do {
+            (data, token) = try syncRequest(req)
+        } catch let BackupError.apiError(msg) {
+            if msg == "HTTP 401" {
+                throw BackupError.loginFailed("Incorrect username or password.")
+            }
+            if msg == "HTTP 403" {
+                throw BackupError.loginFailed("Access denied.")
+            }
+            throw BackupError.loginFailed(
+                "Cannot reach FalconPulsar Core (\(msg)). Check that the stack is running.")
+        } catch {
+            throw BackupError.loginFailed(
+                "Cannot reach FalconPulsar Core at http://localhost:7433.")
+        }
         guard let tokenString = token ?? (try? JSONSerialization.jsonObject(with: data)
                                     as? [String: Any])?["token"] as? String,
               !tokenString.isEmpty else {
-            throw BackupError.loginFailed("no token returned")
+            throw BackupError.loginFailed("No token returned by server.")
         }
 
         // Verify role
@@ -137,7 +156,7 @@ enum ConfigBackup {
 
     static func deriveKey(username: String, password: String, salt: Data) throws -> SymmetricKey {
         let passphrase = "\(username):\(password)"
-        guard let passData = passphrase.data(using: .utf8) else {
+        guard var passData = passphrase.data(using: .utf8) else {
             throw BackupError.encryptError("invalid password encoding")
         }
         var derived = Data(count: 32)
@@ -153,6 +172,14 @@ enum ConfigBackup {
                         derivedPtr.baseAddress?.assumingMemoryBound(to: UInt8.self),
                         32)
                 }
+            }
+        }
+        // Best-effort wipe of the cleartext passphrase buffer. Swift's
+        // String storage is reference-counted and we can't reach it, but
+        // the Data we built is ours to clear.
+        passData.withUnsafeMutableBytes { ptr in
+            if let base = ptr.baseAddress {
+                memset_s(base, ptr.count, 0, ptr.count)
             }
         }
         guard status == 0 else {

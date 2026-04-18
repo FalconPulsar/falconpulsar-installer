@@ -49,6 +49,8 @@ trap 'on_error $LINENO 2>/dev/null || true' ERR
 
 FP_HOME="${FP_HOME:-${HOME}/falconpulsar}"
 FP_PURGE=""
+FP_FORCE=0
+FP_LOG_FILE="${FP_LOG_FILE:-/tmp/falconpulsar-install.log}"
 export FP_ASSUME_YES="${FP_ASSUME_YES:-0}"
 
 while [ $# -gt 0 ]; do
@@ -57,6 +59,7 @@ while [ $# -gt 0 ]; do
         --purge)  FP_PURGE=1; shift ;;
         --keep)   FP_PURGE=0; shift ;;
         -y|--yes) FP_ASSUME_YES=1; shift ;;
+        --force)  FP_FORCE=1; shift ;;
         -h|--help)
             cat <<'EOF'
 Usage: uninstall.sh [options]
@@ -64,12 +67,89 @@ Usage: uninstall.sh [options]
   --purge         Remove everything including database
   --keep          Keep data, remove application only
   --yes, -y       Assume yes to all prompts
+  --force         Skip admin authentication (emergency use only)
 EOF
             exit 0
             ;;
         *) die "unknown argument: $1 (try --help)" ;;
     esac
 done
+
+# Admin authentication gate — load the shared helper and prompt. Anyone with
+# shell access on this machine could otherwise `bash uninstall.sh --purge` and
+# wipe the stack, so we require the FalconPulsar admin password first.
+# --force bypasses for emergencies (e.g. Core is broken).
+if [ "$FP_FORCE" = "1" ]; then
+    log_warn "--force supplied: skipping admin authentication"
+else
+    # Look in several locations so the uninstaller works both when run from
+    # the installer repo and when run standalone (dropped into ~/falconpulsar
+    # alongside auth.sh at install time).
+    AUTH_SH=""
+    for candidate in \
+        "${SCRIPT_DIR}/auth.sh" \
+        "${REPO_ROOT}/shared/lib/auth.sh"; do
+        if [ -f "$candidate" ]; then AUTH_SH="$candidate"; break; fi
+    done
+    if [ -n "$AUTH_SH" ]; then
+        # shellcheck disable=SC1090
+        . "$AUTH_SH"
+        # Capture return code without tripping errexit (set -e).
+        auth_rc=0
+        fp_authenticate_admin 3 || auth_rc=$?
+        case "$auth_rc" in
+            0) ;;  # authenticated — continue
+            2)
+                # Core not reachable. Most likely the user already stopped
+                # the stack before uninstalling. We have no way to verify
+                # the admin password, so fall back to an explicit bypass
+                # confirmation (or allow --yes to imply it for automation).
+                if [ "$FP_ASSUME_YES" = "1" ]; then
+                    log_warn "Core unreachable — proceeding because --yes was supplied."
+                else
+                    printf '\n' >&2
+                    printf 'FalconPulsar Core is not running, so the admin password cannot be verified.\n' >&2
+                    printf 'To authorize this uninstall anyway, type exactly YES (uppercase): ' >&2
+                    confirm=''
+                    read -r confirm </dev/tty 2>/dev/null || confirm=''
+                    if [ "$confirm" != 'YES' ]; then
+                        printf '[error] Confirmation not received — aborting.\n' >&2
+                        exit 1
+                    fi
+                fi
+                ;;
+            *)
+                # Any other non-zero: wrong password, user cancelled, too
+                # many attempts, or curl missing. Abort without cleanup.
+                exit 1
+                ;;
+        esac
+    else
+        log_warn "auth.sh not found — proceeding without admin auth"
+    fi
+fi
+
+# Append a run marker to the install log so the user can see a single
+# audit trail of installation + uninstallation. Best-effort only — if the
+# log file can't be written to (wrong permissions, disk full, etc.) we do
+# NOT let that break the uninstall itself.
+#
+# Note: earlier versions tried `exec > >(tee -a "$FP_LOG_FILE") 2>&1` to
+# capture every subsequent stdout line, but if tee couldn't open the file
+# it died and the next write hit SIGPIPE — which, combined with `set -o
+# errexit`, aborted the script silently before image/volume cleanup ran.
+# Instead we just write explicit begin/end markers and let the rest of
+# the script log to the terminal as it always has.
+# Rotate if > 5 MiB, ensure 0600 permissions — log contains admin usernames
+# and partial error output. Helper defined in shared/lib/common.sh.
+if declare -f fp_rotate_log >/dev/null 2>&1; then
+    fp_rotate_log "$FP_LOG_FILE"
+fi
+{
+    printf '\n=== %s  uninstall (platform=macos, pid=%d, mode=%s) ===\n' \
+        "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$$" \
+        "$([ "$FP_PURGE" = "1" ] && echo purge || echo keep)"
+} >> "$FP_LOG_FILE" 2>/dev/null || true
 
 # If not specified via flags, ask the user
 if [ -z "$FP_PURGE" ]; then
@@ -219,4 +299,14 @@ if [ "$FP_PURGE" = "0" ] && [ -d "${FP_HOME}/data" ]; then
     echo "  Your database is preserved at: ${FP_HOME}/data"
     echo "  Reinstall FalconPulsar to resume using your existing data."
     echo ""
+fi
+
+# Close the run marker and surface the full install log so the user has a
+# single record of everything that happened (install → uninstall).
+printf '=== end ===\n' >> "$FP_LOG_FILE" 2>/dev/null || true
+echo ""
+echo "  Full log: $FP_LOG_FILE"
+if [ "$FP_ASSUME_YES" != "1" ] && command -v open >/dev/null 2>&1; then
+    # Best-effort; silently ignore if the user has no default text editor.
+    open -t "$FP_LOG_FILE" 2>/dev/null || open "$FP_LOG_FILE" 2>/dev/null || true
 fi

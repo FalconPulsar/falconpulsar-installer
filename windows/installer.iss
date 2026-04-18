@@ -151,7 +151,8 @@ Source: "..\README.md";                                     DestDir: "{app}";   
 [Tasks]
 Name: "aigateway"; \
     Description: "Install AI Capabilities (requires an LLM API key or local Ollama — can be enabled later with fp ai enable)"; \
-    GroupDescription: "AI Capabilities:"
+    GroupDescription: "AI Capabilities:"; \
+    Flags: unchecked
 Name: "addtopath"; \
     Description: "Add fp console to my PATH (lets you run ""fp"" from PowerShell anywhere)"; \
     GroupDescription: "fp console CLI:"; \
@@ -661,8 +662,12 @@ begin
 
     if IsUpgrade and (InstallAction = 'upgrade') then
     begin
-      AdminUserArg := '-AdminUser "admin"';
-      AdminPassArg := '-AdminPass "upgrade-placeholder"';
+      // Admin credentials now come from the credentials page (which is no
+      // longer skipped on upgrade), so install.sh can verify them against
+      // Core before overwriting the stack. Registry config is unchanged
+      // from the existing install and is skipped.
+      AdminUserArg := '-AdminUser "' + CredUserEdit.Text + '"';
+      AdminPassArg := '-AdminPass "' + CredPassEdit.Text + '"';
       RegistryArg := '-Registry "falconpulsar"';
       RegistryUserArg := '';
       RegistryPassArg := '';
@@ -1788,16 +1793,17 @@ begin
       Result := True;
   end;
 
-  // Only skip pages when upgrading in place. Reinstall + Fresh need the
-  // user to re-enter credentials (and legal on fresh).
+  // Only skip legal + registry when upgrading in place. We still show the
+  // credentials page so the user can type the existing admin password —
+  // install.sh will verify it against Core before overwriting the stack.
   if IsUpgrade and (InstallAction = 'upgrade') then
   begin
     if (LegalPage <> nil) and (PageID = LegalPage.ID) then
       Result := True;
     if (RegistryPage <> nil) and (PageID = RegistryPage.ID) then
       Result := True;
-    if (CredentialsPage <> nil) and (PageID = CredentialsPage.ID) then
-      Result := True;
+    // Credentials page intentionally NOT skipped on upgrade — we need the
+    // user to enter the existing admin password for auth verification.
   end;
   // Reinstall skips legal (already accepted) but shows registry + credentials
   if IsUpgrade and (InstallAction = 'reinstall') then

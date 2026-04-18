@@ -5,7 +5,10 @@ struct InstallerView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Page content
+            // Page content — overlay a small FalconPulsar logo in the top-right
+            // corner of every wizard page to match the Windows installer's
+            // branding. The Welcome page shows a large centered logo of its
+            // own; suppress the corner one there to avoid duplication.
             Group {
                 switch state.currentPage {
                 case .welcome: WelcomePage(state: state)
@@ -18,6 +21,18 @@ struct InstallerView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .overlay(alignment: .topTrailing) {
+                if state.currentPage != .welcome, let img = LogoData.image {
+                    Image(nsImage: img)
+                        .resizable()
+                        .interpolation(.high)
+                        .aspectRatio(contentMode: .fit)
+                        .frame(width: 56, height: 56)
+                        .padding(.top, 14)
+                        .padding(.trailing, 18)
+                        .allowsHitTesting(false)
+                }
+            }
 
             Divider()
 

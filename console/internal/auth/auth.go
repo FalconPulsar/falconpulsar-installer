@@ -50,3 +50,27 @@ func PromptAdmin(ctx context.Context, reason string) (*api.Client, string, strin
 	}
 	return cli, user, pass, nil
 }
+
+// PromptAdminWithRetry wraps PromptAdmin with an inline-error retry loop. On
+// each failed attempt it prints the error to stderr and re-prompts, up to
+// maxAttempts. After exhaustion it returns the last error along with a final
+// "too many attempts" message. Mirrors the macOS authenticateWithRetry and
+// Windows AuthenticateWithRetryAsync helpers.
+func PromptAdminWithRetry(ctx context.Context, reason string, maxAttempts int) (*api.Client, string, string, error) {
+	if maxAttempts < 1 {
+		maxAttempts = 3
+	}
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		cli, user, pass, err := PromptAdmin(ctx, reason)
+		if err == nil {
+			return cli, user, pass, nil
+		}
+		lastErr = err
+		if attempt < maxAttempts {
+			fmt.Fprintf(os.Stderr, "[error] %s\n\n", err.Error())
+		}
+	}
+	fmt.Fprintf(os.Stderr, "\n[error] Too many failed attempts — aborting.\n")
+	return nil, "", "", lastErr
+}

@@ -24,6 +24,9 @@ class AppActivator: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        // Kill any in-flight install.sh so it doesn't orphan-leak.
+        InstallRunner.killActiveProcess()
+
         let bundlePath = Bundle.main.bundlePath
         let lsregister = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
         let task = Process()

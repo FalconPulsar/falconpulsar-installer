@@ -269,7 +269,7 @@ prompt_ai_gateway() {
     printf '(Anthropic, xAI, OpenAI-compatible) or a locally running Ollama instance.\n\n' >&2
     printf 'If you do not have a GPU or LLM API key, you can skip this and enable it\n' >&2
     printf 'later with: %sfp ai enable%s\n\n' "${FP_C_CYAN}" "${FP_C_RESET}" >&2
-    if confirm "Install AI Capabilities?" default-yes; then
+    if confirm "Install AI Capabilities?" default-no; then
         FP_AI_GATEWAY_ENABLED=true
     else
         FP_AI_GATEWAY_ENABLED=false

@@ -27,7 +27,8 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)] [string] $Distro,
-    [switch] $Purge
+    [switch] $Purge,
+    [switch] $Force
 )
 
 $ErrorActionPreference = 'Continue'
@@ -45,6 +46,25 @@ if (-not (Test-WslDistroPresent -Name $Distro)) {
     Write-Warn "Distro $Distro is not registered -- nothing to uninstall on the WSL side"
     exit 0
 }
+
+# Admin authentication gate — require the FalconPulsar admin password before
+# any destructive action. -Force bypasses for emergencies (broken Core).
+if ($Force) {
+    Write-Warn '-Force supplied: skipping admin authentication'
+} else {
+    $authed = Assert-AdminAuth `
+        -Title 'Uninstall FalconPulsar' `
+        -Message 'Enter admin credentials to authorize uninstallation. This prevents accidental removal of the stack.'
+    if (-not $authed) {
+        Write-Warn 'Uninstallation cancelled by user (or admin authentication failed).'
+        exit 1
+    }
+}
+
+# Write a run marker so the user can read a single audit trail of install + uninstall.
+$modeTag = if ($Purge) { 'purge' } else { 'keep' }
+Write-FpLogLine ''
+Write-FpLogLine ("=== {0:O}  uninstall (platform=windows, pid={1}, mode={2}) ===" -f (Get-Date).ToUniversalTime(), $PID, $modeTag)
 
 if ($Purge) {
     Write-Info 'Mode: FULL REMOVAL (containers + data + user)'
@@ -149,5 +169,15 @@ Write-Output '[ok] Uninstall complete'
 if (-not $Purge) {
     Write-Output '  Your database is preserved at /home/falconpulsar/data'
     Write-Output '  Reinstall FalconPulsar to resume using your existing data.'
+}
+
+# Close the run marker and surface the install log so the user has the
+# complete record (installation → uninstallation) in one place.
+Write-FpLogLine '=== end ==='
+Write-Output ''
+Write-Output "  Full log: $Script:FpLogPath"
+# Open the log in Notepad so the user can read it immediately.
+if (Test-Path $Script:FpLogPath) {
+    try { Start-Process -FilePath 'notepad.exe' -ArgumentList $Script:FpLogPath -ErrorAction SilentlyContinue } catch { }
 }
 exit 0
