@@ -4,7 +4,7 @@ import UniformTypeIdentifiers
 import UserNotifications
 
 enum StackStatus {
-    case unknown, running, partiallyRunning, stopped
+    case unknown, running, partiallyRunning, stopped, dockerDown
 }
 
 class AppDelegate: NSObject, NSApplicationDelegate {
@@ -19,6 +19,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var coreRunning = false
     private var uiRunning = false
     private var gatewayRunning = false
+    private var dockerDaemonUp = false
     private var apiHealthy = false
     private var status: StackStatus = .unknown
 
@@ -201,6 +202,36 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         let aiEnabled = isAIGatewayEnabled()
 
+        // When Docker itself is off, collapse the 4 status rows to a single
+        // actionable message. Four separate red "Stopped" lines hides the
+        // real problem (Docker Desktop is not running).
+        if !dockerDaemonUp {
+            let titles = [
+                "Docker is not running",
+                "Start Docker, then click Refresh Status",
+                "",
+                ""
+            ]
+            for i in 0..<4 {
+                guard let item = menu.item(at: i + 2) else { continue }
+                let attr = NSMutableAttributedString()
+                if i == 0 {
+                    attr.append(NSAttributedString(
+                        string: "● ",
+                        attributes: [.foregroundColor: NSColor.systemRed,
+                                     .font: NSFont.systemFont(ofSize: 14)]))
+                }
+                attr.append(NSAttributedString(
+                    string: titles[i],
+                    attributes: [.font: NSFont.systemFont(ofSize: 13)]))
+                item.attributedTitle = attr
+            }
+            menu.item(at: 8)?.isEnabled = false
+            menu.item(at: 9)?.isEnabled = false
+            menu.item(at: 10)?.isEnabled = false
+            return
+        }
+
         // Status items are at indices 2-5 (after header + separator)
         let statuses: [(Bool, String)] = [
             (coreRunning, "Core"),
@@ -263,6 +294,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             dotColor = CGColor(red: 0.92, green: 0.70, blue: 0.03, alpha: 1)
         case .stopped:
             tooltip = "FalconPulsar: Stopped"
+            dotColor = CGColor(red: 0.94, green: 0.27, blue: 0.27, alpha: 1)
+        case .dockerDown:
+            tooltip = "FalconPulsar: Docker is not running"
             dotColor = CGColor(red: 0.94, green: 0.27, blue: 0.27, alpha: 1)
         case .unknown:
             tooltip = "FalconPulsar: Checking…"
@@ -349,28 +383,46 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self = self else { return }
 
-            self.coreRunning = self.isContainerRunning("falconpulsar-core")
-            self.uiRunning = self.isContainerRunning("falconpulsar-ui")
-            self.gatewayRunning = self.isContainerRunning("falconpulsar-ai-gateway")
-            self.apiHealthy = self.isAPIHealthy()
+            // Check the Docker daemon itself BEFORE asking about containers.
+            // If Docker Desktop / Colima / OrbStack is off, every container
+            // query below returns false and we used to report "Stopped" —
+            // confusing because the user might think FalconPulsar is broken
+            // when the real cause is that Docker isn't running.
+            self.dockerDaemonUp = self.isDockerDaemonRunning()
+
+            if self.dockerDaemonUp {
+                self.coreRunning = self.isContainerRunning("falconpulsar-core")
+                self.uiRunning = self.isContainerRunning("falconpulsar-ui")
+                self.gatewayRunning = self.isContainerRunning("falconpulsar-ai-gateway")
+                self.apiHealthy = self.isAPIHealthy()
+            } else {
+                self.coreRunning = false
+                self.uiRunning = false
+                self.gatewayRunning = false
+                self.apiHealthy = false
+            }
 
             let prev = self.status
             let aiEnabled = self.isAIGatewayEnabled()
-            let allExpectedRunning: Bool
-            if aiEnabled {
-                allExpectedRunning = self.coreRunning && self.uiRunning && self.gatewayRunning
+            if !self.dockerDaemonUp {
+                self.status = .dockerDown
             } else {
-                allExpectedRunning = self.coreRunning && self.uiRunning
-            }
-            let anyRunning = self.coreRunning || self.uiRunning || (aiEnabled && self.gatewayRunning)
-            if allExpectedRunning && self.apiHealthy {
-                self.status = .running
-            } else if allExpectedRunning {
-                self.status = .partiallyRunning
-            } else if anyRunning {
-                self.status = .partiallyRunning
-            } else {
-                self.status = .stopped
+                let allExpectedRunning: Bool
+                if aiEnabled {
+                    allExpectedRunning = self.coreRunning && self.uiRunning && self.gatewayRunning
+                } else {
+                    allExpectedRunning = self.coreRunning && self.uiRunning
+                }
+                let anyRunning = self.coreRunning || self.uiRunning || (aiEnabled && self.gatewayRunning)
+                if allExpectedRunning && self.apiHealthy {
+                    self.status = .running
+                } else if allExpectedRunning {
+                    self.status = .partiallyRunning
+                } else if anyRunning {
+                    self.status = .partiallyRunning
+                } else {
+                    self.status = .stopped
+                }
             }
 
             DispatchQueue.main.async {
@@ -382,6 +434,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
         }
+    }
+
+    /// Probe the Docker daemon directly. True when `docker info` succeeds,
+    /// false if Docker Desktop / Colima / OrbStack is off.
+    private func isDockerDaemonRunning() -> Bool {
+        let output = shell("docker info --format '{{.ServerVersion}}' 2>/dev/null")
+        return !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private func isContainerRunning(_ name: String) -> Bool {
@@ -813,6 +872,26 @@ class AppDelegate: NSObject, NSApplicationDelegate {
               level: "INFO"
             """
             try? cfg.write(toFile: p, atomically: true, encoding: .utf8)
+        }
+        // Defensive: sanitise CRLF + UTF-8 BOM in gateway.yaml. macOS
+        // wouldn't normally produce these, but an imported config backup
+        // or an edit from a Windows editor could — and Python's
+        // yaml.safe_load in the ai-gateway container raises a ReaderError
+        // on \r bytes, crashing the container on start.
+        if let data = try? Data(contentsOf: URL(fileURLWithPath: p)) {
+            var bytes = [UInt8](data)
+            var mutated = false
+            // Strip UTF-8 BOM (EF BB BF).
+            if bytes.count >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF {
+                bytes.removeFirst(3)
+                mutated = true
+            }
+            // Strip lone \r bytes (keeping \n) — CRLF becomes LF.
+            let cleaned = bytes.filter { $0 != 0x0D }
+            if cleaned.count != bytes.count { mutated = true }
+            if mutated {
+                try? Data(cleaned).write(to: URL(fileURLWithPath: p))
+            }
         }
     }
 

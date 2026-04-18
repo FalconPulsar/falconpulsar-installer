@@ -135,11 +135,16 @@ Source: "tray-app\publish\FalconPulsarTray.exe";            DestDir: "{app}";   
 
 ; ── fp console CLI ────────────────────────────────────────────────────────
 ; Cross-compiled by CI from console/ via `GOOS=windows GOARCH=amd64`.
-; Drops fp.exe into %LOCALAPPDATA%\falconpulsar\bin\ so everything stays
-; under the stack's own folder (user-level install, no admin needed).
+; Drops fp.exe (the WSL-forwarding wrapper) into %LOCALAPPDATA%\falconpulsar\bin\
+; so everything stays under the stack's own folder (user-level install, no
+; admin needed). The real Linux `fp` binary is bundled alongside and staged
+; into /home/falconpulsar/bin/fp by 40-run-fp-installer.ps1 during install.
 Source: "..\console\dist\fp-windows-amd64.exe"; \
     DestDir: "{localappdata}\falconpulsar\bin"; \
     DestName: "fp.exe"; \
+    Flags: ignoreversion
+Source: "..\console\dist\fp-linux-amd64"; \
+    DestDir: "{app}"; \
     Flags: ignoreversion
 
 ; ── Assets + reference files ────────────────────────────────────────────────

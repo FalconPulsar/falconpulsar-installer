@@ -271,5 +271,28 @@ $winEnvPath = Join-Path $winEnvDir '.env'
 Set-Content -Path $winEnvPath -Value "FP_AI_GATEWAY_ENABLED=$AIGateway"
 Write-Info "Mirrored AI flag to $winEnvPath"
 
+# Stage the Linux fp binary into WSL so the Windows fp.exe wrapper has
+# something to exec. The wrapper does:
+#   wsl.exe -d <distro> -u falconpulsar --cd /home/falconpulsar -e /home/falconpulsar/bin/fp <args>
+$fpLinuxSrc = Join-Path $InstallDir 'fp-linux-amd64'
+if (Test-Path $fpLinuxSrc) {
+    $fpLinuxInWsl = ConvertTo-WslPath -WindowsPath $fpLinuxSrc
+    $stageFpScript = @"
+set -e
+install -d -m 0755 -o falconpulsar -g falconpulsar /home/falconpulsar/bin
+install -m 0755 -o falconpulsar -g falconpulsar '$fpLinuxInWsl' /home/falconpulsar/bin/fp
+echo '[ok] Linux fp binary installed at /home/falconpulsar/bin/fp'
+"@
+    $null = Invoke-WslBash -Distro $Distro -Script $stageFpScript -User root
+} else {
+    Write-Warn "Linux fp binary not found at $fpLinuxSrc — fp.exe wrapper will error until fp is installed in WSL."
+}
+
+# Write the sentinel so fp.exe (and the tray) can auto-discover the distro
+# without guessing.
+$sentinel = Join-Path $env:TEMP 'falconpulsar-distro.txt'
+Set-Content -Path $sentinel -Value $Distro -Encoding ASCII
+Write-Info "Wrote distro sentinel: $sentinel"
+
 Write-Output '[ok] FalconPulsar installed inside WSL'
 exit 0

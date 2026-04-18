@@ -100,6 +100,39 @@ URL=$Url
 
 New-UrlShortcut -Name 'Open FalconPulsar Web UI' -Url 'http://localhost:8080'
 
+# Relaunch the tray manager (for when the user has quit/killed it).
+$trayExe = Join-Path $InstallDir 'FalconPulsarTray.exe'
+if (Test-Path $trayExe) {
+    $linkPath = Join-Path $groupDir 'FalconPulsar Tray Manager.lnk'
+    $sc = $shell.CreateShortcut($linkPath)
+    $sc.TargetPath   = $trayExe
+    $sc.Description  = 'Relaunch the FalconPulsar tray manager (shows status + stack controls)'
+    $icoPath = Join-Path $InstallDir 'assets\falcon.ico'
+    if (Test-Path $icoPath) {
+        $sc.IconLocation = "$icoPath,0"
+    }
+    $sc.Save()
+    Write-Info 'Created shortcut: FalconPulsar Tray Manager'
+}
+
+# fp console — opens cmd with the fp CLI ready. fp.exe is our wrapper that
+# forwards to the Linux fp inside WSL, so the user sees the same TUI as a
+# native Linux install without switching terminals.
+$fpExe = Join-Path $env:LOCALAPPDATA 'falconpulsar\bin\fp.exe'
+if (Test-Path $fpExe) {
+    $linkPath = Join-Path $groupDir 'FalconPulsar Console.lnk'
+    $sc = $shell.CreateShortcut($linkPath)
+    $sc.TargetPath  = "$env:WINDIR\System32\cmd.exe"
+    $sc.Arguments   = "/k `"$fpExe`" tui"
+    $sc.Description = 'Open the FalconPulsar console (fp TUI)'
+    $icoPath = Join-Path $InstallDir 'assets\falcon.ico'
+    if (Test-Path $icoPath) {
+        $sc.IconLocation = "$icoPath,0"
+    }
+    $sc.Save()
+    Write-Info 'Created shortcut: FalconPulsar Console'
+}
+
 New-WslShortcut -Name 'Start FalconPulsar'   -BashCommand 'cd ~ && docker compose up -d'   -Interactive
 New-WslShortcut -Name 'Stop FalconPulsar'    -BashCommand 'cd ~ && docker compose down'    -Interactive
 New-WslShortcut -Name 'Restart FalconPulsar' -BashCommand 'cd ~ && docker compose restart' -Interactive

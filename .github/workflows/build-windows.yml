@@ -67,17 +67,35 @@ jobs:
         with:
           go-version: '1.22'
 
-      - name: Build fp.exe (bundled by the installer)
+      - name: Build fp.exe wrapper (launches Linux fp inside WSL)
         shell: bash
         env:
           GOOS: windows
           GOARCH: amd64
           CGO_ENABLED: '0'
         run: |
+          # The Windows fp.exe is a tiny wrapper around `wsl.exe` that
+          # forwards every command to the real Linux fp running inside
+          # the user's WSL distro. Previously we cross-compiled the
+          # full Go CLI for Windows, but that binary read state from
+          # C:\Users\…\falconpulsar — which is the wrong filesystem
+          # because the stack lives under /home/falconpulsar in WSL.
+          cd windows/fp-wrapper
+          mkdir -p ../../console/dist
+          go build -ldflags="-s -w" \
+              -o ../../console/dist/fp-windows-amd64.exe .
+          ls -lh ../../console/dist/fp-windows-amd64.exe
+
+      - name: Build Linux fp (staged into WSL at install time)
+        shell: bash
+        env:
+          GOOS: linux
+          GOARCH: amd64
+          CGO_ENABLED: '0'
+        run: |
           cd console
-          mkdir -p dist
-          go build -ldflags="-s -w" -o dist/fp-windows-amd64.exe ./cmd/fp
-          ls -lh dist/fp-windows-amd64.exe
+          go build -ldflags="-s -w" -o dist/fp-linux-amd64 ./cmd/fp
+          ls -lh dist/fp-linux-amd64
 
       - name: Build tray app
         shell: powershell

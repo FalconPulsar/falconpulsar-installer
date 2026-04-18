@@ -33,6 +33,7 @@ namespace FalconPulsar.Tray
         private readonly string _composePath;
 
         private StackStatus _status = StackStatus.Unknown;
+        private bool _dockerDaemonUp;
         private bool _coreRunning;
         private bool _uiRunning;
         private bool _gatewayRunning;
@@ -157,13 +158,9 @@ namespace FalconPulsar.Tray
                 (s, e) => OpenDataFolder()));
             menu.Items.Add(configMenu);
 
-            // AI Capabilities — single toggle
-            if (IsAIGatewayEnabled())
-                menu.Items.Add(new ToolStripMenuItem("Disable AI Capabilities", null,
-                    async (s, e) => await DisableAIGatewayAsync()));
-            else
-                menu.Items.Add(new ToolStripMenuItem("Enable AI Capabilities", null,
-                    async (s, e) => await EnableAIGatewayAsync()));
+            // Order below matches the macOS menu bar exactly so users on
+            // both platforms find items in the same place:
+            //   Config Files → Configuration Backup → Disable/Enable AI
 
             // Configuration Backup submenu (export / import)
             var backupMenu = new ToolStripMenuItem("Configuration Backup");
@@ -172,6 +169,15 @@ namespace FalconPulsar.Tray
             backupMenu.DropDownItems.Add(new ToolStripMenuItem("Import Configuration...", null,
                 async (s, e) => await ImportConfigurationAsync()));
             menu.Items.Add(backupMenu);
+
+            // AI Capabilities — single toggle (after Configuration Backup,
+            // matching macOS menu order)
+            if (IsAIGatewayEnabled())
+                menu.Items.Add(new ToolStripMenuItem("Disable AI Capabilities", null,
+                    async (s, e) => await DisableAIGatewayAsync()));
+            else
+                menu.Items.Add(new ToolStripMenuItem("Enable AI Capabilities", null,
+                    async (s, e) => await EnableAIGatewayAsync()));
 
             menu.Items.Add(new ToolStripSeparator());
 
@@ -207,22 +213,45 @@ namespace FalconPulsar.Tray
 
         private async Task PollHealth()
         {
-            _coreRunning = await IsContainerRunning("falconpulsar-core");
-            _uiRunning = await IsContainerRunning("falconpulsar-ui");
-            _gatewayRunning = await IsContainerRunning("falconpulsar-ai-gateway");
-            _apiHealthy = await IsApiHealthy();
+            // First check: is the Docker daemon itself reachable? If not,
+            // every container query below returns false and we used to
+            // report "Stopped" — misleading because the user might think
+            // FalconPulsar has a problem when Docker Desktop is just off.
+            _dockerDaemonUp = await IsDockerDaemonRunning();
+
+            if (_dockerDaemonUp)
+            {
+                _coreRunning = await IsContainerRunning("falconpulsar-core");
+                _uiRunning = await IsContainerRunning("falconpulsar-ui");
+                _gatewayRunning = await IsContainerRunning("falconpulsar-ai-gateway");
+                _apiHealthy = await IsApiHealthy();
+            }
+            else
+            {
+                _coreRunning = false;
+                _uiRunning = false;
+                _gatewayRunning = false;
+                _apiHealthy = false;
+            }
 
             // Determine overall status — exclude disabled gateway from aggregate
             var prev = _status;
             var aiEnabled = IsAIGatewayEnabled();
-            var allExpected = _coreRunning && _uiRunning && (!aiEnabled || _gatewayRunning);
-            var anyRunning = _coreRunning || _uiRunning || (aiEnabled && _gatewayRunning);
-            if (allExpected && _apiHealthy)
-                _status = StackStatus.Running;
-            else if (anyRunning)
-                _status = StackStatus.PartiallyRunning;
+            if (!_dockerDaemonUp)
+            {
+                _status = StackStatus.Error;   // Docker Desktop / WSL docker is down
+            }
             else
-                _status = StackStatus.Stopped;
+            {
+                var allExpected = _coreRunning && _uiRunning && (!aiEnabled || _gatewayRunning);
+                var anyRunning = _coreRunning || _uiRunning || (aiEnabled && _gatewayRunning);
+                if (allExpected && _apiHealthy)
+                    _status = StackStatus.Running;
+                else if (anyRunning)
+                    _status = StackStatus.PartiallyRunning;
+                else
+                    _status = StackStatus.Stopped;
+            }
 
             UpdateUI();
 
@@ -260,6 +289,10 @@ namespace FalconPulsar.Tray
                     color = Color.FromArgb(239, 68, 68); // red
                     tooltip = "FalconPulsar: Stopped";
                     break;
+                case StackStatus.Error:
+                    color = Color.FromArgb(239, 68, 68); // red
+                    tooltip = "FalconPulsar: Docker Desktop is not running";
+                    break;
                 default:
                     color = Color.Gray;
                     tooltip = "FalconPulsar: Checking...";
@@ -268,28 +301,73 @@ namespace FalconPulsar.Tray
             _trayIcon.Icon = CreateStatusIcon(color);
             _trayIcon.Text = tooltip;
 
-            // Update menu items
-            _coreItem.Text = _coreRunning ? "Core: Running" : "Core: Stopped";
-            _coreItem.Image = CreateDot(_coreRunning ? Color.Green : Color.Red);
-            _uiItem.Text = _uiRunning ? "Web UI: Running" : "Web UI: Stopped";
-            _uiItem.Image = CreateDot(_uiRunning ? Color.Green : Color.Red);
-            if (IsAIGatewayEnabled())
+            // Update menu items. When Docker daemon is down, show a single
+            // "Docker Desktop not running" item instead of N red dots —
+            // more useful to the user than four separate "stopped" rows.
+            if (!_dockerDaemonUp)
             {
-                _gatewayItem.Text = _gatewayRunning ? "AI Capabilities: Running" : "AI Capabilities: Stopped";
-                _gatewayItem.Image = CreateDot(_gatewayRunning ? Color.Green : Color.Red);
+                _coreItem.Text = "Docker Desktop is not running";
+                _coreItem.Image = CreateDot(Color.Red);
+                _uiItem.Text = "Start Docker Desktop, then click Refresh Status";
+                _uiItem.Image = CreateDot(Color.Gray);
+                _gatewayItem.Text = "";
+                _gatewayItem.Image = null;
+                _apiItem.Text = "";
+                _apiItem.Image = null;
             }
             else
             {
-                _gatewayItem.Text = "AI Capabilities: Disabled";
-                _gatewayItem.Image = CreateDot(Color.Gray);
+                _coreItem.Text = _coreRunning ? "Core: Running" : "Core: Stopped";
+                _coreItem.Image = CreateDot(_coreRunning ? Color.Green : Color.Red);
+                _uiItem.Text = _uiRunning ? "Web UI: Running" : "Web UI: Stopped";
+                _uiItem.Image = CreateDot(_uiRunning ? Color.Green : Color.Red);
+                if (IsAIGatewayEnabled())
+                {
+                    _gatewayItem.Text = _gatewayRunning ? "AI Capabilities: Running" : "AI Capabilities: Stopped";
+                    _gatewayItem.Image = CreateDot(_gatewayRunning ? Color.Green : Color.Red);
+                }
+                else
+                {
+                    _gatewayItem.Text = "AI Capabilities: Disabled";
+                    _gatewayItem.Image = CreateDot(Color.Gray);
+                }
+                _apiItem.Text = _apiHealthy ? "REST API: Healthy" : "REST API: Not responding";
+                _apiItem.Image = CreateDot(_apiHealthy ? Color.Green : Color.Gray);
             }
-            _apiItem.Text = _apiHealthy ? "REST API: Healthy" : "REST API: Not responding";
-            _apiItem.Image = CreateDot(_apiHealthy ? Color.Green : Color.Gray);
 
             // Enable/disable actions based on state
             _startItem.Enabled = _status != StackStatus.Running;
             _stopItem.Enabled = _status != StackStatus.Stopped;
             _restartItem.Enabled = _status != StackStatus.Stopped;
+        }
+
+        // Probe the Docker daemon (via WSL) before asking about individual
+        // containers. Returns false when Docker Desktop is off, when WSL
+        // integration is disabled for the distro, or when dockerd itself
+        // is shutting down. Used by PollHealth to distinguish "stack is
+        // stopped" from "Docker is not running at all".
+        private async Task<bool> IsDockerDaemonRunning()
+        {
+            try
+            {
+                var psi = new ProcessStartInfo
+                {
+                    FileName = "wsl.exe",
+                    Arguments = $"-d {_distro} -u root -- docker info --format '{{{{.ServerVersion}}}}'",
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+                using var proc = Process.Start(psi);
+                var output = await proc.StandardOutput.ReadToEndAsync();
+                await proc.WaitForExitAsync();
+                return proc.ExitCode == 0 && !string.IsNullOrWhiteSpace(output);
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         private async Task<bool> IsContainerRunning(string name)
@@ -1092,6 +1170,12 @@ namespace FalconPulsar.Tray
                 "logging:\n  level: \"INFO\"\n" +
                 "EOF\n" +
                 "fi\n" +
+                // Defensive: strip CRLF + UTF-8 BOM from gateway.yaml. The\n" +
+                // heredoc above is written via a C#->stdin->bash pipeline; on\n" +
+                // Windows the encoding can be translated mid-flight and a\n" +
+                // stray \\r or BOM makes Python's yaml.safe_load raise a\n" +
+                // ReaderError, crashing the ai-gateway container on start.\n" +
+                "sed -i '1s/^\\xef\\xbb\\xbf//; s/\\r$//' gateway.yaml 2>/dev/null || true\n" +
                 "echo '[enable-ai] pulling AI gateway image…'\n" +
                 "docker compose --profile ai pull ai-gateway 2>&1\n" +
                 "echo '[enable-ai] starting ai-gateway container…'\n" +
