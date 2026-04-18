@@ -338,6 +338,13 @@ if [ "${FP_AI_GATEWAY_ENABLED}" = "true" ]; then
             "${FP_HOME}/gateway.yaml"
         log_info "copied default gateway.yaml"
     fi
+    # Defensive: strip Windows CRLF from gateway.yaml even if it already
+    # existed from a prior (pre-fix) Windows install. The Python YAML
+    # loader in the ai-gateway container raises ReaderError on \r bytes,
+    # causing a crash-loop on every container start.
+    if [ -f "${FP_HOME}/gateway.yaml" ]; then
+        sed -i 's/\r$//' "${FP_HOME}/gateway.yaml" 2>/dev/null || true
+    fi
 fi
 
 install -d -m 0750 -o "$FP_USER" -g "$FP_USER" "$FP_DATA_DIR"

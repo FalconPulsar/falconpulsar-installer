@@ -93,11 +93,17 @@ rm -rf /opt/falconpulsar-installer
 mkdir -p /opt/falconpulsar-installer
 cp -a '$wslInstallDirEscaped/linux'  /opt/falconpulsar-installer/
 cp -a '$wslInstallDirEscaped/shared' /opt/falconpulsar-installer/
-# Strip Windows CRLF line endings from all shell scripts. The files
-# were copied from NTFS (/mnt/c/) where Git or Inno Setup may have
-# converted them to CRLF. Bash chokes on \r characters.
-find /opt/falconpulsar-installer -name '*.sh' -exec sed -i 's/\r$//' {} +
-sed -i 's/\r$//' /opt/falconpulsar-installer/shared/compose.yml 2>/dev/null || true
+# Strip Windows CRLF line endings from all text config files. The files
+# were copied from NTFS (/mnt/c/) where Git (autocrlf) or Inno Setup may
+# have converted them to CRLF. Bash chokes on \r in scripts, and the
+# Python YAML loader in the ai-gateway container raises a ReaderError
+# when it hits a stray \r in gateway.yaml — the container exits 1 and
+# `docker ps` shows a crash-loop. Strip CRLF from everything text-ish.
+find /opt/falconpulsar-installer \
+    \( -name '*.sh' -o -name '*.yml' -o -name '*.yaml' \
+       -o -name '*.env' -o -name '*.conf' -o -name '*.template' \
+       -o -name 'Dockerfile' \) \
+    -type f -exec sed -i 's/\r$//' {} + 2>/dev/null || true
 chmod +x /opt/falconpulsar-installer/linux/install.sh
 chmod +x /opt/falconpulsar-installer/linux/uninstall.sh
 chmod +x /opt/falconpulsar-installer/shared/lib/*.sh
