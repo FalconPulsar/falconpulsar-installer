@@ -211,22 +211,31 @@ if fp_has_existing_install; then
     # running production stack, so require the existing admin's password
     # first. FP_FORCE=1 in the parent env skips this for automation.
     #
+    # Preconditions for the gate to fire:
+    #   * Action is upgrade or reinstall
+    #   * compose.yml actually exists (so there's a real stack to auth
+    #     against — otherwise this is effectively a fresh install with a
+    #     pre-created home dir, and there's no Core to verify the password)
+    #   * auth.sh is available
+    #
     # Two modes:
-    #   * Non-interactive (GUI installer passed FP_ADMIN_USER + FP_ADMIN_PASS):
-    #     verify once against Core REST API. On mismatch, abort.
+    #   * Non-interactive (GUI installer or CI passed FP_ADMIN_PASS):
+    #     verify once against Core REST API. FP_ADMIN_USER defaults to
+    #     "admin" if unset.
     #   * Interactive (plain `bash install.sh`): prompt for admin password,
     #     3 attempts.
     # Both paths treat Core-unreachable as "fall back to YES confirmation"
     # (or automatic pass when --yes / FP_ASSUME_YES=1).
     if [ "${FP_FORCE:-0}" != "1" ] && \
        { [ "${FP_INSTALL_ACTION:-}" = "upgrade" ] || [ "${FP_INSTALL_ACTION:-}" = "reinstall" ]; } && \
+       [ -f "${FP_HOME}/compose.yml" ] && \
        [ -f "${REPO_ROOT}/shared/lib/auth.sh" ]; then
         log_step "authorizing ${FP_INSTALL_ACTION}"
         # shellcheck source=../shared/lib/auth.sh
         . "${REPO_ROOT}/shared/lib/auth.sh"
         auth_rc=0
-        if [ -n "${FP_ADMIN_USER:-}" ] && [ -n "${FP_ADMIN_PASS:-}" ]; then
-            fp_verify_admin_credentials "$FP_ADMIN_USER" "$FP_ADMIN_PASS" || auth_rc=$?
+        if [ -n "${FP_ADMIN_PASS:-}" ]; then
+            fp_verify_admin_credentials "${FP_ADMIN_USER:-admin}" "$FP_ADMIN_PASS" || auth_rc=$?
         else
             fp_authenticate_admin 3 || auth_rc=$?
         fi

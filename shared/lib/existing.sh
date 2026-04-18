@@ -13,6 +13,8 @@
 
 FP_EXISTING_STACK_DIR=0
 FP_EXISTING_DATA_DIR=0
+FP_EXISTING_COMPOSE=0
+FP_EXISTING_ENV=0
 FP_EXISTING_CONTAINERS=0
 FP_EXISTING_IMAGES=0
 FP_EXISTING_MENUBAR=0
@@ -22,8 +24,10 @@ FP_EXISTING_DATA_SIZE=""
 fp_detect_existing_install() {
     local home="$1"
 
-    [ -d "$home" ]           && FP_EXISTING_STACK_DIR=1
-    [ -d "${home}/data" ]    && FP_EXISTING_DATA_DIR=1
+    [ -d "$home" ]                && FP_EXISTING_STACK_DIR=1
+    [ -d "${home}/data" ]         && FP_EXISTING_DATA_DIR=1
+    [ -f "${home}/compose.yml" ]  && FP_EXISTING_COMPOSE=1
+    [ -f "${home}/.env" ]         && FP_EXISTING_ENV=1
 
     if [ -d "$home" ]; then
         FP_EXISTING_STACK_SIZE="$(du -sh "$home" 2>/dev/null | awk '{print $1}')"
@@ -45,9 +49,15 @@ fp_detect_existing_install() {
     fi
 }
 
+# Detect a real prior install. An empty stack dir alone does NOT count —
+# `useradd --create-home falconpulsar` creates `/home/falconpulsar` on Linux,
+# which is not an install artifact. We require at least one of:
+#   - compose.yml or .env (the install actually wrote files)
+#   - a falconpulsar container or image present in Docker
+#   - the menu bar app on macOS
 fp_has_existing_install() {
-    [ "${FP_EXISTING_STACK_DIR}" = "1" ] || \
-    [ "${FP_EXISTING_DATA_DIR}" = "1" ] || \
+    [ "${FP_EXISTING_COMPOSE}" = "1" ] || \
+    [ "${FP_EXISTING_ENV}" = "1" ] || \
     [ "${FP_EXISTING_CONTAINERS:-0}" -gt 0 ] || \
     [ "${FP_EXISTING_IMAGES:-0}" -gt 0 ] || \
     [ "${FP_EXISTING_MENUBAR}" = "1" ]

@@ -162,17 +162,20 @@ if fp_has_existing_install; then
 
     # Admin authentication gate — upgrades and reinstalls can overwrite a
     # running production stack, so require the existing admin's password.
-    # Non-interactive path: if the Inno Setup installer passed FP_ADMIN_USER
-    # and FP_ADMIN_PASS, verify them once. Otherwise prompt interactively.
+    # Skipped when there's no compose.yml (no real stack to auth against —
+    # e.g. CI workflows pre-create the user's home dir).
+    # Non-interactive path: if FP_ADMIN_PASS is in env, verify once
+    # (FP_ADMIN_USER defaults to "admin"). Otherwise prompt interactively.
     if [ "${FP_FORCE:-0}" != "1" ] && \
        { [ "${FP_INSTALL_ACTION:-}" = "upgrade" ] || [ "${FP_INSTALL_ACTION:-}" = "reinstall" ]; } && \
+       [ -f "${FP_HOME}/compose.yml" ] && \
        [ -f "${REPO_ROOT}/shared/lib/auth.sh" ]; then
         log_step "authorizing ${FP_INSTALL_ACTION}"
         # shellcheck source=../shared/lib/auth.sh
         . "${REPO_ROOT}/shared/lib/auth.sh"
         auth_rc=0
-        if [ -n "${FP_ADMIN_USER:-}" ] && [ -n "${FP_ADMIN_PASS:-}" ]; then
-            fp_verify_admin_credentials "$FP_ADMIN_USER" "$FP_ADMIN_PASS" || auth_rc=$?
+        if [ -n "${FP_ADMIN_PASS:-}" ]; then
+            fp_verify_admin_credentials "${FP_ADMIN_USER:-admin}" "$FP_ADMIN_PASS" || auth_rc=$?
         else
             fp_authenticate_admin 3 || auth_rc=$?
         fi
