@@ -1850,13 +1850,23 @@ begin
     HelperPath := ExpandConstant('{app}\helpers\uninstall.ps1');
     if FileExists(HelperPath) then
     begin
-      FullArgs := '-NoProfile -ExecutionPolicy Bypass -File "' + HelperPath +
+      // -Sta is REQUIRED: uninstall.ps1 calls Assert-AdminAuth which creates
+      // a WinForms dialog. PowerShell defaults to MTA since PS 3, and
+      // ShowDialog() hangs indefinitely in an MTA apartment. Without -Sta,
+      // Inno Setup's progress bar stays stuck on "Uninstalling…" forever
+      // because ewWaitUntilTerminated waits on a PS process blocked in a
+      // deadlocked WinForms call.
+      FullArgs := '-NoProfile -Sta -ExecutionPolicy Bypass -File "' + HelperPath +
         '" -Distro {#WslDistroName}';
       if Length(PurgeFlag) > 0 then
         FullArgs := FullArgs + ' ' + PurgeFlag;
 
+      // SW_SHOWNORMAL (not SW_HIDE): if the WinForms auth dialog never renders,
+      // at least the user sees a PowerShell console so they can tell something
+      // is happening instead of staring at a frozen progress bar. The actual
+      // auth dialog is TopMost anyway.
       Exec('powershell.exe', FullArgs,
-        ExpandConstant('{app}\helpers'), SW_HIDE, ewWaitUntilTerminated, ResultCode);
+        ExpandConstant('{app}\helpers'), SW_SHOWNORMAL, ewWaitUntilTerminated, ResultCode);
     end;
   end;
 end;

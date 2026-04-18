@@ -220,22 +220,73 @@ function Assert-AdminAuth {
         [Parameter(Mandatory)] [string] $Title,
         [Parameter(Mandatory)] [string] $Message,
         [int] $MaxAttempts = 3,
-        [string] $BaseUrl = 'http://localhost:7433'
+        [string] $BaseUrl = 'http://localhost:7433',
+        [switch] $AllowBypassIfCoreDown
     )
     Add-Type -AssemblyName System.Windows.Forms
     Add-Type -AssemblyName System.Drawing
 
-    # Fast-fail if Core unreachable. Show a friendly dialog and return false.
+    # Probe Core first. If it's down AND the caller accepts a bypass, fall
+    # back to an explicit YES confirmation (matches the bash uninstaller's
+    # code-2 behaviour on macOS/Linux).
+    $coreReachable = $true
     try {
-        $probe = Invoke-WebRequest -Uri "$BaseUrl/api/v1/auth/login" `
+        $null = Invoke-WebRequest -Uri "$BaseUrl/api/v1/auth/login" `
             -Method Options -TimeoutSec 3 -ErrorAction Stop -UseBasicParsing
     } catch [System.Net.WebException] {
-        # A 4xx/5xx from the server still means Core is reachable; only a
-        # ConnectFailure / NameResolutionFailure means it isn't.
         $status = $_.Exception.Status
         if ($status -eq [System.Net.WebExceptionStatus]::ConnectFailure -or
             $status -eq [System.Net.WebExceptionStatus]::NameResolutionFailure -or
             $status -eq [System.Net.WebExceptionStatus]::Timeout) {
+            $coreReachable = $false
+        }
+    } catch {
+        # Non-WebException — unknown, treat as reachable; the login POST below
+        # will fail fast if it truly isn't.
+    }
+
+    if (-not $coreReachable) {
+        if ($AllowBypassIfCoreDown) {
+            # Ask the user to explicitly authorise by typing YES. This is the
+            # equivalent of the bash YES-fallback when Core can't verify the
+            # password.
+            $bypassForm = New-Object System.Windows.Forms.Form
+            $bypassForm.Text = $Title
+            $bypassForm.Width = 430; $bypassForm.Height = 210
+            $bypassForm.FormBorderStyle = 'FixedDialog'
+            $bypassForm.StartPosition = 'CenterScreen'
+            $bypassForm.MinimizeBox = $false; $bypassForm.MaximizeBox = $false
+            $bypassForm.TopMost = $true
+
+            $lbl = New-Object System.Windows.Forms.Label
+            $lbl.Text = "FalconPulsar Core is not running, so the admin password cannot be verified.`r`n`r`nTo authorize anyway, type YES (uppercase):"
+            $lbl.AutoSize = $false; $lbl.Width = 390; $lbl.Height = 70
+            $lbl.Top = 15; $lbl.Left = 15
+            $bypassForm.Controls.Add($lbl)
+
+            $box = New-Object System.Windows.Forms.TextBox
+            $box.Width = 120; $box.Top = 95; $box.Left = 15
+            $bypassForm.Controls.Add($box)
+
+            $ok = New-Object System.Windows.Forms.Button
+            $ok.Text = 'Continue'; $ok.DialogResult = 'OK'
+            $ok.Width = 90; $ok.Top = 135; $ok.Left = 215
+            $bypassForm.Controls.Add($ok); $bypassForm.AcceptButton = $ok
+
+            $cancel = New-Object System.Windows.Forms.Button
+            $cancel.Text = 'Cancel'; $cancel.DialogResult = 'Cancel'
+            $cancel.Width = 90; $cancel.Top = 135; $cancel.Left = 310
+            $bypassForm.Controls.Add($cancel); $bypassForm.CancelButton = $cancel
+
+            $result = $bypassForm.ShowDialog()
+            $typed = $box.Text
+            $bypassForm.Dispose()
+
+            if ($result -ne [System.Windows.Forms.DialogResult]::OK -or $typed -ne 'YES') {
+                return $false
+            }
+            return $true
+        } else {
             [System.Windows.Forms.MessageBox]::Show(
                 "Cannot reach FalconPulsar Core at $BaseUrl.`nStart the stack first and try again.",
                 'Core not reachable',
@@ -243,8 +294,6 @@ function Assert-AdminAuth {
                 [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
             return $false
         }
-    } catch {
-        # Non-WebException — unknown, continue and let the login attempt fail cleanly.
     }
 
     $attempt = 0

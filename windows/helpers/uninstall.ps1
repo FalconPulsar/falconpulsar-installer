@@ -52,9 +52,13 @@ if (-not (Test-WslDistroPresent -Name $Distro)) {
 if ($Force) {
     Write-Warn '-Force supplied: skipping admin authentication'
 } else {
+    # -AllowBypassIfCoreDown: if Core isn't running, Assert-AdminAuth will
+    # show a YES-confirmation dialog instead of failing outright. Matches
+    # the bash uninstaller's behaviour on macOS/Linux.
     $authed = Assert-AdminAuth `
         -Title 'Uninstall FalconPulsar' `
-        -Message 'Enter admin credentials to authorize uninstallation. This prevents accidental removal of the stack.'
+        -Message 'Enter admin credentials to authorize uninstallation. This prevents accidental removal of the stack.' `
+        -AllowBypassIfCoreDown
     if (-not $authed) {
         Write-Warn 'Uninstallation cancelled by user (or admin authentication failed).'
         exit 1
