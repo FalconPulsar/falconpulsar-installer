@@ -47,7 +47,7 @@ if (-not (Test-WslDistroPresent -Name $Distro)) {
     exit 0
 }
 
-# Admin authentication gate — require the FalconPulsar admin password before
+# Admin authentication gate -- require the FalconPulsar admin password before
 # any destructive action. -Force bypasses for emergencies (broken Core).
 if ($Force) {
     Write-Warn '-Force supplied: skipping admin authentication'
@@ -176,7 +176,7 @@ if (-not $Purge) {
 }
 
 # Close the run marker and surface the install log so the user has the
-# complete record (installation → uninstallation) in one place.
+# complete record (installation -> uninstallation) in one place.
 Write-FpLogLine '=== end ==='
 Write-Output ''
 Write-Output "  Full log: $Script:FpLogPath"

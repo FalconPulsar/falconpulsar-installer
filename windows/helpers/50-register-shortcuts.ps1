@@ -115,7 +115,7 @@ if (Test-Path $trayExe) {
     Write-Info 'Created shortcut: FalconPulsar Tray Manager'
 }
 
-# fp console — opens cmd with the fp CLI ready. fp.exe is our wrapper that
+# fp console -- opens cmd with the fp CLI ready. fp.exe is our wrapper that
 # forwards to the Linux fp inside WSL, so the user sees the same TUI as a
 # native Linux install without switching terminals.
 $fpExe = Join-Path $env:LOCALAPPDATA 'falconpulsar\bin\fp.exe'

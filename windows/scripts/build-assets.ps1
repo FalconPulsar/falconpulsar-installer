@@ -1,5 +1,5 @@
 # =============================================================================
-# build-assets.ps1 — Generate Inno Setup wizard images from falcon-logo.png.
+# build-assets.ps1 -- Generate Inno Setup wizard images from falcon-logo.png.
 #
 # Inno Setup wants:
 #   - WizardImageFile        : 164x314 24-bit BMP (large welcome side panel,
@@ -12,7 +12,7 @@
 # windows/assets/falcon-logo.png on demand. Both CI (build-windows.yml)
 # and local devs run it before invoking ISCC.exe.
 #
-# Uses System.Drawing — no ImageMagick or other external deps. Runs on any
+# Uses System.Drawing -- no ImageMagick or other external deps. Runs on any
 # machine with .NET Framework / .NET Desktop Runtime, which includes the
 # windows-latest GitHub Actions runner.
 #
@@ -44,7 +44,7 @@ $png = [System.Drawing.Image]::FromFile($srcPng)
 try {
     Write-Host "  Source size: $($png.Width) x $($png.Height)"
 
-    # ── Header bitmap: 55 x 58 (Inno Setup default for WizardSmallImageFile) ──
+    # -- Header bitmap: 55 x 58 (Inno Setup default for WizardSmallImageFile) --
     # WizardSizePercent=120 in installer.iss auto-scales this to 66x70.
     $headerPath = Join-Path $assetsDir 'header.bmp'
     Write-Host "Generating $headerPath (55x58)"
@@ -52,7 +52,7 @@ try {
     try {
         $g = [System.Drawing.Graphics]::FromImage($headerBmp)
         try {
-            # White background — blends with the Inno Setup header chrome.
+            # White background -- blends with the Inno Setup header chrome.
             $g.Clear([System.Drawing.Color]::White)
             $g.InterpolationMode    = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
             $g.SmoothingMode        = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
@@ -73,7 +73,7 @@ try {
         $headerBmp.Dispose()
     }
 
-    # ── Welcome bitmap: 164 x 314 (Inno Setup default for WizardImageFile) ──
+    # -- Welcome bitmap: 164 x 314 (Inno Setup default for WizardImageFile) --
     # WizardSizePercent=120 in installer.iss auto-scales this to ~197x377.
     $welcomePath = Join-Path $assetsDir 'welcome.bmp'
     Write-Host "Generating $welcomePath (164x314)"
@@ -81,7 +81,7 @@ try {
     try {
         $g = [System.Drawing.Graphics]::FromImage($welcomeBmp)
         try {
-            # Dark navy background — matches the FalconPulsar logo's secondary blue
+            # Dark navy background -- matches the FalconPulsar logo's secondary blue
             $bg = [System.Drawing.Color]::FromArgb(255, 14, 26, 49)
             $g.Clear($bg)
             $g.InterpolationMode    = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
@@ -107,7 +107,7 @@ try {
             $titleFont.Dispose()
             $titleBrush.Dispose()
 
-            # Tag line removed per user request — FalconPulsar is broader
+            # Tag line removed per user request -- FalconPulsar is broader
             # than time-series. The wordmark alone is sufficient.
         } finally {
             $g.Dispose()
@@ -116,7 +116,7 @@ try {
     } finally {
         $welcomeBmp.Dispose()
     }
-    # ── Icon: multi-size .ico for SetupIconFile ────────────────────────────
+    # -- Icon: multi-size .ico for SetupIconFile ----------------------------
     # Generate 16, 32, 48, and 256 px entries. The 256 uses PNG compression;
     # smaller sizes use raw 32-bit BGRA bitmaps (required by ICO spec).
     $icoPath = Join-Path $assetsDir 'falcon.ico'
@@ -191,7 +191,7 @@ Get-ChildItem -Path $assetsDir -Filter '*.ico' | ForEach-Object {
     Write-Host "  $($_.Name) ($sizeKB KB)"
 }
 
-# Explicit exit 0 — calling code uses $LASTEXITCODE, which is only set by
+# Explicit exit 0 -- calling code uses $LASTEXITCODE, which is only set by
 # native exes, not by .ps1 dot-source / & invocations. Without this, the
 # CI step's `if ($LASTEXITCODE -ne 0)` check sees stale state.
 exit 0

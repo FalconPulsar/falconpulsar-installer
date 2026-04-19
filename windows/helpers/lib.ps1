@@ -241,7 +241,7 @@ function Assert-AdminAuth {
             $coreReachable = $false
         }
     } catch {
-        # Non-WebException — unknown, treat as reachable; the login POST below
+        # Non-WebException -- unknown, treat as reachable; the login POST below
         # will fail fast if it truly isn't.
     }
 

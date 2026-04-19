@@ -37,7 +37,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-# Trap MUST be installed before lib.ps1 dot-source — if lib.ps1 itself
+# Trap MUST be installed before lib.ps1 dot-source -- if lib.ps1 itself
 # has a parse error or a dependency miss, this is the only way to find
 # out (PowerShell exits 1 silently otherwise). Direct file write because
 # Write-FpLogLine isn't defined yet at this point.
@@ -53,7 +53,7 @@ trap {
     exit 1
 }
 
-# Heartbeat — direct write before lib.ps1 is loaded.
+# Heartbeat -- direct write before lib.ps1 is loaded.
 try {
     Add-Content -Path $Script:EarlyLogPath -Value "`n==> 40-run-fp-installer.ps1 entered (PSVersion=$($PSVersionTable.PSVersion), Distro='$Distro', InstallDir='$InstallDir', AdminUser='$AdminUser')" -ErrorAction SilentlyContinue
 } catch { }
@@ -134,7 +134,7 @@ cp -a '$wslInstallDirEscaped/shared' /opt/falconpulsar-installer/
 # were copied from NTFS (/mnt/c/) where Git (autocrlf) or Inno Setup may
 # have converted them to CRLF. Bash chokes on \r in scripts, and the
 # Python YAML loader in the ai-gateway container raises a ReaderError
-# when it hits a stray \r in gateway.yaml — the container exits 1 and
+# when it hits a stray \r in gateway.yaml -- the container exits 1 and
 # `docker ps` shows a crash-loop. Strip CRLF from everything text-ish.
 find /opt/falconpulsar-installer \
     \( -name '*.sh' -o -name '*.yml' -o -name '*.yaml' \
@@ -190,7 +190,7 @@ fi
     exit 0
 }
 
-# For 'fresh' — clean up WSL-side data before running the full installer
+# For 'fresh' -- clean up WSL-side data before running the full installer
 if ($InstallAction -eq 'fresh' -and $hasExisting) {
     Write-Info 'Fresh install -- removing existing data inside WSL'
     $cleanScript = @"
@@ -322,7 +322,7 @@ echo '[ok] Linux fp binary installed at /home/falconpulsar/bin/fp'
 "@
     $null = Invoke-WslBash -Distro $Distro -Script $stageFpScript -User root
 } else {
-    Write-Warn "Linux fp binary not found at $fpLinuxSrc — fp.exe wrapper will error until fp is installed in WSL."
+    Write-Warn "Linux fp binary not found at $fpLinuxSrc -- fp.exe wrapper will error until fp is installed in WSL."
 }
 
 # Write the sentinel so fp.exe (and the tray) can auto-discover the distro
