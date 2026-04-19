@@ -192,6 +192,19 @@ fi
 # path from inside $FP_HOME.
 cd "$HOME" 2>/dev/null || cd /
 
+# Ensure docker is on PATH. When this script is invoked from `fp uninstall`
+# (a Go subprocess) or any other launcher that doesn't carry the user's
+# interactive PATH, the `docker` command may be missing from $PATH and
+# every cleanup command below would fail silently — exactly the bug
+# users hit when the uninstall reports success but containers, images,
+# and volumes are all still there. Prepend the standard macOS Docker
+# locations so we never depend on the caller's PATH.
+export PATH="/Applications/Docker.app/Contents/Resources/bin:/usr/local/bin:/opt/homebrew/bin:${PATH}"
+if ! command -v docker >/dev/null 2>&1; then
+    log_warn "docker not found on PATH after PATH augmentation — container/image cleanup will be skipped."
+    log_warn "Docker Desktop should be installed and running for a clean uninstall."
+fi
+
 # Step 1: Stop the menu bar app
 log_step "Stopping FalconPulsar Menu Bar"
 pkill -f FalconPulsarMenuBar 2>/dev/null || true
@@ -200,16 +213,21 @@ log_info "Menu bar app stopped"
 # Step 2: Stop and remove containers (+ volumes on purge)
 log_step "Stopping containers"
 if [ -f "${FP_HOME}/compose.yml" ]; then
+    # NB: stderr is INTENTIONALLY surfaced here. Previous versions had
+    # `2>/dev/null` which hid the actual error when docker compose failed,
+    # so the user saw "Containers stopped" but nothing was actually removed.
     if [ "$FP_PURGE" = "1" ]; then
-        # Always include --profile ai so the gateway container is caught
-        # even if AI was enabled post-install then disabled before uninstall.
-        ( cd "$FP_HOME" && docker compose --profile ai down --remove-orphans --volumes 2>/dev/null ) || \
-            log_warn "docker compose down failed — continuing anyway"
-        log_info "Containers and named volumes removed"
+        if ( cd "$FP_HOME" && docker compose --profile ai down --remove-orphans --volumes ); then
+            log_info "Containers and named volumes removed"
+        else
+            log_warn "docker compose down failed (see error above) — continuing anyway"
+        fi
     else
-        ( cd "$FP_HOME" && docker compose --profile ai down --remove-orphans 2>/dev/null ) || \
-            log_warn "docker compose down failed — continuing anyway"
-        log_info "Containers stopped and removed (volumes preserved)"
+        if ( cd "$FP_HOME" && docker compose --profile ai down --remove-orphans ); then
+            log_info "Containers stopped and removed (volumes preserved)"
+        else
+            log_warn "docker compose down failed (see error above) — continuing anyway"
+        fi
     fi
 else
     log_info "No compose.yml found — skipping"
