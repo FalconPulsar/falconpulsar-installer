@@ -222,6 +222,21 @@ rm -rf /home/falconpulsar/compose.yml /home/falconpulsar/.env \
 echo '[ok] WSL state wiped -- ready for fresh install'
 '@
     $null = Invoke-WslBash -Distro $Distro -Script $cleanScript -User root
+
+    # Windows-side cleanup: mirror files + registry + Start Menu. Without
+    # this, a "Fresh" install from a prior working state leaves the .env
+    # mirror in %USERPROFILE%\falconpulsar, fp.exe in %LOCALAPPDATA%, the
+    # HKCU Run key, and the Start Menu folder -- making the "fresh" install
+    # not actually fresh from the user's point of view.
+    Write-Info 'Fresh install -- wiping Windows-side mirror files and registry'
+    Remove-Item -Recurse -Force (Join-Path $env:USERPROFILE 'falconpulsar') -ErrorAction SilentlyContinue
+    Remove-Item -Recurse -Force (Join-Path $env:LOCALAPPDATA 'falconpulsar') -ErrorAction SilentlyContinue
+    $startMenu = [Environment]::GetFolderPath('CommonPrograms')
+    if ($startMenu) {
+        Remove-Item -Recurse -Force (Join-Path $startMenu 'FalconPulsar') -ErrorAction SilentlyContinue
+    }
+    Remove-ItemProperty -Path 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run' `
+                        -Name 'FalconPulsar' -ErrorAction SilentlyContinue
 }
 
 # For 'reinstall' -- lighter cleanup: stop the stack + remove stack files,

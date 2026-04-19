@@ -16,12 +16,35 @@ import (
 	"github.com/falconpulsar/falconpulsar-installer/console/internal/api"
 )
 
-// HomeDir resolves the stack directory (~/falconpulsar).
+// HomeDir resolves the stack directory.
+//
+// Resolution order:
+//  1. FP_HOME env var (explicit override).
+//  2. On Linux/WSL: if /home/falconpulsar/{compose.yml,.env} exists, use
+//     /home/falconpulsar directly. This is required because the installer
+//     creates a dedicated `falconpulsar` system user and drops the stack in
+//     that user's HOME, so joining $HOME+"falconpulsar" would produce
+//     /home/falconpulsar/falconpulsar (doubled).
+//  3. Fallback: $HOME/falconpulsar (macOS path).
 func HomeDir() string {
-	if h, err := os.UserHomeDir(); err == nil {
-		return filepath.Join(h, "falconpulsar")
+	if override := os.Getenv("FP_HOME"); override != "" {
+		return override
 	}
-	return "/root/falconpulsar"
+	if runtime.GOOS == "linux" {
+		for _, candidate := range []string{
+			"/home/falconpulsar/compose.yml",
+			"/home/falconpulsar/.env",
+		} {
+			if _, err := os.Stat(candidate); err == nil {
+				return "/home/falconpulsar"
+			}
+		}
+	}
+	h, err := os.UserHomeDir()
+	if err != nil {
+		return "/home/falconpulsar"
+	}
+	return filepath.Join(h, "falconpulsar")
 }
 
 func dockerPath() string {
