@@ -1279,9 +1279,10 @@ var
 begin
   Result := '';
   Lines := [];
-  // Split on CRLF or LF
-  Content := StringChangeEx(Content, #13#10, #10, True);
-  Content := StringChangeEx(Content, #13,   #10, True);
+  // Normalise line endings. StringChangeEx mutates Content by reference
+  // and returns an Integer (count of replacements) -- don't assign.
+  StringChangeEx(Content, #13#10, #10, True);
+  StringChangeEx(Content, #13,    #10, True);
   Line := '';
   for I := 1 to Length(Content) do
   begin
