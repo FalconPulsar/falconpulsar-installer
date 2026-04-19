@@ -47,6 +47,12 @@ namespace FalconPulsar.Tray
         private ToolStripMenuItem _stopItem;
         private ToolStripMenuItem _restartItem;
         private ToolStripMenuItem _autoStartItem;
+        // The "Enable/Disable AI Capabilities" toggle. We rebuild the
+        // text + click handler on every PollHealth tick so the menu stays
+        // in sync with the WSL .env -- which can change behind our back
+        // when the user toggles AI from `fp ai enable`/`fp ai disable`
+        // inside the TUI rather than through this tray.
+        private ToolStripMenuItem _aiToggleItem;
 
         // WSL stack location, resolved once at tray startup. The installer
         // writes `falconpulsar-home.txt` next to the distro sentinel; if
@@ -221,13 +227,13 @@ namespace FalconPulsar.Tray
             menu.Items.Add(backupMenu);
 
             // AI Capabilities — single toggle (after Configuration Backup,
-            // matching macOS menu order)
-            if (IsAIGatewayEnabled())
-                menu.Items.Add(new ToolStripMenuItem("Disable AI Capabilities", null,
-                    async (s, e) => await DisableAIGatewayAsync()));
-            else
-                menu.Items.Add(new ToolStripMenuItem("Enable AI Capabilities", null,
-                    async (s, e) => await EnableAIGatewayAsync()));
+            // matching macOS menu order). The text + click handler are
+            // (re)assigned by ApplyAiToggleState() on every PollHealth tick
+            // so external state changes (e.g. `fp ai enable` inside WSL)
+            // propagate to the menu within one poll interval.
+            _aiToggleItem = new ToolStripMenuItem("AI Capabilities");
+            menu.Items.Add(_aiToggleItem);
+            ApplyAiToggleState();
 
             menu.Items.Add(new ToolStripSeparator());
 
@@ -389,7 +395,32 @@ namespace FalconPulsar.Tray
             _startItem.Enabled = _status != StackStatus.Running;
             _stopItem.Enabled = _status != StackStatus.Stopped;
             _restartItem.Enabled = _status != StackStatus.Stopped;
+
+            // Refresh the AI toggle so the menu reflects whatever changed
+            // outside the tray (fp ai enable/disable, .env hand-edits, etc.).
+            ApplyAiToggleState();
         }
+
+        // Re-bind the AI toggle's label and click handler from the current
+        // value of FP_AI_GATEWAY_ENABLED in the WSL .env. Cheap; safe to
+        // call on every poll. Removing then re-adding the Click handler
+        // avoids stacking handlers that fire once per refresh.
+        private void ApplyAiToggleState()
+        {
+            if (_aiToggleItem == null) return;
+            var enabled = IsAIGatewayEnabled();
+            _aiToggleItem.Text = enabled ? "Disable AI Capabilities" : "Enable AI Capabilities";
+            // Clear any prior handlers, then attach the right one.
+            foreach (var prior in _aiToggleHandlers)
+                _aiToggleItem.Click -= prior;
+            _aiToggleHandlers.Clear();
+            EventHandler handler = enabled
+                ? (async (s, e) => await DisableAIGatewayAsync())
+                : (async (s, e) => await EnableAIGatewayAsync());
+            _aiToggleItem.Click += handler;
+            _aiToggleHandlers.Add(handler);
+        }
+        private readonly List<EventHandler> _aiToggleHandlers = new();
 
         // Probe the Docker daemon (via WSL) before asking about individual
         // containers. Returns false when Docker Desktop is off, when WSL
