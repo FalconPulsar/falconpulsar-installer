@@ -29,6 +29,12 @@ REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 # Prefer the shared library; fall back to inline helpers if the script is
 # running standalone (e.g. copied to /tmp by `fp` before running, so the
 # stack-dir delete doesn't yank bash's own source file).
+#
+# IMPORTANT: the fallback MUST define is_wsl too. `fp uninstall` copies
+# this script to /tmp (where common.sh doesn't live), so without an inline
+# is_wsl the WSL-detection block below silently fails, the model falls back
+# to service-user, require_root fires, and the user sees "must run as root"
+# even though they're on WSL where root isn't needed.
 if [ -f "${REPO_ROOT}/shared/lib/common.sh" ]; then
     # shellcheck source=../shared/lib/common.sh
     . "${REPO_ROOT}/shared/lib/common.sh"
@@ -42,6 +48,10 @@ else
     confirm()     { return 0; }
     require_root() { [ "$(id -u)" -eq 0 ] || die "must run as root"; }
     on_error()    { log_error "failed at line $1"; }
+    is_wsl() {
+        [ -e /proc/sys/fs/binfmt_misc/WSLInterop ] && return 0
+        grep -qiE 'microsoft|wsl' /proc/version 2>/dev/null
+    }
 fi
 
 trap 'on_error $LINENO' ERR
