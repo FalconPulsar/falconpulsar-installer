@@ -162,8 +162,7 @@ Name: "aigateway"; \
     Flags: unchecked
 Name: "addtopath"; \
     Description: "Add fp console to my PATH (lets you run ""fp"" from PowerShell anywhere)"; \
-    GroupDescription: "fp console CLI:"; \
-    Flags: unchecked
+    GroupDescription: "fp console CLI:"
 
 [Run]
 ; Open the Web UI in the default browser at the end (postinstall checkbox).

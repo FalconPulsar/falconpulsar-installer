@@ -853,27 +853,39 @@ namespace FalconPulsar.Tray
 
         // ────────────────────────── AI Gateway Toggle ────────────────────────────
 
-        private static bool IsAIGatewayEnabled()
+        // Read AI-gateway state from the WSL .env (the single source of
+        // truth that docker compose actually loads). The previous Windows
+        // mirror at %USERPROFILE%\falconpulsar\.env was set once at install
+        // time and went stale the moment the user toggled AI from anywhere
+        // (fp ai enable, the TUI, this tray, etc.), so the menu would show
+        // "Disabled" while the gateway container was actually running.
+        private bool IsAIGatewayEnabled()
         {
-            var envPath = Path.Combine(ConfigBackup.FalconPulsarHomeDir, ".env");
+            var envPath = Path.Combine(_wslHomeUnc, ".env");
             if (!File.Exists(envPath)) return true;
-            foreach (var line in File.ReadLines(envPath))
+            try
             {
-                var trimmed = line.Trim();
-                if (trimmed.StartsWith("FP_AI_GATEWAY_ENABLED="))
+                foreach (var line in File.ReadLines(envPath))
                 {
-                    var val = trimmed["FP_AI_GATEWAY_ENABLED=".Length..];
-                    return val is "true" or "1" or "yes";
+                    var trimmed = line.Trim();
+                    if (trimmed.StartsWith("FP_AI_GATEWAY_ENABLED="))
+                    {
+                        var val = trimmed["FP_AI_GATEWAY_ENABLED=".Length..];
+                        return val is "true" or "1" or "yes";
+                    }
                 }
             }
+            catch (IOException) { /* WSL distro may be stopped -- assume enabled */ }
             return true;
         }
 
-        private static void SetEnvValue(string key, string value)
+        // Write the AI-gateway flag to the WSL .env (same source of truth
+        // as IsAIGatewayEnabled). The Linux fp CLI uses an O_TRUNC write
+        // that resets to 0640 -- here we mirror that and let the WSL VFS
+        // preserve the file's UNIX owner/group via Plan 9 forwarding.
+        private void SetEnvValue(string key, string value)
         {
-            var dir = ConfigBackup.FalconPulsarHomeDir;
-            var envPath = Path.Combine(dir, ".env");
-            if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
+            var envPath = Path.Combine(_wslHomeUnc, ".env");
             var lines = File.Exists(envPath)
                 ? File.ReadAllLines(envPath).ToList()
                 : new List<string>();
