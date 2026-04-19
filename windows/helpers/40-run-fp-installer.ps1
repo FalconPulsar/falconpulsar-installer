@@ -188,15 +188,11 @@ if ($rc -ne 0) {
 # Probe both the NEW per-user stack dir (/home/<user>/falconpulsar) AND the
 # LEGACY service-user dir (/home/falconpulsar) so upgrades from pre-refactor
 # installs still get recognised.
-$existingProbe = @"
-if [ -f '$WslHome/data/falconpulsar.toml' ] || [ -f '$WslHome/compose.yml' ]; then
-    echo yes
-elif [ -f /home/falconpulsar/data/falconpulsar.toml ] || [ -f /home/falconpulsar/compose.yml ]; then
-    echo legacy
-else
-    echo no
-fi
-"@
+#
+# IMPORTANT: keep this on ONE line. PowerShell here-strings have CRLF
+# newlines, and `wsl.exe ... bash -c <multi-line-string>` passes them
+# through to bash, which then fails to parse the resulting if/elif/fi.
+$existingProbe = "if [ -f '$WslHome/data/falconpulsar.toml' ] || [ -f '$WslHome/compose.yml' ]; then echo yes; elif [ -f /home/falconpulsar/data/falconpulsar.toml ] || [ -f /home/falconpulsar/compose.yml ]; then echo legacy; else echo no; fi"
 $existingInstall = & wsl.exe -d $Distro -u root -- bash -c $existingProbe 2>$null
 $existingInstall = "$existingInstall".Trim()
 $hasExisting = ($existingInstall -eq 'yes' -or $existingInstall -eq 'legacy')
