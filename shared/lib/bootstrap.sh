@@ -156,12 +156,21 @@ fp_bootstrap_gateway_token() {
     log_success "service token created"
 
     # ── 3. Append FP_API_KEY to .env (preserve perms) ───────────────────────
-    # Use a temp file + mv to keep this atomic. .env is mode 0600, owner
-    # is the falconpulsar user — we have to preserve both.
-    local env_dir env_owner env_group
+    # Use a temp file + mv to keep this atomic. We preserve BOTH ownership
+    # AND mode from the original file rather than hard-coding, because the
+    # Linux installer sets .env to 0640 falconpulsar:docker while macOS
+    # keeps it 0600 user:staff -- the two platforms must not clobber each
+    # other when this helper is shared.
+    local env_dir env_owner env_group env_mode
     env_dir=$(dirname "$env_file")
     env_owner=$(stat -c '%U' "$env_file" 2>/dev/null || stat -f '%Su' "$env_file" 2>/dev/null || echo "")
     env_group=$(stat -c '%G' "$env_file" 2>/dev/null || stat -f '%Sg' "$env_file" 2>/dev/null || echo "")
+    env_mode=$(stat -c '%a' "$env_file" 2>/dev/null || stat -f '%Lp' "$env_file" 2>/dev/null || echo "600")
+    # stat -f on BSD can emit e.g. "640" without leading zero; guard just in case.
+    case "$env_mode" in
+        [0-7][0-7][0-7]) ;;
+        *) env_mode="600" ;;
+    esac
 
     umask 077
     {
@@ -172,7 +181,7 @@ fp_bootstrap_gateway_token() {
     if [ -n "$env_owner" ] && [ -n "$env_group" ]; then
         chown "${env_owner}:${env_group}" "${env_file}.new" 2>/dev/null || true
     fi
-    chmod 0600 "${env_file}.new"
+    chmod "0${env_mode}" "${env_file}.new"
     mv "${env_file}.new" "$env_file"
     umask 022
 

@@ -97,6 +97,18 @@ func AIGatewayEnabled() bool {
 	return true // default: enabled if flag is absent (backward compat)
 }
 
+// envFileMode returns the existing .env file mode, or 0600 if the file
+// doesn't exist / can't be stat'd. We preserve whatever the installer set
+// (Linux: 0640 falconpulsar:docker, macOS: 0600 user:staff) rather than
+// clobbering it on every write.
+func envFileMode(path string) os.FileMode {
+	info, err := os.Stat(path)
+	if err != nil {
+		return 0600
+	}
+	return info.Mode().Perm()
+}
+
 // SetEnvValue writes or updates a key=value line in ~/falconpulsar/.env.
 func SetEnvValue(key, value string) error {
 	envPath := filepath.Join(HomeDir(), ".env")
@@ -116,7 +128,7 @@ func SetEnvValue(key, value string) error {
 	if !found {
 		lines = append(lines, key+"="+value)
 	}
-	return os.WriteFile(envPath, []byte(strings.Join(lines, "\n")), 0600)
+	return os.WriteFile(envPath, []byte(strings.Join(lines, "\n")), envFileMode(envPath))
 }
 
 // RemoveEnvValue strips the given key's line from ~/falconpulsar/.env.
@@ -132,7 +144,7 @@ func RemoveEnvValue(key string) error {
 			kept = append(kept, line)
 		}
 	}
-	return os.WriteFile(envPath, []byte(strings.Join(kept, "\n")), 0600)
+	return os.WriteFile(envPath, []byte(strings.Join(kept, "\n")), envFileMode(envPath))
 }
 
 // parseEnvFile reads .env into a map. Doesn't interpret quoting — good enough

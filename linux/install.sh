@@ -389,8 +389,22 @@ FP_UI_PORT=${FP_UI_PORT}
 FP_LOG_LEVEL=${FP_LOG_LEVEL}
 FP_AI_GATEWAY_ENABLED=${FP_AI_GATEWAY_ENABLED:-false}
 EOF
-chown "${FP_USER}:${FP_USER}" "${FP_HOME}/.env"
-chmod 0600 "${FP_HOME}/.env"
+# .env holds FP_API_KEY (gateway service token). We want it readable by the
+# invoking human user too -- on native Linux the user runs `fp` from their
+# own shell, not as the `falconpulsar` system user. Gate read access via
+# the `docker` group: the installer adds the invoking user to it in step 4,
+# so membership already mirrors "can manage FalconPulsar". Writes stay
+# restricted to the falconpulsar user (0640 = owner rw, group r).
+#
+# If the `docker` group somehow doesn't exist (shouldn't happen -- we rely
+# on it in step 4), fall back to falconpulsar:falconpulsar to avoid a
+# `chown` error bringing the install down.
+if getent group docker >/dev/null 2>&1; then
+    chown "${FP_USER}:docker" "${FP_HOME}/.env"
+else
+    chown "${FP_USER}:${FP_USER}" "${FP_HOME}/.env"
+fi
+chmod 0640 "${FP_HOME}/.env"
 umask 022
 
 log_success "wrote ${FP_HOME}/compose.yml and ${FP_HOME}/.env (admin password NOT stored)"
@@ -455,8 +469,14 @@ fi
 
 # ── 7d. Install the fp CLI under ${FP_HOME}/bin/ (self-contained stack) ───
 fp_install_cli "$FP_HOME" "${FP_VERSION:-0.1.0}"
-# Fix ownership (install.sh runs as root via sudo on Linux)
-chown -R "${FP_USER}:${FP_USER}" "${FP_HOME}/bin" 2>/dev/null || true
+# Fix ownership (install.sh runs as root via sudo on Linux). Group is
+# `docker` so any docker-group user can exec fp directly (matches .env).
+if getent group docker >/dev/null 2>&1; then
+    chown -R "${FP_USER}:docker" "${FP_HOME}/bin" 2>/dev/null || true
+else
+    chown -R "${FP_USER}:${FP_USER}" "${FP_HOME}/bin" 2>/dev/null || true
+fi
+chmod 0755 "${FP_HOME}/bin" "${FP_HOME}/bin/fp" 2>/dev/null || true
 # PATH append targets the invoking user's shell rc, not root's
 if [ -n "${SUDO_USER:-}" ]; then
     sudo -u "$SUDO_USER" -H bash -c "
@@ -495,6 +515,32 @@ else
     log_info "no systemd unit installed (mode: docker)"
     log_info "to start/stop manually: sudo -u ${FP_USER} -H sg docker -c 'cd ${FP_HOME} && docker compose <up -d|down>'"
 fi
+
+# ── Final reconciliation: uninstall.sh + .env ownership ────────────────────
+# The block at step 2 copies uninstall.sh only on the upgrade path; this
+# second copy covers the fresh-install path too (fp's `uninstall` command
+# looks for ${FP_HOME}/uninstall.sh). Also re-assert ownership on .env and
+# bin/ after everything has been written (belt-and-suspenders: the earlier
+# chowns can silently no-op if the user's group database wasn't flushed
+# yet when they ran).
+if [ -f "${SCRIPT_DIR}/uninstall.sh" ] && [ -d "${FP_HOME}" ]; then
+    install -m 0755 -o "${FP_USER}" -g "${FP_USER}" \
+        "${SCRIPT_DIR}/uninstall.sh" "${FP_HOME}/uninstall.sh" 2>/dev/null || \
+        cp "${SCRIPT_DIR}/uninstall.sh" "${FP_HOME}/uninstall.sh" 2>/dev/null || true
+    chmod 0755 "${FP_HOME}/uninstall.sh" 2>/dev/null || true
+fi
+if [ -f "${REPO_ROOT}/shared/lib/auth.sh" ] && [ -d "${FP_HOME}" ]; then
+    install -m 0644 -o "${FP_USER}" -g "${FP_USER}" \
+        "${REPO_ROOT}/shared/lib/auth.sh" "${FP_HOME}/auth.sh" 2>/dev/null || \
+        cp "${REPO_ROOT}/shared/lib/auth.sh" "${FP_HOME}/auth.sh" 2>/dev/null || true
+fi
+# Re-assert the final ownership/mode we want on the user-facing files.
+if getent group docker >/dev/null 2>&1; then
+    chown "${FP_USER}:docker" "${FP_HOME}/.env" 2>/dev/null || true
+    chown -R "${FP_USER}:docker" "${FP_HOME}/bin" 2>/dev/null || true
+fi
+chmod 0640 "${FP_HOME}/.env" 2>/dev/null || true
+chmod 0755 "${FP_HOME}/bin" "${FP_HOME}/bin/fp" 2>/dev/null || true
 
 # ── Post-install health check ───────────────────────────────────────────────
 log_step "verifying installation health"

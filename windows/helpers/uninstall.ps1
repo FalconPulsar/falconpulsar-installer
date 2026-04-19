@@ -157,12 +157,34 @@ echo "[info] Purge complete"
     Write-Info "To access: wsl -d $Distro -u root -- ls /home/falconpulsar/data"
 }
 
-# Step 4: Remove Start Menu shortcuts
+# Step 4: Remove Start Menu shortcuts (always -- they're broken if the
+# compose files are gone).
 $startMenu = [Environment]::GetFolderPath('CommonPrograms')
 $groupDir  = Join-Path $startMenu 'FalconPulsar'
 if (Test-Path $groupDir) {
     Remove-Item -Path $groupDir -Recurse -Force -ErrorAction SilentlyContinue
     Write-Info "Removed Start Menu group: $groupDir"
+}
+
+# Step 4b (purge only): wipe the Windows-side mirror files, auto-start key,
+# and the fp.exe cache. Without this, "Remove all" leaves the tray from
+# autostart and the .env mirror / fp.exe sitting in the user profile.
+if ($Purge) {
+    $winHome = Join-Path $env:USERPROFILE 'falconpulsar'
+    if (Test-Path $winHome) {
+        Remove-Item -Path $winHome -Recurse -Force -ErrorAction SilentlyContinue
+        Write-Info "Removed Windows-side mirror: $winHome"
+    }
+    $localApp = Join-Path $env:LOCALAPPDATA 'falconpulsar'
+    if (Test-Path $localApp) {
+        Remove-Item -Path $localApp -Recurse -Force -ErrorAction SilentlyContinue
+        Write-Info "Removed fp.exe cache: $localApp"
+    }
+    $runKey = 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run'
+    if (Get-ItemProperty -Path $runKey -Name 'FalconPulsar' -ErrorAction SilentlyContinue) {
+        Remove-ItemProperty -Path $runKey -Name 'FalconPulsar' -ErrorAction SilentlyContinue
+        Write-Info 'Removed HKCU Run auto-start entry: FalconPulsar'
+    }
 }
 
 # Sentinel cleanup
