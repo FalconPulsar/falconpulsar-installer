@@ -1421,128 +1421,191 @@ begin
 end;
 
 procedure ExistingRadioChanged(Sender: TObject); forward;
+procedure LayoutExistingPage(); forward;
+
+// Declared outside of the creation procedure so LayoutExistingPage can reach it.
+var
+  ExistingIntroLabel: TNewStaticText;
 
 procedure CreateExistingInstallPage();
-var
-  IntroLabel: TNewStaticText;
-  Y: Integer;
 begin
   ExistingPage := CreateCustomPage(
     wpWelcome,
     'Existing Installation',
     'We found a prior FalconPulsar install on this machine');
 
-  IntroLabel := TNewStaticText.Create(ExistingPage);
-  IntroLabel.Parent  := ExistingPage.Surface;
-  IntroLabel.Left    := ScaleX(8);
-  IntroLabel.Top     := ScaleY(8);
-  IntroLabel.Width   := ExistingPage.SurfaceWidth - ScaleX(16);
-  IntroLabel.AutoSize := False;
-  IntroLabel.Height  := ScaleY(30);
-  IntroLabel.WordWrap := True;
-  IntroLabel.Caption :=
-    'We detected state from a previous install below. Choose how to proceed. ' +
-    'Fresh install will DELETE your database and cannot be undone.';
+  // Intro — 2 lines is plenty (we know the title says "prior install").
+  ExistingIntroLabel := TNewStaticText.Create(ExistingPage);
+  ExistingIntroLabel.Parent  := ExistingPage.Surface;
+  ExistingIntroLabel.Left    := ScaleX(8);
+  ExistingIntroLabel.Top     := ScaleY(4);
+  ExistingIntroLabel.Width   := ExistingPage.SurfaceWidth - ScaleX(16);
+  ExistingIntroLabel.AutoSize := False;
+  ExistingIntroLabel.Height  := ScaleY(24);
+  ExistingIntroLabel.WordWrap := True;
+  ExistingIntroLabel.Caption :=
+    'We detected the following state from a previous install. Choose how to proceed.';
 
+  // Inventory: height is set dynamically by LayoutExistingPage based on
+  // how many lines the detector found. Shown in monospace for alignment.
   ExistingInventoryLabel := TNewStaticText.Create(ExistingPage);
-  ExistingInventoryLabel.Parent := ExistingPage.Surface;
-  ExistingInventoryLabel.Left   := ScaleX(8);
-  ExistingInventoryLabel.Top    := ScaleY(42);
-  ExistingInventoryLabel.Width  := ExistingPage.SurfaceWidth - ScaleX(16);
+  ExistingInventoryLabel.Parent   := ExistingPage.Surface;
+  ExistingInventoryLabel.Left     := ScaleX(8);
+  ExistingInventoryLabel.Width    := ExistingPage.SurfaceWidth - ScaleX(16);
   ExistingInventoryLabel.AutoSize := False;
-  ExistingInventoryLabel.Height := ScaleY(110);
-  ExistingInventoryLabel.WordWrap := True;
+  ExistingInventoryLabel.WordWrap := False;
   ExistingInventoryLabel.Font.Name := 'Consolas';
   ExistingInventoryLabel.Font.Size := 8;
-  ExistingInventoryLabel.Caption := '  (scanning...)';
-
-  Y := ScaleY(160);
+  ExistingInventoryLabel.Caption  := '  (scanning...)';
 
   ExistingUpgradeRadio := TNewRadioButton.Create(ExistingPage);
   ExistingUpgradeRadio.Parent  := ExistingPage.Surface;
   ExistingUpgradeRadio.Left    := ScaleX(8);
-  ExistingUpgradeRadio.Top     := Y;
   ExistingUpgradeRadio.Width   := ExistingPage.SurfaceWidth - ScaleX(16);
-  ExistingUpgradeRadio.Height  := ScaleY(18);
+  ExistingUpgradeRadio.Height  := ScaleY(17);
   ExistingUpgradeRadio.Caption := 'Upgrade in place -- pull latest images, keep data and settings';
   ExistingUpgradeRadio.Checked := True;
   ExistingUpgradeRadio.OnClick := @ExistingRadioChanged;
-  Y := Y + ScaleY(22);
 
   ExistingReinstallRadio := TNewRadioButton.Create(ExistingPage);
   ExistingReinstallRadio.Parent  := ExistingPage.Surface;
   ExistingReinstallRadio.Left    := ScaleX(8);
-  ExistingReinstallRadio.Top     := Y;
   ExistingReinstallRadio.Width   := ExistingPage.SurfaceWidth - ScaleX(16);
-  ExistingReinstallRadio.Height  := ScaleY(18);
+  ExistingReinstallRadio.Height  := ScaleY(17);
   ExistingReinstallRadio.Caption := 'Reinstall (keep data) -- recreate stack files, preserve database';
   ExistingReinstallRadio.OnClick := @ExistingRadioChanged;
-  Y := Y + ScaleY(22);
 
   ExistingFreshRadio := TNewRadioButton.Create(ExistingPage);
   ExistingFreshRadio.Parent  := ExistingPage.Surface;
   ExistingFreshRadio.Left    := ScaleX(8);
-  ExistingFreshRadio.Top     := Y;
   ExistingFreshRadio.Width   := ExistingPage.SurfaceWidth - ScaleX(16);
-  ExistingFreshRadio.Height  := ScaleY(18);
+  ExistingFreshRadio.Height  := ScaleY(17);
   ExistingFreshRadio.Caption := 'Fresh install -- DELETE ALL DATA (containers, images, volumes, database)';
   ExistingFreshRadio.Font.Color := $0000A0;
   ExistingFreshRadio.OnClick := @ExistingRadioChanged;
-  Y := Y + ScaleY(24);
 
   ExistingFreshWarnLabel := TNewStaticText.Create(ExistingPage);
   ExistingFreshWarnLabel.Parent := ExistingPage.Surface;
   ExistingFreshWarnLabel.Left   := ScaleX(28);
-  ExistingFreshWarnLabel.Top    := Y;
   ExistingFreshWarnLabel.Width  := ExistingPage.SurfaceWidth - ScaleX(36);
   ExistingFreshWarnLabel.AutoSize := False;
-  ExistingFreshWarnLabel.Height := ScaleY(18);
+  ExistingFreshWarnLabel.Height := ScaleY(16);
   ExistingFreshWarnLabel.WordWrap := True;
   ExistingFreshWarnLabel.Font.Style := [fsBold];
   ExistingFreshWarnLabel.Font.Color := $0000A0;
   ExistingFreshWarnLabel.Visible := False;
   ExistingFreshWarnLabel.Caption := 'This is irreversible. Your time-series database will be lost.';
-  Y := Y + ScaleY(20);
 
   ExistingFreshConfirmLabel := TNewStaticText.Create(ExistingPage);
   ExistingFreshConfirmLabel.Parent := ExistingPage.Surface;
   ExistingFreshConfirmLabel.Left   := ScaleX(28);
-  ExistingFreshConfirmLabel.Top    := Y;
   ExistingFreshConfirmLabel.Width  := ExistingPage.SurfaceWidth - ScaleX(36);
   ExistingFreshConfirmLabel.AutoSize := False;
-  ExistingFreshConfirmLabel.Height := ScaleY(18);
+  ExistingFreshConfirmLabel.Height := ScaleY(16);
   ExistingFreshConfirmLabel.Visible := False;
   ExistingFreshConfirmLabel.Caption := 'Type DELETE (uppercase) to confirm:';
-  Y := Y + ScaleY(20);
 
   ExistingFreshConfirmEdit := TNewEdit.Create(ExistingPage);
   ExistingFreshConfirmEdit.Parent := ExistingPage.Surface;
   ExistingFreshConfirmEdit.Left   := ScaleX(28);
-  ExistingFreshConfirmEdit.Top    := Y;
   ExistingFreshConfirmEdit.Width  := ScaleX(140);
   ExistingFreshConfirmEdit.Visible := False;
-  Y := Y + ScaleY(28);
 
   ExistingRemoveImagesCheck := TNewCheckBox.Create(ExistingPage);
   ExistingRemoveImagesCheck.Parent := ExistingPage.Surface;
   ExistingRemoveImagesCheck.Left   := ScaleX(8);
-  ExistingRemoveImagesCheck.Top    := Y;
   ExistingRemoveImagesCheck.Width  := ExistingPage.SurfaceWidth - ScaleX(16);
-  ExistingRemoveImagesCheck.Height := ScaleY(18);
+  ExistingRemoveImagesCheck.Height := ScaleY(17);
   ExistingRemoveImagesCheck.Caption := 'Also remove cached Docker images (slows first re-enable; recommended for fresh)';
   ExistingRemoveImagesCheck.Checked := False;
+
+  // Initial layout pass; real content arrives via CurPageChanged -> LayoutExistingPage.
+  LayoutExistingPage();
+end;
+
+// Count how many newline-separated rows the inventory label's caption has,
+// so the inventory box height tracks the content. Falls back to 1 for empty.
+function InventoryLineCount(): Integer;
+var
+  I: Integer;
+  S: String;
+begin
+  Result := 1;
+  S := ExistingInventoryLabel.Caption;
+  for I := 1 to Length(S) do
+    if S[I] = #10 then
+      Result := Result + 1;
+  if Result < 1 then Result := 1;
+  if Result > 6 then Result := 6;   // hard cap so radios never get pushed off-screen
+end;
+
+// Dynamic layout — called from CurPageChanged (once) and ExistingRadioChanged
+// (every time the user flips a radio). Repositions everything based on:
+//   * how many inventory lines we have (1 line vs 7 lines makes a big
+//     difference in vertical usage)
+//   * which action is selected (Fresh exposes 3 extra controls;
+//     Upgrade hides the "remove images" checkbox entirely).
+// Keeps the entire page inside the default ~275 px Inno Setup surface.
+procedure LayoutExistingPage();
+var
+  Y, InvH, Gap: Integer;
+  IsFresh: Boolean;
+begin
+  if ExistingPage = nil then Exit;
+
+  Y := ExistingIntroLabel.Top + ExistingIntroLabel.Height + ScaleY(4);
+  InvH := InventoryLineCount() * ScaleY(14);   // ~14 px per Consolas row at 8pt
+  ExistingInventoryLabel.Top    := Y;
+  ExistingInventoryLabel.Height := InvH;
+  Y := Y + InvH + ScaleY(6);
+
+  Gap := ScaleY(4);
+  ExistingUpgradeRadio.Top   := Y;   Y := Y + ExistingUpgradeRadio.Height   + Gap;
+  ExistingReinstallRadio.Top := Y;   Y := Y + ExistingReinstallRadio.Height + Gap;
+  ExistingFreshRadio.Top     := Y;   Y := Y + ExistingFreshRadio.Height     + Gap;
+
+  IsFresh := ExistingFreshRadio.Checked;
+
+  if IsFresh then
+  begin
+    Y := Y + ScaleY(2);
+    ExistingFreshWarnLabel.Top := Y;
+    ExistingFreshWarnLabel.Visible := True;
+    Y := Y + ExistingFreshWarnLabel.Height + ScaleY(2);
+
+    ExistingFreshConfirmLabel.Top := Y;
+    ExistingFreshConfirmLabel.Visible := True;
+    Y := Y + ExistingFreshConfirmLabel.Height + ScaleY(2);
+
+    ExistingFreshConfirmEdit.Top := Y;
+    ExistingFreshConfirmEdit.Visible := True;
+    Y := Y + ExistingFreshConfirmEdit.Height + ScaleY(6);
+  end else
+  begin
+    ExistingFreshWarnLabel.Visible    := False;
+    ExistingFreshConfirmLabel.Visible := False;
+    ExistingFreshConfirmEdit.Visible  := False;
+  end;
+
+  // "Also remove cached Docker images" is only meaningful for Fresh or
+  // Reinstall. On Upgrade the whole point is to keep images around.
+  if ExistingUpgradeRadio.Checked then
+  begin
+    ExistingRemoveImagesCheck.Visible := False;
+  end else
+  begin
+    ExistingRemoveImagesCheck.Top := Y;
+    ExistingRemoveImagesCheck.Visible := True;
+  end;
 end;
 
 procedure ExistingRadioChanged(Sender: TObject);
-var
-  IsFresh: Boolean;
 begin
-  IsFresh := ExistingFreshRadio.Checked;
-  ExistingFreshWarnLabel.Visible    := IsFresh;
-  ExistingFreshConfirmLabel.Visible := IsFresh;
-  ExistingFreshConfirmEdit.Visible  := IsFresh;
-  if IsFresh then
+  // Auto-check "remove cached images" when user picks Fresh — matches the
+  // default behaviour of the macOS SwiftUI installer.
+  if ExistingFreshRadio.Checked then
     ExistingRemoveImagesCheck.Checked := True;
+  LayoutExistingPage();
 end;
 
 // ── Build the custom legal acknowledgement page ──────────────────────────
@@ -1668,7 +1731,8 @@ begin
     WizardForm.NextButton.Enabled := LegalCheckBox.Checked;
 
   // Existing-install page: populate the inventory label from the
-  // detection we ran in InitializeWizard.
+  // detection we ran in InitializeWizard, then lay the page out based
+  // on how many inventory lines we have + which action is selected.
   if (ExistingPage <> nil) and (CurPageID = ExistingPage.ID) then
   begin
     if ExistingInventoryText <> '' then
@@ -1680,7 +1744,7 @@ begin
       ExistingUpgradeRadio.Checked := True
     else
       ExistingFreshRadio.Checked := True;
-    ExistingRadioChanged(nil);
+    LayoutExistingPage();
   end;
 end;
 
