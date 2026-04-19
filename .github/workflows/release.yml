@@ -71,6 +71,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.22'
+          cache-dependency-path: console/go.sum
 
       - name: Build fp.exe (to be bundled by the installer)
         shell: bash
@@ -125,6 +126,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.22'
+          cache-dependency-path: console/go.sum
 
       - name: Build DMG via build-dmg.sh
         run: |

@@ -66,6 +66,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.22'
+          cache-dependency-path: console/go.sum
 
       - name: Build fp.exe wrapper (launches Linux fp inside WSL)
         shell: bash
