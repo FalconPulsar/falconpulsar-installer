@@ -258,15 +258,32 @@ set -e
 log_info "Docker images removed"
 
 # Step 3b (purge only): prune any orphan volumes whose names match falconpulsar*
+# Compose currently uses bind mounts only (no named volumes), but earlier
+# versions did, and unrelated docker volumes named "falconpulsar*" should be
+# removed too. Surface the actual error if rm fails — was hidden before.
 if [ "$FP_PURGE" = "1" ]; then
-    log_step "Pruning orphan volumes"
+    log_step "Pruning orphan Docker named volumes"
     set +e
-    docker volume ls --format '{{.Name}}' 2>/dev/null | \
-        grep -E '^falconpulsar' | while IFS= read -r vol; do
-        [ -n "$vol" ] && docker volume rm -f "$vol" >/dev/null 2>&1
-    done
+    matched=0
+    failed=0
+    while IFS= read -r vol; do
+        [ -z "$vol" ] && continue
+        matched=$((matched + 1))
+        if docker volume rm -f "$vol"; then
+            log_info "removed volume: $vol"
+        else
+            failed=$((failed + 1))
+            log_warn "failed to remove volume: $vol (likely still in use)"
+        fi
+    done < <(docker volume ls --format '{{.Name}}' 2>/dev/null | grep -E '^falconpulsar')
     set -e
-    log_info "Orphan volumes removed"
+    if [ "$matched" -eq 0 ]; then
+        log_info "no falconpulsar named volumes found (compose uses bind mounts)"
+    elif [ "$failed" -eq 0 ]; then
+        log_info "all $matched orphan volume(s) removed"
+    else
+        log_warn "$failed of $matched volumes could not be removed"
+    fi
 fi
 
 # Step 4: Remove the menu bar app
@@ -291,22 +308,58 @@ rm -rf /tmp/falconpulsar-installer 2>/dev/null || true
 rm -f /tmp/falconpulsar-install.log 2>/dev/null || true
 
 # Step 7 (LAST): stack-directory removal. This deletes this script file
-# itself when running from ~/falconpulsar, so it MUST be the final step —
+# itself when running from ~/falconpulsar, so it MUST be the final step --
 # any code after this may not execute if bash was reading line-by-line.
 log_step "Removing application files"
+
+# Helper: try `rm -rf`; if it fails with "Operation not permitted" because
+# container-owned files have a different UID than the host user, retry
+# under sudo. macOS will prompt for the user's password if not already
+# cached -- the user explicitly initiated an uninstall so this prompt
+# is expected behaviour.
+fp_rm_rf() {
+    local path="$1"
+    [ -z "$path" ] && return 0
+    [ ! -e "$path" ] && return 0
+    if rm -rf "$path" 2>/tmp/fp-rm-err.$$; then
+        return 0
+    fi
+    local err
+    err="$(cat /tmp/fp-rm-err.$$ 2>/dev/null)"
+    rm -f /tmp/fp-rm-err.$$
+    log_warn "rm failed: $err"
+    log_info "retrying with sudo (may prompt for your macOS password)..."
+    if sudo rm -rf "$path"; then
+        log_info "removed $path with sudo"
+        return 0
+    fi
+    log_warn "sudo rm also failed for $path -- some files may remain"
+    return 1
+}
+
 if [ "$FP_PURGE" = "1" ]; then
     # Partial cleanup first (files we know are safe) to minimize the amount
-    # of work `rm -rf` has to do on the doomed directory.
-    rm -f "${FP_HOME:?}/compose.yml" "${FP_HOME:?}/.env" 2>/dev/null || true
-    rm -rf "${FP_HOME:?}/.docker" "${FP_HOME:?}/ai-gateway-data" "${FP_HOME:?}/bin" 2>/dev/null || true
-    rm -rf "${FP_HOME:?}"
-    log_info "Deleted ${FP_HOME} (database removed)"
+    # of work the final `rm -rf` has to do on the doomed directory.
+    fp_rm_rf "${FP_HOME:?}/compose.yml"
+    fp_rm_rf "${FP_HOME:?}/.env"
+    fp_rm_rf "${FP_HOME:?}/.docker"
+    fp_rm_rf "${FP_HOME:?}/ai-gateway-data"
+    fp_rm_rf "${FP_HOME:?}/gateway.yaml"
+    fp_rm_rf "${FP_HOME:?}/bin"
+    fp_rm_rf "${FP_HOME:?}/data"
+    fp_rm_rf "${FP_HOME:?}"
+    if [ -d "${FP_HOME}" ]; then
+        log_warn "${FP_HOME} could not be fully removed -- check 'ls -la ${FP_HOME}' for what's left."
+    else
+        log_info "Deleted ${FP_HOME} (database removed)"
+    fi
 else
-    rm -f "${FP_HOME:?}/compose.yml" 2>/dev/null || true
-    rm -f "${FP_HOME:?}/.env" 2>/dev/null || true
-    rm -rf "${FP_HOME:?}/.docker" 2>/dev/null || true
-    rm -rf "${FP_HOME:?}/ai-gateway-data" 2>/dev/null || true
-    rm -rf "${FP_HOME:?}/bin" 2>/dev/null || true
+    fp_rm_rf "${FP_HOME:?}/compose.yml"
+    fp_rm_rf "${FP_HOME:?}/.env"
+    fp_rm_rf "${FP_HOME:?}/.docker"
+    fp_rm_rf "${FP_HOME:?}/ai-gateway-data"
+    fp_rm_rf "${FP_HOME:?}/gateway.yaml"
+    fp_rm_rf "${FP_HOME:?}/bin"
     log_info "Application files removed"
     log_info "Database preserved at ${FP_HOME}/data"
 fi
