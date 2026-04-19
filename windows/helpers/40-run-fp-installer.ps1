@@ -20,10 +20,13 @@
 
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory)] [string] $Distro,
-    [Parameter(Mandatory)] [string] $InstallDir,
-    [Parameter(Mandatory)] [string] $AdminUser,
-    [Parameter(Mandatory)] [string] $AdminPass,
+    # Mandatory removed so a missing-arg crash is catchable by our trap +
+    # surfaced via Write-FpLogLine instead of PowerShell's interactive
+    # prompt that hangs/fails silently inside Inno Setup's SW_HIDE shell.
+    [string] $Distro = '',
+    [string] $InstallDir = '',
+    [string] $AdminUser = '',
+    [string] $AdminPass = '',
     [string] $Registry = 'falconpulsar',
     [string] $RegistryUser = '',
     [string] $RegistryPass = '',
@@ -33,28 +36,41 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-. (Join-Path $PSScriptRoot 'lib.ps1')
 
-# Catch ANY uncaught error, write it to the install log, and exit 1.
-# Without this, Inno Setup's RunHelper sees only "exited with code 1"
-# and the user has no way to know what went wrong because the helper
-# is launched with SW_HIDE and we don't capture stdout/stderr from it.
+# Trap MUST be installed before lib.ps1 dot-source — if lib.ps1 itself
+# has a parse error or a dependency miss, this is the only way to find
+# out (PowerShell exits 1 silently otherwise). Direct file write because
+# Write-FpLogLine isn't defined yet at this point.
+$Script:EarlyLogPath = Join-Path $env:TEMP 'falconpulsar-install.log'
 trap {
     $msg = $_.Exception.Message
     $where = $_.InvocationInfo.PositionMessage
-    Write-FpLogLine ''
-    Write-FpLogLine "[error] 40-run-fp-installer.ps1 crashed: $msg"
-    Write-FpLogLine "[error] At: $where"
-    Write-FpLogLine "[error] Stack:"
-    foreach ($line in ($_.ScriptStackTrace -split "`n")) {
-        Write-FpLogLine "[error]   $line"
-    }
+    $stack = $_.ScriptStackTrace
+    $line = "`n[error] 40-run-fp-installer.ps1 crashed: $msg`n[error] At: $where`n[error] Stack:`n$stack`n"
+    try {
+        Add-Content -Path $Script:EarlyLogPath -Value $line -ErrorAction SilentlyContinue
+    } catch { }
     exit 1
 }
 
-# Heartbeat — confirms the helper at least started running.
-Write-FpLogLine ''
-Write-FpLogLine "==> 40-run-fp-installer.ps1 entered (PSVersion=$($PSVersionTable.PSVersion))"
+# Heartbeat — direct write before lib.ps1 is loaded.
+try {
+    Add-Content -Path $Script:EarlyLogPath -Value "`n==> 40-run-fp-installer.ps1 entered (PSVersion=$($PSVersionTable.PSVersion), Distro='$Distro', InstallDir='$InstallDir', AdminUser='$AdminUser')" -ErrorAction SilentlyContinue
+} catch { }
+
+. (Join-Path $PSScriptRoot 'lib.ps1')
+
+# Manually validate the params we used to mark Mandatory.
+foreach ($pair in @(
+    @{Name='Distro';      Value=$Distro},
+    @{Name='InstallDir';  Value=$InstallDir},
+    @{Name='AdminUser';   Value=$AdminUser},
+    @{Name='AdminPass';   Value=$AdminPass}
+)) {
+    if ([string]::IsNullOrEmpty($pair.Value)) {
+        Stop-WithError "Required parameter -$($pair.Name) was not provided (got empty string)."
+    }
+}
 
 Write-Step 'Running the FalconPulsar bash installer inside WSL'
 

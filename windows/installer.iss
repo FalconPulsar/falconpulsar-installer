@@ -589,19 +589,29 @@ var
   ResultCode: Integer;
   HelperPath: String;
   FullArgs: String;
+  CaptureLog: String;
+  CapturedContent: AnsiString;
 begin
   // Update the wizard status label so the user sees what's happening
   WizardForm.StatusLabel.Caption := StatusMsg;
   WizardForm.Refresh();
 
   HelperPath := ExpandConstant('{app}\helpers\') + ScriptName;
-  FullArgs := '-NoProfile -ExecutionPolicy Bypass -File "' + HelperPath + '"';
+
+  // Capture PowerShell's stdout AND stderr to a per-helper log file.
+  // Without this, when a helper exits non-zero we have no idea what
+  // happened because Inno Setup's Exec doesn't pipe child output anywhere.
+  // We launch via cmd.exe so the > redirection is interpreted by the
+  // shell, not PowerShell.
+  CaptureLog := AddBackslash(GetEnv('TEMP')) + 'falconpulsar-' + ScriptName + '.out';
+  FullArgs := '/c powershell.exe -NoProfile -ExecutionPolicy Bypass -File "' + HelperPath + '"';
   if Length(ExtraArgs) > 0 then
     FullArgs := FullArgs + ' ' + ExtraArgs;
+  FullArgs := FullArgs + ' > "' + CaptureLog + '" 2>&1';
 
   LogInfo('Running helper: ' + ScriptName);
 
-  if not Exec('powershell.exe', FullArgs,
+  if not Exec(ExpandConstant('{cmd}'), FullArgs,
     ExpandConstant('{app}\helpers'), SW_HIDE, ewWaitUntilTerminated, ResultCode) then
   begin
     LogError('Helper ' + ScriptName + ' failed to launch');
@@ -613,6 +623,21 @@ begin
   if ResultCode <> 0 then
   begin
     LogError('Helper ' + ScriptName + ' exited with code ' + IntToStr(ResultCode));
+    // Append the captured stdout/stderr to the install log so the user
+    // can see what PowerShell printed before dying. Truncated to 4 KB to
+    // keep the dialog readable.
+    if FileExists(CaptureLog) then
+    begin
+      if LoadStringFromFile(CaptureLog, CapturedContent) then
+      begin
+        if Length(CapturedContent) > 4096 then
+          CapturedContent := Copy(CapturedContent, Length(CapturedContent) - 4095, 4096);
+        LogError('Captured PowerShell output for ' + ScriptName + ':');
+        LogError('---begin captured output---');
+        LogError(CapturedContent);
+        LogError('---end captured output---');
+      end;
+    end;
     ShowStepError(StatusMsg, ResultCode);
     Result := False;
     Exit;
