@@ -2230,30 +2230,50 @@ var
   HelperPath: String;
   FullArgs: String;
   ResultCode: Integer;
+  ModeOverride: String;
 begin
   if CurUninstallStep = usUninstall then
   begin
     // Kill the tray app if running
     Exec('taskkill.exe', '/F /IM FalconPulsarTray.exe', '',
       SW_HIDE, ewWaitUntilTerminated, ResultCode);
-    // Ask the user what they want to remove
-    Choice := MsgBox(
-      'What would you like to remove?' + #13#10 + #13#10 +
-      'Click YES to remove everything (containers, data, configuration, ' +
-      'database, Start Menu shortcuts). This cannot be undone.' + #13#10 + #13#10 +
-      'Click NO to keep your data and database but remove the application ' +
-      'files, containers, and shortcuts. You can reinstall later and your ' +
-      'data will be preserved.' + #13#10 + #13#10 +
-      'Click CANCEL to abort the uninstall.',
-      mbConfirmation, MB_YESNOCANCEL);
 
-    if Choice = IDCANCEL then
-      Abort;
-
-    if Choice = IDYES then
-      PurgeFlag := '-Purge'
-    else
+    // Honour FP_UNINSTALL_MODE if the caller pre-decided. Set to
+    //   'purge' -> remove everything, no MsgBox
+    //   'keep'  -> keep data,        no MsgBox
+    // Used by `fp uninstall` running inside WSL when it spawns
+    // unins000.exe via interop -- the user already answered the prompt
+    // on the fp CLI side.
+    ModeOverride := GetEnv('FP_UNINSTALL_MODE');
+    if ModeOverride = 'purge' then
+    begin
+      PurgeFlag := '-Purge';
+    end
+    else if ModeOverride = 'keep' then
+    begin
       PurgeFlag := '';
+    end
+    else
+    begin
+      // Interactive: ask the user what they want to remove
+      Choice := MsgBox(
+        'What would you like to remove?' + #13#10 + #13#10 +
+        'Click YES to remove everything (containers, data, configuration, ' +
+        'database, Start Menu shortcuts). This cannot be undone.' + #13#10 + #13#10 +
+        'Click NO to keep your data and database but remove the application ' +
+        'files, containers, and shortcuts. You can reinstall later and your ' +
+        'data will be preserved.' + #13#10 + #13#10 +
+        'Click CANCEL to abort the uninstall.',
+        mbConfirmation, MB_YESNOCANCEL);
+
+      if Choice = IDCANCEL then
+        Abort;
+
+      if Choice = IDYES then
+        PurgeFlag := '-Purge'
+      else
+        PurgeFlag := '';
+    end;
 
     // Run the PowerShell uninstall helper
     HelperPath := ExpandConstant('{app}\helpers\uninstall.ps1');

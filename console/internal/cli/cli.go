@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/falconpulsar/falconpulsar-installer/console/internal/actions"
 	"github.com/falconpulsar/falconpulsar-installer/console/internal/auth"
@@ -385,7 +386,18 @@ func cmdUninstall() *cobra.Command {
 		Use:   "uninstall",
 		Short: "Run the FalconPulsar uninstaller (interactive by default)",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Look for uninstall.sh next to the stack; fall back to system path.
+			// On WSL the install has BOTH a Linux side (containers, /home
+			// stack dir) AND a Windows side (Tray app, fp.exe wrapper,
+			// Start Menu, Add/Remove Programs entry, HKCU Run key). The
+			// bash uninstall.sh inside WSL can only touch the Linux half.
+			// Hand off to the Inno Setup uninstaller on Windows -- it
+			// removes its own files AND calls windows/helpers/uninstall.ps1
+			// which cleans the WSL side. One entry point, both halves done.
+			if isWSL() {
+				return runWindowsUninstaller(purge, yes)
+			}
+
+			// Native Linux / macOS: run the bash uninstaller directly.
 			candidates := []string{
 				filepath.Join(actions.HomeDir(), "uninstall.sh"),
 				"/usr/local/share/falconpulsar/uninstall.sh",
@@ -433,6 +445,78 @@ func cmdUninstall() *cobra.Command {
 	cmd.Flags().BoolVar(&purge, "purge", false, "Remove database and all data (not just the application)")
 	cmd.Flags().BoolVar(&yes, "yes", false, "Non-interactive; assume yes to confirmation prompts")
 	return cmd
+}
+
+// isWSL returns true when this binary is running inside a WSL distro.
+// Both markers are official: the binfmt entry is what lets us run .exe
+// files via interop, and the kernel name carries "microsoft"/"WSL".
+func isWSL() bool {
+	if _, err := os.Stat("/proc/sys/fs/binfmt_misc/WSLInterop"); err == nil {
+		return true
+	}
+	if data, err := os.ReadFile("/proc/version"); err == nil {
+		s := strings.ToLower(string(data))
+		if strings.Contains(s, "microsoft") || strings.Contains(s, "wsl") {
+			return true
+		}
+	}
+	return false
+}
+
+// runWindowsUninstaller execs the Inno Setup uninstaller (unins000.exe)
+// via WSL->Windows interop. It's the only Windows-side tool that can
+// clean Program Files, the Start Menu folder, the Add/Remove Programs
+// entry, and the HKCU Run key. Inno Setup's CurUninstallStepChanged
+// in turn calls our uninstall.ps1 for the WSL container/data cleanup.
+//
+// FP_UNINSTALL_MODE=purge|keep is forwarded via WSLENV so the Inno
+// Setup [Code] block can skip its interactive Yes/No/Cancel MsgBox
+// when the user already said --purge or default-keep on the fp CLI.
+func runWindowsUninstaller(purge, yes bool) error {
+	const uninst = "/mnt/c/Program Files/FalconPulsar/unins000.exe"
+	if _, err := os.Stat(uninst); err != nil {
+		return fmt.Errorf("Windows uninstaller not found at %s\n"+
+			"Open 'Settings > Apps > FalconPulsar > Uninstall' instead, or run the bash\n"+
+			"uninstaller directly: bash %s/uninstall.sh", uninst, actions.HomeDir())
+	}
+
+	mode := "keep"
+	if purge {
+		mode = "purge"
+	}
+	// WSLENV with /u tells WSL to forward this var from Linux env to the
+	// spawned Windows process. Without it, env vars set in bash never
+	// reach unins000.exe.
+	prevWslEnv := os.Getenv("WSLENV")
+	wslEnv := "FP_UNINSTALL_MODE/u"
+	if prevWslEnv != "" && !strings.Contains(prevWslEnv, "FP_UNINSTALL_MODE") {
+		wslEnv = prevWslEnv + ":" + wslEnv
+	}
+
+	args := []string{}
+	if yes {
+		// /VERYSILENT skips the Inno Setup progress UI; SUPPRESSMSGBOXES
+		// hides the standard "are you sure?" prompt. Our custom MsgBox
+		// is gated on FP_UNINSTALL_MODE so it auto-resolves too.
+		args = append(args, "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART")
+	} else {
+		// /SILENT keeps progress visible but skips the initial confirmation.
+		args = append(args, "/SILENT", "/NORESTART")
+	}
+
+	fmt.Fprintln(os.Stderr, "Detected WSL install -- launching the Windows uninstaller (unins000.exe).")
+	fmt.Fprintln(os.Stderr, "It will remove the Tray, fp.exe, Start Menu shortcuts, and the WSL stack.")
+	fmt.Fprintln(os.Stderr, "")
+
+	c := exec.Command(uninst, args...)
+	c.Env = append(os.Environ(),
+		"FP_UNINSTALL_MODE="+mode,
+		"WSLENV="+wslEnv,
+	)
+	c.Stdin = os.Stdin
+	c.Stdout = os.Stdout
+	c.Stderr = os.Stderr
+	return c.Run()
 }
 
 // copyToTemp duplicates the uninstall script to /tmp so bash doesn't die when
