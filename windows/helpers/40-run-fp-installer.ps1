@@ -190,15 +190,58 @@ fi
     exit 0
 }
 
-# For 'fresh' -- clean up WSL-side data before running the full installer
-if ($InstallAction -eq 'fresh' -and $hasExisting) {
-    Write-Info 'Fresh install -- removing existing data inside WSL'
-    $cleanScript = @"
+# For 'fresh' -- definitive WSL-side cleanup. This is the SUPERSET of what
+# the bash installer's own "fresh" path would do. Running it UNCONDITIONALLY
+# when action is 'fresh' guarantees no zombie containers, images, volumes,
+# or networks are left to steal ports (e.g. 7436) before the bash
+# installer's pre-flight port check runs.
+#
+# We don't gate on $hasExisting here because `hasExisting` only checks
+# one file (/home/falconpulsar/data/falconpulsar.toml); there are many
+# ways to have leftover Docker state without that file, which was
+# causing port-conflict failures on supposedly-fresh installs.
+if ($InstallAction -eq 'fresh') {
+    Write-Info 'Fresh install -- wiping any prior FalconPulsar state inside WSL'
+    $cleanScript = @'
 set +e
-cd /home/falconpulsar 2>/dev/null && sudo -u falconpulsar -H sg docker -c 'docker compose --profile ai down --remove-orphans --volumes' 2>/dev/null
-rm -rf /home/falconpulsar
-echo '[ok] Previous install cleaned'
-"@
+# Stop + remove every falconpulsar-* container (frees their ports).
+if command -v docker >/dev/null 2>&1; then
+    docker ps -a --filter 'name=falconpulsar-' -q 2>/dev/null | xargs -r docker rm -f 2>/dev/null
+    # Remove images
+    docker images --filter reference='*falconpulsar*' -q 2>/dev/null | xargs -r docker rmi -f 2>/dev/null
+    # Remove named volumes
+    docker volume ls --format '{{.Name}}' 2>/dev/null | grep -E '^falconpulsar' | xargs -r docker volume rm -f 2>/dev/null
+    # Remove the falconpulsar network (created by compose)
+    docker network rm falconpulsar 2>/dev/null
+fi
+# Wipe host-side paths
+rm -rf /home/falconpulsar/compose.yml /home/falconpulsar/.env \
+       /home/falconpulsar/gateway.yaml /home/falconpulsar/bin \
+       /home/falconpulsar/.docker /home/falconpulsar/ai-gateway-data \
+       /home/falconpulsar/data /home/falconpulsar
+echo '[ok] WSL state wiped -- ready for fresh install'
+'@
+    $null = Invoke-WslBash -Distro $Distro -Script $cleanScript -User root
+}
+
+# For 'reinstall' -- lighter cleanup: stop the stack + remove stack files,
+# but KEEP /home/falconpulsar/data (the database). Matches macOS's
+# "Reinstall (keep data)" behavior.
+if ($InstallAction -eq 'reinstall') {
+    Write-Info 'Reinstall -- stopping stack and rewriting files (database preserved)'
+    $cleanScript = @'
+set +e
+if command -v docker >/dev/null 2>&1; then
+    if [ -f /home/falconpulsar/compose.yml ]; then
+        cd /home/falconpulsar && \
+          sudo -u falconpulsar -H sg docker -c 'docker compose --profile ai down --remove-orphans' 2>/dev/null
+    fi
+    # Also catch any orphan containers (e.g. from an aborted prior run).
+    docker ps -a --filter 'name=falconpulsar-' -q 2>/dev/null | xargs -r docker rm -f 2>/dev/null
+fi
+rm -f /home/falconpulsar/compose.yml /home/falconpulsar/.env /home/falconpulsar/gateway.yaml
+echo '[ok] Reinstall prep complete (database at /home/falconpulsar/data preserved)'
+'@
     $null = Invoke-WslBash -Distro $Distro -Script $cleanScript -User root
 }
 

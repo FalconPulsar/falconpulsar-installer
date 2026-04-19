@@ -115,10 +115,12 @@ Source: "..\shared\lib\existing.sh";                        DestDir: "{app}\shar
 ; ── PowerShell helpers ──────────────────────────────────────────────────────
 Source: "helpers\lib.ps1";                                  DestDir: "{app}\helpers";        Flags: ignoreversion
 Source: "helpers\05-detect-environment.ps1";                 DestDir: "{app}\helpers";        Flags: ignoreversion
+Source: "helpers\06-detect-existing-install.ps1";            DestDir: "{app}\helpers";        Flags: ignoreversion
 ; Also include detection files for temp extraction (ExtractTemporaryFile)
 ; so they can run before {app} is initialized. dontcopy = only extracted
 ; on demand via Pascal Script, not during normal [Files] processing.
 Source: "helpers\05-detect-environment.ps1";                                                     Flags: dontcopy
+Source: "helpers\06-detect-existing-install.ps1";                                                Flags: dontcopy
 Source: "helpers\lib.ps1";                                                                       Flags: dontcopy
 Source: "helpers\00-check-prereqs.ps1";                     DestDir: "{app}\helpers";        Flags: ignoreversion
 Source: "helpers\10-enable-wsl.ps1";                        DestDir: "{app}\helpers";        Flags: ignoreversion
@@ -255,6 +257,25 @@ var
   NeedWslInstall: Boolean;
   NeedDistroInstall: Boolean;
   DetectionDone: Boolean;
+
+  // Existing-install detection (populated by 06-detect-existing-install.ps1
+  // during InitializeWizard). Matches the fields in the macOS installer's
+  // ExistingInstall struct so the UX is consistent across platforms.
+  ExistingPage: TWizardPage;
+  ExistingInventoryLabel: TNewStaticText;
+  ExistingUpgradeRadio: TNewRadioButton;
+  ExistingReinstallRadio: TNewRadioButton;
+  ExistingFreshRadio: TNewRadioButton;
+  ExistingFreshWarnLabel: TNewStaticText;
+  ExistingFreshConfirmLabel: TNewStaticText;
+  ExistingFreshConfirmEdit: TNewEdit;
+  ExistingRemoveImagesCheck: TNewCheckBox;
+  ExistingDetectionDone: Boolean;
+  ExistingHasPrior: Boolean;
+  ExistingHasData: Boolean;
+  ExistingHasContainers: Boolean;
+  ExistingHasImages: Boolean;
+  ExistingInventoryText: String;
 
 // Create the installation checklist on the Installing (progress) page.
 // Called once at the start of the install phase.
@@ -1236,6 +1257,293 @@ begin
   Y := Y + ScaleY(22);
 end;
 
+// ── Existing-install detection + custom wizard page ─────────────────────
+// Matches the macOS SwiftUI installer's "Existing Installation Detected"
+// page. Invokes 06-detect-existing-install.ps1 to probe BOTH Windows-side
+// state and WSL-side state (containers, images, volumes, data dir, etc.),
+// then presents an inventory + 3-way radio: Upgrade / Reinstall / Fresh.
+// Fresh requires typing DELETE to confirm.
+
+function GetExistingSentinelPath(): String;
+begin
+  Result := AddBackslash(GetEnv('TEMP')) + 'falconpulsar-existing.txt';
+end;
+
+// Parse one KEY=VALUE line from the sentinel file. Returns empty string
+// if the key isn't present.
+function SentinelGet(Content: String; Key: String): String;
+var
+  Lines: TArrayOfString;
+  I: Integer;
+  Line, Prefix: String;
+begin
+  Result := '';
+  Lines := [];
+  // Split on CRLF or LF
+  Content := StringChangeEx(Content, #13#10, #10, True);
+  Content := StringChangeEx(Content, #13,   #10, True);
+  Line := '';
+  for I := 1 to Length(Content) do
+  begin
+    if Content[I] = #10 then
+    begin
+      SetArrayLength(Lines, GetArrayLength(Lines) + 1);
+      Lines[GetArrayLength(Lines) - 1] := Line;
+      Line := '';
+    end else
+      Line := Line + Content[I];
+  end;
+  if Line <> '' then
+  begin
+    SetArrayLength(Lines, GetArrayLength(Lines) + 1);
+    Lines[GetArrayLength(Lines) - 1] := Line;
+  end;
+
+  Prefix := Key + '=';
+  for I := 0 to GetArrayLength(Lines) - 1 do
+  begin
+    if Copy(Lines[I], 1, Length(Prefix)) = Prefix then
+    begin
+      Result := Copy(Lines[I], Length(Prefix) + 1, Length(Lines[I]));
+      Exit;
+    end;
+  end;
+end;
+
+// Run 06-detect-existing-install.ps1 synchronously. The helper writes
+// its results to %TEMP%\falconpulsar-existing.txt (a simple key=value
+// text file). We parse that into global Pascal vars.
+procedure RunExistingInstallDetection();
+var
+  HelperPath: String;
+  Args: String;
+  RC: Integer;
+  Sentinel: String;
+  Content: AnsiString;
+begin
+  ExistingDetectionDone := False;
+  ExistingHasPrior      := False;
+  ExistingHasData       := False;
+  ExistingHasContainers := False;
+  ExistingHasImages     := False;
+  ExistingInventoryText := '';
+
+  // Extract to temp so we can run before {app} exists.
+  ExtractTemporaryFile('lib.ps1');
+  ExtractTemporaryFile('06-detect-existing-install.ps1');
+  HelperPath := ExpandConstant('{tmp}\06-detect-existing-install.ps1');
+
+  Args := '-NoProfile -ExecutionPolicy Bypass -File "' + HelperPath + '"';
+  if Length(SelectedDistro) > 0 then
+    Args := Args + ' -Distro "' + SelectedDistro + '"';
+
+  LogInfo('Running existing-install detection...');
+  if not Exec('powershell.exe', Args,
+              ExpandConstant('{tmp}'), SW_HIDE, ewWaitUntilTerminated, RC) then
+  begin
+    LogWarn('Could not launch 06-detect-existing-install.ps1');
+    Exit;
+  end;
+  if RC <> 0 then
+    LogWarn('06-detect-existing-install.ps1 exited with code ' + IntToStr(RC) + ' (continuing anyway)');
+
+  Sentinel := GetExistingSentinelPath();
+  if not FileExists(Sentinel) then
+  begin
+    LogWarn('Existing-install sentinel not found at ' + Sentinel);
+    Exit;
+  end;
+
+  if not LoadStringFromFile(Sentinel, Content) then
+  begin
+    LogWarn('Could not read existing-install sentinel');
+    Exit;
+  end;
+
+  ExistingDetectionDone := True;
+  ExistingHasPrior      := (SentinelGet(Content, 'HasPrior') = 'yes');
+  ExistingHasData       := (SentinelGet(Content, 'WslData')  = 'yes');
+  ExistingHasContainers := (StrToIntDef(SentinelGet(Content, 'Containers'), 0) > 0);
+  ExistingHasImages     := (StrToIntDef(SentinelGet(Content, 'Images'),     0) > 0);
+
+  // Build the multi-line inventory shown on the wizard page.
+  ExistingInventoryText := '';
+  if SentinelGet(Content, 'WslHome') = 'yes' then
+  begin
+    ExistingInventoryText := ExistingInventoryText + '  * WSL stack directory: /home/falconpulsar';
+    if SentinelGet(Content, 'WslHomeSize') <> '' then
+      ExistingInventoryText := ExistingInventoryText + ' (' + SentinelGet(Content, 'WslHomeSize') + ')';
+    ExistingInventoryText := ExistingInventoryText + #13#10;
+  end;
+  if SentinelGet(Content, 'WslData') = 'yes' then
+  begin
+    ExistingInventoryText := ExistingInventoryText + '  * Database (WSL): /home/falconpulsar/data';
+    if SentinelGet(Content, 'WslDataSize') <> '' then
+      ExistingInventoryText := ExistingInventoryText + ' (' + SentinelGet(Content, 'WslDataSize') + ')  -- PRESERVED unless you choose Fresh';
+    ExistingInventoryText := ExistingInventoryText + #13#10;
+  end;
+  if StrToIntDef(SentinelGet(Content, 'Containers'), 0) > 0 then
+  begin
+    ExistingInventoryText := ExistingInventoryText + '  * Docker containers: ' +
+      SentinelGet(Content, 'Containers') + ' (' +
+      SentinelGet(Content, 'ContainersRun') + ' running)' + #13#10;
+  end;
+  if StrToIntDef(SentinelGet(Content, 'Images'), 0) > 0 then
+    ExistingInventoryText := ExistingInventoryText +
+      '  * Cached Docker images: ' + SentinelGet(Content, 'Images') + #13#10;
+  if StrToIntDef(SentinelGet(Content, 'Networks'), 0) > 0 then
+    ExistingInventoryText := ExistingInventoryText +
+      '  * Docker networks: ' + SentinelGet(Content, 'Networks') + #13#10;
+  if StrToIntDef(SentinelGet(Content, 'Volumes'), 0) > 0 then
+    ExistingInventoryText := ExistingInventoryText +
+      '  * Docker named volumes: ' + SentinelGet(Content, 'Volumes') + #13#10;
+  if SentinelGet(Content, 'WinEnv') = 'yes' then
+    ExistingInventoryText := ExistingInventoryText +
+      '  * Windows-side .env mirror: ' + GetEnv('USERPROFILE') + '\falconpulsar\.env' + #13#10;
+  if SentinelGet(Content, 'FpExe') = 'yes' then
+    ExistingInventoryText := ExistingInventoryText +
+      '  * fp console launcher: installed' + #13#10;
+  if SentinelGet(Content, 'InnoKey') = 'yes' then
+    ExistingInventoryText := ExistingInventoryText +
+      '  * Registered with Windows Add/Remove Programs' + #13#10;
+
+  if ExistingInventoryText = '' then
+    ExistingInventoryText := '  (nothing detected)';
+
+  if ExistingHasPrior then
+    LogInfo('Existing-install detection complete: prior state found')
+  else
+    LogInfo('Existing-install detection complete: clean machine');
+
+  // Keep legacy IsUpgrade flag in sync so other code paths stay correct.
+  IsUpgrade := ExistingHasPrior;
+end;
+
+procedure ExistingRadioChanged(Sender: TObject); forward;
+
+procedure CreateExistingInstallPage();
+var
+  IntroLabel: TNewStaticText;
+  Y: Integer;
+begin
+  ExistingPage := CreateCustomPage(
+    wpWelcome,
+    'Existing Installation',
+    'We found a prior FalconPulsar install on this machine');
+
+  IntroLabel := TNewStaticText.Create(ExistingPage);
+  IntroLabel.Parent  := ExistingPage.Surface;
+  IntroLabel.Left    := ScaleX(8);
+  IntroLabel.Top     := ScaleY(8);
+  IntroLabel.Width   := ExistingPage.SurfaceWidth - ScaleX(16);
+  IntroLabel.AutoSize := False;
+  IntroLabel.Height  := ScaleY(30);
+  IntroLabel.WordWrap := True;
+  IntroLabel.Caption :=
+    'We detected state from a previous install below. Choose how to proceed. ' +
+    'Fresh install will DELETE your database and cannot be undone.';
+
+  ExistingInventoryLabel := TNewStaticText.Create(ExistingPage);
+  ExistingInventoryLabel.Parent := ExistingPage.Surface;
+  ExistingInventoryLabel.Left   := ScaleX(8);
+  ExistingInventoryLabel.Top    := ScaleY(42);
+  ExistingInventoryLabel.Width  := ExistingPage.SurfaceWidth - ScaleX(16);
+  ExistingInventoryLabel.AutoSize := False;
+  ExistingInventoryLabel.Height := ScaleY(110);
+  ExistingInventoryLabel.WordWrap := True;
+  ExistingInventoryLabel.Font.Name := 'Consolas';
+  ExistingInventoryLabel.Font.Size := 8;
+  ExistingInventoryLabel.Caption := '  (scanning...)';
+
+  Y := ScaleY(160);
+
+  ExistingUpgradeRadio := TNewRadioButton.Create(ExistingPage);
+  ExistingUpgradeRadio.Parent  := ExistingPage.Surface;
+  ExistingUpgradeRadio.Left    := ScaleX(8);
+  ExistingUpgradeRadio.Top     := Y;
+  ExistingUpgradeRadio.Width   := ExistingPage.SurfaceWidth - ScaleX(16);
+  ExistingUpgradeRadio.Height  := ScaleY(18);
+  ExistingUpgradeRadio.Caption := 'Upgrade in place -- pull latest images, keep data and settings';
+  ExistingUpgradeRadio.Checked := True;
+  ExistingUpgradeRadio.OnClick := @ExistingRadioChanged;
+  Y := Y + ScaleY(22);
+
+  ExistingReinstallRadio := TNewRadioButton.Create(ExistingPage);
+  ExistingReinstallRadio.Parent  := ExistingPage.Surface;
+  ExistingReinstallRadio.Left    := ScaleX(8);
+  ExistingReinstallRadio.Top     := Y;
+  ExistingReinstallRadio.Width   := ExistingPage.SurfaceWidth - ScaleX(16);
+  ExistingReinstallRadio.Height  := ScaleY(18);
+  ExistingReinstallRadio.Caption := 'Reinstall (keep data) -- recreate stack files, preserve database';
+  ExistingReinstallRadio.OnClick := @ExistingRadioChanged;
+  Y := Y + ScaleY(22);
+
+  ExistingFreshRadio := TNewRadioButton.Create(ExistingPage);
+  ExistingFreshRadio.Parent  := ExistingPage.Surface;
+  ExistingFreshRadio.Left    := ScaleX(8);
+  ExistingFreshRadio.Top     := Y;
+  ExistingFreshRadio.Width   := ExistingPage.SurfaceWidth - ScaleX(16);
+  ExistingFreshRadio.Height  := ScaleY(18);
+  ExistingFreshRadio.Caption := 'Fresh install -- DELETE ALL DATA (containers, images, volumes, database)';
+  ExistingFreshRadio.Font.Color := $0000A0;
+  ExistingFreshRadio.OnClick := @ExistingRadioChanged;
+  Y := Y + ScaleY(24);
+
+  ExistingFreshWarnLabel := TNewStaticText.Create(ExistingPage);
+  ExistingFreshWarnLabel.Parent := ExistingPage.Surface;
+  ExistingFreshWarnLabel.Left   := ScaleX(28);
+  ExistingFreshWarnLabel.Top    := Y;
+  ExistingFreshWarnLabel.Width  := ExistingPage.SurfaceWidth - ScaleX(36);
+  ExistingFreshWarnLabel.AutoSize := False;
+  ExistingFreshWarnLabel.Height := ScaleY(18);
+  ExistingFreshWarnLabel.WordWrap := True;
+  ExistingFreshWarnLabel.Font.Style := [fsBold];
+  ExistingFreshWarnLabel.Font.Color := $0000A0;
+  ExistingFreshWarnLabel.Visible := False;
+  ExistingFreshWarnLabel.Caption := 'This is irreversible. Your time-series database will be lost.';
+  Y := Y + ScaleY(20);
+
+  ExistingFreshConfirmLabel := TNewStaticText.Create(ExistingPage);
+  ExistingFreshConfirmLabel.Parent := ExistingPage.Surface;
+  ExistingFreshConfirmLabel.Left   := ScaleX(28);
+  ExistingFreshConfirmLabel.Top    := Y;
+  ExistingFreshConfirmLabel.Width  := ExistingPage.SurfaceWidth - ScaleX(36);
+  ExistingFreshConfirmLabel.AutoSize := False;
+  ExistingFreshConfirmLabel.Height := ScaleY(18);
+  ExistingFreshConfirmLabel.Visible := False;
+  ExistingFreshConfirmLabel.Caption := 'Type DELETE (uppercase) to confirm:';
+  Y := Y + ScaleY(20);
+
+  ExistingFreshConfirmEdit := TNewEdit.Create(ExistingPage);
+  ExistingFreshConfirmEdit.Parent := ExistingPage.Surface;
+  ExistingFreshConfirmEdit.Left   := ScaleX(28);
+  ExistingFreshConfirmEdit.Top    := Y;
+  ExistingFreshConfirmEdit.Width  := ScaleX(140);
+  ExistingFreshConfirmEdit.Visible := False;
+  Y := Y + ScaleY(28);
+
+  ExistingRemoveImagesCheck := TNewCheckBox.Create(ExistingPage);
+  ExistingRemoveImagesCheck.Parent := ExistingPage.Surface;
+  ExistingRemoveImagesCheck.Left   := ScaleX(8);
+  ExistingRemoveImagesCheck.Top    := Y;
+  ExistingRemoveImagesCheck.Width  := ExistingPage.SurfaceWidth - ScaleX(16);
+  ExistingRemoveImagesCheck.Height := ScaleY(18);
+  ExistingRemoveImagesCheck.Caption := 'Also remove cached Docker images (slows first re-enable; recommended for fresh)';
+  ExistingRemoveImagesCheck.Checked := False;
+end;
+
+procedure ExistingRadioChanged(Sender: TObject);
+var
+  IsFresh: Boolean;
+begin
+  IsFresh := ExistingFreshRadio.Checked;
+  ExistingFreshWarnLabel.Visible    := IsFresh;
+  ExistingFreshConfirmLabel.Visible := IsFresh;
+  ExistingFreshConfirmEdit.Visible  := IsFresh;
+  if IsFresh then
+    ExistingRemoveImagesCheck.Checked := True;
+end;
+
 // ── Build the custom legal acknowledgement page ──────────────────────────
 procedure CreateLegalPage();
 var
@@ -1357,6 +1665,22 @@ begin
   // Legal page: gate Next button on checkbox
   if (LegalPage <> nil) and (CurPageID = LegalPage.ID) then
     WizardForm.NextButton.Enabled := LegalCheckBox.Checked;
+
+  // Existing-install page: populate the inventory label from the
+  // detection we ran in InitializeWizard.
+  if (ExistingPage <> nil) and (CurPageID = ExistingPage.ID) then
+  begin
+    if ExistingInventoryText <> '' then
+      ExistingInventoryLabel.Caption := ExistingInventoryText
+    else
+      ExistingInventoryLabel.Caption := '  (nothing detected)';
+    // Default to Upgrade if there's a real prior install; else Fresh.
+    if ExistingHasPrior then
+      ExistingUpgradeRadio.Checked := True
+    else
+      ExistingFreshRadio.Checked := True;
+    ExistingRadioChanged(nil);
+  end;
 end;
 
 // Password strength assessment: returns Weak / Medium / Strong.
@@ -1625,9 +1949,22 @@ end;
 procedure InitializeWizard;
 begin
   DetectionDone := False;
+  ExistingDetectionDone := False;
 
-  // Create all pages first (detection results are not needed yet --
-  // the distro page populates later, and ShouldSkipPage handles it).
+  // Run existing-install detection synchronously before we create the
+  // custom pages. This takes 1-3 seconds (one wsl.exe invocation) and
+  // lets us skip the ExistingPage entirely when there's nothing to
+  // show. Matches the macOS wizard which scans before showing its
+  // Existing-Installation page.
+  WizardForm.StatusLabel.Caption := 'Scanning for prior FalconPulsar state...';
+  WizardForm.Refresh();
+  RunExistingInstallDetection();
+  WizardForm.StatusLabel.Caption := '';
+
+  // Create all pages. CreateExistingInstallPage MUST run before
+  // CreateLegalPage so the page order ends up:
+  //   Welcome -> ExistingInstall (skipped if none) -> Legal -> ...
+  CreateExistingInstallPage();
   CreateLegalPage();
   CreateDistroPage();
   CreateRegistryPage();
@@ -1638,6 +1975,29 @@ end;
 function NextButtonClick(CurPageID: Integer): Boolean;
 begin
   Result := True;
+
+  // Existing-install page: translate the radio selection to InstallAction.
+  // On Fresh, require typing DELETE (matches macOS installer-app UX).
+  if (ExistingPage <> nil) and (CurPageID = ExistingPage.ID) then
+  begin
+    if ExistingFreshRadio.Checked then
+    begin
+      if ExistingFreshConfirmEdit.Text <> 'DELETE' then
+      begin
+        MsgBox('To do a Fresh install, type DELETE (uppercase) in the confirmation field.' + #13#10 +
+               'This will permanently remove your database and cannot be undone.',
+               mbError, MB_OK);
+        Result := False;
+        Exit;
+      end;
+      InstallAction := 'fresh';
+    end
+    else if ExistingReinstallRadio.Checked then
+      InstallAction := 'reinstall'
+    else
+      InstallAction := 'upgrade';
+    LogInfo('User chose install action: ' + InstallAction);
+  end;
 
   // Legal page: must have the checkbox ticked
   if (LegalPage <> nil) and (CurPageID = LegalPage.ID) then
@@ -1697,7 +2057,6 @@ end;
 function InitializeSetup(): Boolean;
 var
   WinVer: TWindowsVersion;
-  Choice: Integer;
 begin
   Result := True;
   IsUpgrade := False;
@@ -1740,74 +2099,17 @@ begin
     Exit;
   end;
 
-  // Detect existing installation via the Inno Setup uninstall registry key.
-  // This key only exists after a COMPLETED previous install -- partial or
-  // failed installs (e.g. test runs that left files behind) don't have it.
-  // The AppId from [Setup] with '_is1' suffix is the standard Inno key name.
+  // Existing-install detection is now delegated to the custom wizard page
+  // `ExistingPage` (created in InitializeWizard). The page runs the full
+  // detection helper (06-detect-existing-install.ps1) which checks BOTH
+  // Windows-side state AND WSL-side state (containers, images, volumes,
+  // /home/falconpulsar), matching the macOS SwiftUI installer's UX.
+  //
+  // Default action is 'fresh'; the page overrides it when the user picks
+  // Upgrade or Reinstall. IsUpgrade is also set by RunExistingInstallDetection
+  // to keep legacy ShouldSkipPage logic working.
   InstallAction := 'fresh';
-
-  if RegKeyExists(HKLM, 'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{#SetupSetting("AppId")}_is1') or
-     RegKeyExists(HKCU, 'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{#SetupSetting("AppId")}_is1') then
-  begin
-    IsUpgrade := True;
-    LogInfo('Existing installation detected');
-
-    // 3-way choice matching the macOS installer. Uses if/else instead of
-    // nested case statements (Inno Setup Pascal doesn't handle nested
-    // case-with-else cleanly).
-    Choice := MsgBox(
-      'FalconPulsar is already installed on this computer.' + #13#10 + #13#10 +
-      'Choose how to proceed:' + #13#10 + #13#10 +
-      '  YES  = Upgrade in place (pull latest images, keep data + settings)' + #13#10 +
-      '  NO   = Reinstall or Fresh install (next dialog)' + #13#10 +
-      '  CANCEL = Exit the installer',
-      mbConfirmation, MB_YESNOCANCEL);
-    if Choice = IDYES then
-    begin
-      InstallAction := 'upgrade';
-      LogInfo('User chose: Upgrade in place');
-    end
-    else if Choice = IDNO then
-    begin
-      Choice := MsgBox(
-        'What about your existing data?' + #13#10 + #13#10 +
-        '  YES  = Reinstall (keep database, create new admin account)' + #13#10 +
-        '  NO   = Fresh install — DELETE ALL DATA (irreversible)' + #13#10 +
-        '  CANCEL = Go back',
-        mbConfirmation, MB_YESNOCANCEL);
-      if Choice = IDYES then
-      begin
-        InstallAction := 'reinstall';
-        LogInfo('User chose: Reinstall (keep data)');
-      end
-      else if Choice = IDNO then
-      begin
-        if MsgBox(
-          'WARNING: This will permanently delete your FalconPulsar database ' +
-          'and all configuration inside WSL.' + #13#10 + #13#10 +
-          'Are you sure?', mbError, MB_YESNO) = IDYES then
-        begin
-          InstallAction := 'fresh';
-          LogInfo('User chose: Fresh install (DELETE ALL DATA)');
-        end else
-        begin
-          Result := False;
-          Exit;
-        end;
-      end else
-      begin
-        Result := False;
-        Exit;
-      end;
-    end else
-    begin
-      Result := False;
-      Exit;
-    end;
-  end else begin
-    LogInfo('No existing installation found -- fresh install mode');
-    InstallAction := 'fresh';
-  end;
+  IsUpgrade := False;
 end;
 
 // Skip the legal and credentials pages on upgrade -- the user already
@@ -1815,6 +2117,13 @@ end;
 function ShouldSkipPage(PageID: Integer): Boolean;
 begin
   Result := False;
+
+  // Skip the Existing-install page when no prior state was detected.
+  if (ExistingPage <> nil) and (PageID = ExistingPage.ID) then
+  begin
+    if not ExistingHasPrior then
+      Result := True;
+  end;
 
   // Skip the distro page when 0 or 1 distros detected (nothing to choose)
   if (DistroPage <> nil) and (PageID = DistroPage.ID) then
