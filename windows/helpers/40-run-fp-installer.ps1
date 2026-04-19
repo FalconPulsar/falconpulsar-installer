@@ -195,7 +195,7 @@ if ($InstallAction -eq 'fresh' -and $hasExisting) {
     Write-Info 'Fresh install -- removing existing data inside WSL'
     $cleanScript = @"
 set +e
-cd /home/falconpulsar 2>/dev/null && sudo -u falconpulsar -H sg docker -c 'docker compose down --remove-orphans --volumes' 2>/dev/null
+cd /home/falconpulsar 2>/dev/null && sudo -u falconpulsar -H sg docker -c 'docker compose --profile ai down --remove-orphans --volumes' 2>/dev/null
 rm -rf /home/falconpulsar
 echo '[ok] Previous install cleaned'
 "@

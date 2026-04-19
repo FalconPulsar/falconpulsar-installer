@@ -134,7 +134,7 @@ if (Test-Path $fpExe) {
 }
 
 New-WslShortcut -Name 'Start FalconPulsar'   -BashCommand 'cd ~ && docker compose up -d'   -Interactive
-New-WslShortcut -Name 'Stop FalconPulsar'    -BashCommand 'cd ~ && docker compose down'    -Interactive
+New-WslShortcut -Name 'Stop FalconPulsar'    -BashCommand 'cd ~ && docker compose --profile ai down'    -Interactive
 New-WslShortcut -Name 'Restart FalconPulsar' -BashCommand 'cd ~ && docker compose restart' -Interactive
 New-WslShortcut -Name 'Show Status'          -BashCommand 'cd ~ && docker compose ps'      -Interactive
 New-WslShortcut -Name 'Tail Logs'            -BashCommand 'cd ~ && docker compose logs -f' -Interactive

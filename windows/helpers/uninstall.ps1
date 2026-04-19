@@ -86,10 +86,10 @@ if command -v docker >/dev/null 2>&1; then
     if [ -f /home/falconpulsar/compose.yml ]; then
         cd /home/falconpulsar
         if [ "`$PURGE" = "1" ]; then
-            sudo -u falconpulsar -H sg docker -c "docker compose down --remove-orphans --volumes" 2>/dev/null
+            sudo -u falconpulsar -H sg docker -c "docker compose --profile ai down --remove-orphans --volumes" 2>/dev/null
             echo "[info] Containers and named volumes removed"
         else
-            sudo -u falconpulsar -H sg docker -c "docker compose down --remove-orphans" 2>/dev/null
+            sudo -u falconpulsar -H sg docker -c "docker compose --profile ai down --remove-orphans" 2>/dev/null
             echo "[info] Containers stopped and removed (volumes preserved)"
         fi
     else

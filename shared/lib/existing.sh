@@ -161,13 +161,13 @@ fp_apply_existing_action() {
         reinstall)
             log_info "Reinstall — stopping containers, rewriting stack files, preserving data"
             if [ -f "${home}/compose.yml" ]; then
-                ( cd "$home" && docker compose down 2>/dev/null ) || true
+                ( cd "$home" && docker compose --profile ai down 2>/dev/null ) || true
             fi
             ;;
         fresh)
             log_info "Fresh install — removing everything"
             if [ -f "${home}/compose.yml" ]; then
-                ( cd "$home" && docker compose down --remove-orphans --volumes 2>/dev/null ) || true
+                ( cd "$home" && docker compose --profile ai down --remove-orphans --volumes 2>/dev/null ) || true
             fi
             # Best-effort image + orphan volume cleanup
             if command -v docker >/dev/null 2>&1; then
