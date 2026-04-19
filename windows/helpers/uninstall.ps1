@@ -193,8 +193,11 @@ if (Test-Path $groupDir) {
 }
 
 # Step 4b (purge only): wipe the Windows-side mirror files, auto-start key,
-# and the fp.exe cache. Without this, "Remove all" leaves the tray from
-# autostart and the .env mirror / fp.exe sitting in the user profile.
+# the fp.exe cache, and the WindowsApps copy of fp.exe. Without this,
+# "Remove all" leaves the tray from autostart and the .env mirror / fp.exe
+# sitting in the user profile. Inno Setup normally auto-removes the
+# WindowsApps copy via its [Files] tracking, but this defensive pass
+# catches the case where someone purged via this script directly.
 if ($Purge) {
     $winHome = Join-Path $env:USERPROFILE 'falconpulsar'
     if (Test-Path $winHome) {
@@ -205,6 +208,11 @@ if ($Purge) {
     if (Test-Path $localApp) {
         Remove-Item -Path $localApp -Recurse -Force -ErrorAction SilentlyContinue
         Write-Info "Removed fp.exe cache: $localApp"
+    }
+    $windowsAppsFp = Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps\fp.exe'
+    if (Test-Path $windowsAppsFp) {
+        Remove-Item -Path $windowsAppsFp -Force -ErrorAction SilentlyContinue
+        Write-Info "Removed WindowsApps fp.exe: $windowsAppsFp"
     }
     $runKey = 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run'
     if (Get-ItemProperty -Path $runKey -Name 'FalconPulsar' -ErrorAction SilentlyContinue) {

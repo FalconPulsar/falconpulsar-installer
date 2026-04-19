@@ -283,6 +283,7 @@ echo '[ok] WSL state wiped -- ready for fresh install'
     Write-Info 'Fresh install -- wiping Windows-side mirror files and registry'
     Remove-Item -Recurse -Force (Join-Path $env:USERPROFILE 'falconpulsar') -ErrorAction SilentlyContinue
     Remove-Item -Recurse -Force (Join-Path $env:LOCALAPPDATA 'falconpulsar') -ErrorAction SilentlyContinue
+    Remove-Item -Force (Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps\fp.exe') -ErrorAction SilentlyContinue
     $startMenu = [Environment]::GetFolderPath('CommonPrograms')
     if ($startMenu) {
         Remove-Item -Recurse -Force (Join-Path $startMenu 'FalconPulsar') -ErrorAction SilentlyContinue

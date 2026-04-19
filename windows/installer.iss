@@ -145,6 +145,16 @@ Source: "..\console\dist\fp-windows-amd64.exe"; \
     DestDir: "{localappdata}\falconpulsar\bin"; \
     DestName: "fp.exe"; \
     Flags: ignoreversion
+; Drop a second copy into %LOCALAPPDATA%\Microsoft\WindowsApps\ so `fp` is on
+; PATH without depending on the [Tasks] checkbox or a shell restart.
+; Windows puts that folder on every user's PATH at login (Win10 1709+), and
+; PATH is scanned per-lookup -- so even shells opened BEFORE install pick up
+; fp.exe immediately. Inno Setup auto-removes this on uninstall (default
+; behavior for [Files] entries).
+Source: "..\console\dist\fp-windows-amd64.exe"; \
+    DestDir: "{localappdata}\Microsoft\WindowsApps"; \
+    DestName: "fp.exe"; \
+    Flags: ignoreversion
 Source: "..\console\dist\fp-linux-amd64"; \
     DestDir: "{app}"; \
     Flags: ignoreversion
