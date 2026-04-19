@@ -245,6 +245,123 @@ echo '[ok] Reinstall prep complete (database at /home/falconpulsar/data preserve
     $null = Invoke-WslBash -Distro $Distro -Script $cleanScript -User root
 }
 
+# -- 3b. Post-cleanup port verification --------------------------------------
+# The bash installer's step 1 pre-flight fails hard on ANY port conflict
+# (7433/7434/7435/7436/8080). On Windows, WSL-side ss/lsof can't see the
+# process holding a port because Docker Desktop binds it on the Windows
+# host; that's why the bash error ends up blank after "port X is in use".
+#
+# We identify the holder here on the Windows side -- same INTENT as macOS
+# (report who's holding the port so the user can remediate) but using
+# Windows-native tools (Get-NetTCPConnection / tasklist / docker ps).
+# If it's another Docker container we offer to stop it; if it's a native
+# Windows process we report name+PID and tell the user to stop it.
+$FpPorts = @(7433, 7434, 7435, 7436, 8080)
+$Conflicts = @()
+foreach ($p in $FpPorts) {
+    $conn = Get-NetTCPConnection -LocalPort $p -State Listen -ErrorAction SilentlyContinue
+    if ($conn) {
+        $pid_ = ($conn | Select-Object -First 1).OwningProcess
+        $procName = 'unknown'
+        $procPath = ''
+        try {
+            $proc = Get-Process -Id $pid_ -ErrorAction Stop
+            $procName = $proc.ProcessName
+            try { $procPath = $proc.Path } catch { }
+        } catch { }
+
+        # If the holder looks like Docker Desktop's backend, find WHICH
+        # container. docker inspect on all containers is cheap.
+        $containerName = ''
+        if ($procName -match '(?i)docker|com\.docker|wslhost|vpnkit') {
+            try {
+                $containers = & wsl.exe -d $Distro -u root -- bash -c `
+                    "docker ps --format '{{.Names}}|{{.Ports}}' 2>/dev/null" 2>$null
+                foreach ($line in $containers) {
+                    if ($line -match "^([^|]+)\|.*:$p->") {
+                        $containerName = $matches[1]
+                        break
+                    }
+                }
+            } catch { }
+        }
+
+        $Conflicts += [pscustomobject]@{
+            Port          = $p
+            Pid           = $pid_
+            ProcessName   = $procName
+            ProcessPath   = $procPath
+            ContainerName = $containerName
+        }
+    }
+}
+
+if ($Conflicts.Count -gt 0) {
+    Write-FpLogLine ''
+    Write-FpLogLine '[error] Port conflicts detected after cleanup:'
+    $summaryLines = @()
+    $canAutoFix   = $true
+    foreach ($c in $Conflicts) {
+        if ($c.ContainerName) {
+            $line = "  * Port $($c.Port) held by Docker container '$($c.ContainerName)'"
+            $summaryLines += $line
+            Write-FpLogLine "[error] $line"
+        } else {
+            $line = "  * Port $($c.Port) held by Windows process '$($c.ProcessName)' (PID $($c.Pid))"
+            if ($c.ProcessPath) { $line += " at $($c.ProcessPath)" }
+            $summaryLines += $line
+            Write-FpLogLine "[error] $line"
+            $canAutoFix = $false
+        }
+    }
+
+    # If ALL conflicts are from other Docker containers, offer to stop them.
+    # Otherwise we can only report -- killing arbitrary Windows processes
+    # from an installer is unsafe (user might lose unsaved work, break
+    # other services, etc.).
+    Add-Type -AssemblyName System.Windows.Forms
+    Add-Type -AssemblyName System.Drawing
+    if ($canAutoFix) {
+        $nonFpContainers = $Conflicts | Where-Object { $_.ContainerName }
+        $names = ($nonFpContainers | ForEach-Object { $_.ContainerName } | Select-Object -Unique) -join ', '
+        $msg = "FalconPulsar needs TCP ports $($FpPorts -join ', ') but the following Docker " +
+               "container(s) currently use some of them:`n`n$($summaryLines -join "`n")`n`n" +
+               "These are not part of FalconPulsar. Would you like the installer to STOP them now so the " +
+               "install can proceed? (They will be removed with `docker rm -f`.)`n`n" +
+               "Yes  -- stop the listed containers and retry`n" +
+               "No   -- abort so you can stop them yourself"
+        $choice = [System.Windows.Forms.MessageBox]::Show(
+            $msg, 'Port conflict: non-FalconPulsar container(s)',
+            [System.Windows.Forms.MessageBoxButtons]::YesNo,
+            [System.Windows.Forms.MessageBoxIcon]::Warning)
+        if ($choice -eq [System.Windows.Forms.DialogResult]::Yes) {
+            foreach ($c in ($Conflicts | Where-Object { $_.ContainerName })) {
+                Write-Info "Stopping container: $($c.ContainerName)"
+                $null = & wsl.exe -d $Distro -u root -- bash -c `
+                    "docker rm -f '$($c.ContainerName)' 2>&1" 2>&1
+            }
+        } else {
+            Stop-WithError ("Port conflict not resolved. Containers still holding ports: $names")
+        }
+    } else {
+        $msg = "FalconPulsar needs TCP ports $($FpPorts -join ', ') but the following are already in " +
+               "use:`n`n$($summaryLines -join "`n")`n`n" +
+               "The installer cannot safely kill native Windows processes -- stopping them might cause " +
+               "data loss or break other applications.`n`n" +
+               "Please stop the offending process(es) (via Task Manager or their own shutdown command), " +
+               "then click OK to retry. Click Cancel to abort the install."
+        $choice = [System.Windows.Forms.MessageBox]::Show(
+            $msg, 'Port conflict: native Windows process(es)',
+            [System.Windows.Forms.MessageBoxButtons]::OKCancel,
+            [System.Windows.Forms.MessageBoxIcon]::Error)
+        if ($choice -eq [System.Windows.Forms.DialogResult]::Cancel) {
+            Stop-WithError "Install aborted due to unresolved port conflict"
+        }
+        # User chose OK -- they've (hopefully) stopped the processes.
+        # Let the bash installer's step 1 port check be the final arbiter.
+    }
+}
+
 # -- 4. Docker Desktop detection ---------------------------------------------
 $dockerDesktopRunning = $false
 if (Get-Process -Name 'Docker Desktop' -ErrorAction SilentlyContinue) {

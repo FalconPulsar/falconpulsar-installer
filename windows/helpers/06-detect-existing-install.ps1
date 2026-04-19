@@ -70,7 +70,7 @@ if ([string]::IsNullOrEmpty($Distro)) {
 $r = [ordered]@{}
 $r['Distro'] = $Distro
 
-# ─── Windows-side checks ────────────────────────────────────────────────────
+# --- Windows-side checks ----------------------------------------------------
 
 $innoKey1 = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{{D1F8E2A3-5B7C-4F9D-B2E1-8A3C6D9F1234}}_is1'
 $innoKey2 = 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{{D1F8E2A3-5B7C-4F9D-B2E1-8A3C6D9F1234}}_is1'
@@ -90,7 +90,7 @@ try {
     $r['RunKey'] = 'no'
 }
 
-# ─── WSL-side checks (best-effort; all fields default to 'no'/'0') ──────────
+# --- WSL-side checks (best-effort; all fields default to 'no'/'0') ----------
 
 $r['WslHome']          = 'no'
 $r['WslHomeSize']      = ''
@@ -157,7 +157,7 @@ fi
     }
 }
 
-# ─── Derived flag: is there ANY prior install evidence? ────────────────────
+# --- Derived flag: is there ANY prior install evidence? --------------------
 
 $any = ($r['InnoKey']       -eq 'yes') -or
        ($r['WinEnv']        -eq 'yes') -or
@@ -173,7 +173,7 @@ $any = ($r['InnoKey']       -eq 'yes') -or
        ([int]($r['Volumes'])    -gt 0)
 $r['HasPrior'] = if ($any) { 'yes' } else { 'no' }
 
-# ─── Write sentinel ─────────────────────────────────────────────────────────
+# --- Write sentinel ---------------------------------------------------------
 
 $out = foreach ($k in $r.Keys) { "$k=$($r[$k])" }
 Set-Content -Path $OutPath -Value $out -Encoding ASCII
