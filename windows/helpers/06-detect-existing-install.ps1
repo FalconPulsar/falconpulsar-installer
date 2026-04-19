@@ -14,10 +14,10 @@
 #     - C:\Program Files\FalconPulsar directory
 #
 #   WSL-side (inside the selected distro, using Docker Desktop's daemon):
-#     - /home/falconpulsar directory
-#     - /home/falconpulsar/compose.yml
-#     - /home/falconpulsar/.env
-#     - /home/falconpulsar/data (size)
+#     Probes the per-user stack dir /home/<default-user>/falconpulsar
+#     AND the legacy /home/falconpulsar path. Reports the first that has a
+#     compose.yml (or falls through to whichever directory exists).
+#     - compose.yml + .env + data/ + total size
 #     - docker ps -a --filter name=falconpulsar- (containers, all + running)
 #     - docker images --filter reference='*falconpulsar*'
 #     - docker network ls | grep falconpulsar
@@ -110,38 +110,70 @@ if (-not [string]::IsNullOrEmpty($Distro)) {
     try { $null = & wsl.exe -d $Distro -u root -- true 2>$null } catch { }
 
     if ($LASTEXITCODE -eq 0) {
-        $probe = @'
+        # Resolve the distro's default user so we can probe BOTH the new
+        # per-user stack dir (/home/<user>/falconpulsar) AND the legacy
+        # service-user dir (/home/falconpulsar). Either counts as "exists".
+        $wslUser = & wsl.exe -d $Distro -- whoami 2>$null
+        $wslUser = "$wslUser".Trim().Trim([char]0)
+        if ([string]::IsNullOrEmpty($wslUser) -or $wslUser -eq 'root') {
+            $wslUser = & wsl.exe -d $Distro -u root -- bash -c "getent passwd 1000 2>/dev/null | cut -d: -f1" 2>$null
+            $wslUser = "$wslUser".Trim().Trim([char]0)
+        }
+        $r['WslUser'] = $wslUser
+        $userHome = if ($wslUser -and $wslUser -ne 'root') { "/home/$wslUser/falconpulsar" } else { '' }
+        $r['WslHomePath'] = $userHome
+        $probe = @"
 set +e
-_out() { printf '%s\n' "$1"; }
-
-[ -d /home/falconpulsar ]              && _out 'WslHome=yes'       || _out 'WslHome=no'
-[ -f /home/falconpulsar/compose.yml ]  && _out 'WslCompose=yes'    || _out 'WslCompose=no'
-[ -f /home/falconpulsar/.env ]         && _out 'WslEnv=yes'        || _out 'WslEnv=no'
-[ -d /home/falconpulsar/data ]         && _out 'WslData=yes'       || _out 'WslData=no'
-
-if [ -d /home/falconpulsar ]; then
-    _out "WslHomeSize=$(du -sh /home/falconpulsar 2>/dev/null | awk '{print $1}')"
+_out() { printf '%s\n' "`$1"; }
+USER_HOME='$userHome'
+# Pick whichever stack dir exists (user's > legacy). Both get checked.
+if [ -n "`$USER_HOME" ] && [ -f "`$USER_HOME/compose.yml" ]; then
+    HOME_DIR="`$USER_HOME"
+elif [ -f /home/falconpulsar/compose.yml ]; then
+    HOME_DIR=/home/falconpulsar
+elif [ -n "`$USER_HOME" ] && [ -d "`$USER_HOME" ]; then
+    HOME_DIR="`$USER_HOME"
+elif [ -d /home/falconpulsar ]; then
+    HOME_DIR=/home/falconpulsar
+else
+    HOME_DIR=''
 fi
-if [ -d /home/falconpulsar/data ]; then
-    _out "WslDataSize=$(du -sh /home/falconpulsar/data 2>/dev/null | awk '{print $1}')"
+_out "WslHomeDir=`$HOME_DIR"
+
+if [ -n "`$HOME_DIR" ]; then
+    [ -d "`$HOME_DIR" ]               && _out 'WslHome=yes'       || _out 'WslHome=no'
+    [ -f "`$HOME_DIR/compose.yml" ]   && _out 'WslCompose=yes'    || _out 'WslCompose=no'
+    [ -f "`$HOME_DIR/.env" ]          && _out 'WslEnv=yes'        || _out 'WslEnv=no'
+    [ -d "`$HOME_DIR/data" ]          && _out 'WslData=yes'       || _out 'WslData=no'
+    if [ -d "`$HOME_DIR" ]; then
+        _out "WslHomeSize=`$(du -sh "`$HOME_DIR" 2>/dev/null | awk '{print `$1}')"
+    fi
+    if [ -d "`$HOME_DIR/data" ]; then
+        _out "WslDataSize=`$(du -sh "`$HOME_DIR/data" 2>/dev/null | awk '{print `$1}')"
+    fi
+else
+    _out 'WslHome=no'
+    _out 'WslCompose=no'
+    _out 'WslEnv=no'
+    _out 'WslData=no'
 fi
 
 if command -v docker >/dev/null 2>&1; then
-    CN=$(docker ps -a --filter name=falconpulsar- --format '{{.Names}}' 2>/dev/null)
-    RN=$(docker ps    --filter name=falconpulsar- --format '{{.Names}}' 2>/dev/null)
-    IM=$(docker images --filter reference='*falconpulsar*' --format '{{.Repository}}:{{.Tag}}' 2>/dev/null)
-    NE=$(docker network ls --format '{{.Name}}' 2>/dev/null | grep -E '^falconpulsar$' | wc -l | tr -d ' ')
-    VO=$(docker volume  ls --format '{{.Name}}' 2>/dev/null | grep -E '^falconpulsar'  | wc -l | tr -d ' ')
+    CN=`$(docker ps -a --filter name=falconpulsar- --format '{{.Names}}' 2>/dev/null)
+    RN=`$(docker ps    --filter name=falconpulsar- --format '{{.Names}}' 2>/dev/null)
+    IM=`$(docker images --filter reference='*falconpulsar*' --format '{{.Repository}}:{{.Tag}}' 2>/dev/null)
+    NE=`$(docker network ls --format '{{.Name}}' 2>/dev/null | grep -E '^falconpulsar`$' | wc -l | tr -d ' ')
+    VO=`$(docker volume  ls --format '{{.Name}}' 2>/dev/null | grep -E '^falconpulsar'  | wc -l | tr -d ' ')
 
-    _out "Containers=$(printf '%s\n' "$CN" | grep -c . | tr -d ' ')"
-    _out "ContainersRun=$(printf '%s\n' "$RN" | grep -c . | tr -d ' ')"
-    _out "ContainerList=$(printf '%s' "$CN" | tr '\n' ';' )"
-    _out "Images=$(printf '%s\n' "$IM" | grep -c . | tr -d ' ')"
-    _out "ImageList=$(printf '%s' "$IM" | tr '\n' ';' )"
-    _out "Networks=$NE"
-    _out "Volumes=$VO"
+    _out "Containers=`$(printf '%s\n' "`$CN" | grep -c . | tr -d ' ')"
+    _out "ContainersRun=`$(printf '%s\n' "`$RN" | grep -c . | tr -d ' ')"
+    _out "ContainerList=`$(printf '%s' "`$CN" | tr '\n' ';' )"
+    _out "Images=`$(printf '%s\n' "`$IM" | grep -c . | tr -d ' ')"
+    _out "ImageList=`$(printf '%s' "`$IM" | tr '\n' ';' )"
+    _out "Networks=`$NE"
+    _out "Volumes=`$VO"
 fi
-'@
+"@
         try {
             $lines = & wsl.exe -d $Distro -u root -- bash -c $probe 2>$null
             foreach ($line in $lines) {

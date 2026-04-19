@@ -112,6 +112,39 @@ if ($LASTEXITCODE -ne 0 -or "$whoami".Trim() -ne 'root') {
 }
 Write-Info "Root access verified"
 
+# -- Resolve the distro's default human user -------------------------------
+# The bash installer runs in per-user mode on WSL: it installs the stack
+# under /home/<user>/falconpulsar, owned by that user, with no dedicated
+# `falconpulsar` system user. We need to know WHICH human user to install
+# under. The WSL default user is the natural choice (what `wsl` spawns
+# interactively).
+Write-Info 'Resolving the WSL default user...'
+$WslUser = & wsl.exe -d $Distro -- whoami 2>$null
+$WslUser = "$WslUser".Trim().Trim([char]0)
+if ([string]::IsNullOrEmpty($WslUser) -or $WslUser -eq 'root') {
+    # Fallback: first real user at UID 1000 (matches Ubuntu's default-user)
+    $WslUser = & wsl.exe -d $Distro -u root -- bash -c "getent passwd 1000 2>/dev/null | cut -d: -f1" 2>$null
+    $WslUser = "$WslUser".Trim().Trim([char]0)
+}
+if ([string]::IsNullOrEmpty($WslUser) -or $WslUser -eq 'root') {
+    Stop-WithError @"
+Cannot determine a non-root user in $Distro.
+FalconPulsar installs under a human user -- a fresh Ubuntu WSL distro
+prompts for a username on first launch. Run `wsl -d $Distro` once in a
+terminal, create a user, then re-run this installer.
+"@
+}
+$WslHome = "/home/$WslUser/falconpulsar"
+Write-Info ("Install target: user='{0}', stack dir='{1}'" -f $WslUser, $WslHome)
+
+# Write sentinels so fp.exe, the tray, the uninstaller, and future tools
+# can locate the stack without re-discovering it.
+$homeSentinel = Join-Path $env:TEMP 'falconpulsar-home.txt'
+Set-Content -Path $homeSentinel -Value $WslHome -Encoding ASCII
+$userSentinel = Join-Path $env:TEMP 'falconpulsar-user.txt'
+Set-Content -Path $userSentinel -Value $WslUser -Encoding ASCII
+Write-Info "Sentinels written: $homeSentinel, $userSentinel"
+
 if ($AdminPass.Length -lt 10) {
     Stop-WithError 'Admin password is shorter than 10 characters (the credentials page should have caught this)'
 }
@@ -152,11 +185,22 @@ if ($rc -ne 0) {
 }
 
 # -- 3. Check for existing FalconPulsar installation -------------------------
-# If the data directory already has a config file, this is a re-install /
-# upgrade. Skip the admin password prompt and just bring the stack up.
-# Detect existing install inside WSL
-$existingInstall = & wsl.exe -d $Distro -u root -- bash -c 'test -f /home/falconpulsar/data/falconpulsar.toml && echo yes || echo no' 2>$null
-$hasExisting = ($existingInstall -and $existingInstall.Trim() -eq 'yes')
+# Probe both the NEW per-user stack dir (/home/<user>/falconpulsar) AND the
+# LEGACY service-user dir (/home/falconpulsar) so upgrades from pre-refactor
+# installs still get recognised.
+$existingProbe = @"
+if [ -f '$WslHome/data/falconpulsar.toml' ] || [ -f '$WslHome/compose.yml' ]; then
+    echo yes
+elif [ -f /home/falconpulsar/data/falconpulsar.toml ] || [ -f /home/falconpulsar/compose.yml ]; then
+    echo legacy
+else
+    echo no
+fi
+"@
+$existingInstall = & wsl.exe -d $Distro -u root -- bash -c $existingProbe 2>$null
+$existingInstall = "$existingInstall".Trim()
+$hasExisting = ($existingInstall -eq 'yes' -or $existingInstall -eq 'legacy')
+$hasLegacyInstall = ($existingInstall -eq 'legacy')
 
 # If Inno Setup already determined the action, use it; otherwise default
 # based on whether an existing install was found.
@@ -166,20 +210,21 @@ if (-not $InstallAction) {
 }
 Write-Info "Install action: $InstallAction"
 
-if ($InstallAction -eq 'upgrade' -and $hasExisting) {
+if ($InstallAction -eq 'upgrade' -and $hasExisting -and -not $hasLegacyInstall) {
     Write-Info 'Upgrading in place -- pulling latest images and restarting'
     $profileFlag = if ($AIGateway -eq 'true') { '--profile ai' } else { '' }
     $upgradeScript = @"
 set -e
 export FP_ASSUME_YES=1
 export FP_LEGAL_ACCEPTED=1
-cd /home/falconpulsar 2>/dev/null || cd /opt/falconpulsar-installer
-if [ -f /home/falconpulsar/compose.yml ]; then
-    sudo -u falconpulsar -H sg docker -c "cd /home/falconpulsar && docker compose $profileFlag pull && docker compose $profileFlag up -d"
+cd '$WslHome' 2>/dev/null || cd /opt/falconpulsar-installer
+if [ -f '$WslHome/compose.yml' ]; then
+    sudo -u '$WslUser' -H sg docker -c "cd '$WslHome' && docker compose $profileFlag pull && docker compose $profileFlag up -d"
     echo '[ok] Stack upgraded and restarted'
 else
     echo '[info] No existing compose.yml found -- running full installer'
-    FP_INSTALL_ACTION=upgrade FP_AI_GATEWAY_ENABLED=$AIGateway bash /opt/falconpulsar-installer/linux/install.sh --mode docker --yes
+    FP_INVOKING_USER='$WslUser' FP_INSTALL_ACTION=upgrade FP_AI_GATEWAY_ENABLED=$AIGateway \
+        bash /opt/falconpulsar-installer/linux/install.sh --user '$WslUser' --mode docker --yes
 fi
 "@
     $rc = Invoke-WslBash -Distro $Distro -Script $upgradeScript -User root
@@ -188,6 +233,9 @@ fi
     }
     Write-Output '[ok] FalconPulsar upgraded inside WSL'
     exit 0
+}
+if ($hasLegacyInstall) {
+    Write-Info 'Legacy (service-user) install detected -- will migrate to per-user layout'
 }
 
 # For 'fresh' -- definitive WSL-side cleanup. This is the SUPERSET of what
@@ -202,25 +250,33 @@ fi
 # causing port-conflict failures on supposedly-fresh installs.
 if ($InstallAction -eq 'fresh') {
     Write-Info 'Fresh install -- wiping any prior FalconPulsar state inside WSL'
-    $cleanScript = @'
+    # Wipe BOTH the new per-user location AND the legacy service-user path.
+    # A legacy-service-user directory survives because the `falconpulsar`
+    # system user owns it -- remove the user + their home as part of the
+    # cleanup so port 7436 etc. aren't held by a zombie container.
+    $cleanScript = @"
 set +e
 # Stop + remove every falconpulsar-* container (frees their ports).
 if command -v docker >/dev/null 2>&1; then
     docker ps -a --filter 'name=falconpulsar-' -q 2>/dev/null | xargs -r docker rm -f 2>/dev/null
-    # Remove images
     docker images --filter reference='*falconpulsar*' -q 2>/dev/null | xargs -r docker rmi -f 2>/dev/null
-    # Remove named volumes
     docker volume ls --format '{{.Name}}' 2>/dev/null | grep -E '^falconpulsar' | xargs -r docker volume rm -f 2>/dev/null
-    # Remove the falconpulsar network (created by compose)
     docker network rm falconpulsar 2>/dev/null
 fi
-# Wipe host-side paths
+# Wipe the new per-user stack dir
+rm -rf '$WslHome'
+# Wipe legacy service-user install if present
 rm -rf /home/falconpulsar/compose.yml /home/falconpulsar/.env \
        /home/falconpulsar/gateway.yaml /home/falconpulsar/bin \
        /home/falconpulsar/.docker /home/falconpulsar/ai-gateway-data \
-       /home/falconpulsar/data /home/falconpulsar
+       /home/falconpulsar/data /home/falconpulsar 2>/dev/null
+if id falconpulsar >/dev/null 2>&1; then
+    loginctl disable-linger falconpulsar 2>/dev/null
+    userdel --force falconpulsar 2>/dev/null || true
+fi
+rm -f /etc/profile.d/falconpulsar.sh 2>/dev/null
 echo '[ok] WSL state wiped -- ready for fresh install'
-'@
+"@
     $null = Invoke-WslBash -Distro $Distro -Script $cleanScript -User root
 
     # Windows-side cleanup: mirror files + registry + Start Menu. Without
@@ -244,19 +300,23 @@ echo '[ok] WSL state wiped -- ready for fresh install'
 # "Reinstall (keep data)" behavior.
 if ($InstallAction -eq 'reinstall') {
     Write-Info 'Reinstall -- stopping stack and rewriting files (database preserved)'
-    $cleanScript = @'
+    $cleanScript = @"
 set +e
 if command -v docker >/dev/null 2>&1; then
+    if [ -f '$WslHome/compose.yml' ]; then
+        cd '$WslHome' && \
+          sudo -u '$WslUser' -H sg docker -c 'docker compose --profile ai down --remove-orphans' 2>/dev/null
+    fi
     if [ -f /home/falconpulsar/compose.yml ]; then
         cd /home/falconpulsar && \
           sudo -u falconpulsar -H sg docker -c 'docker compose --profile ai down --remove-orphans' 2>/dev/null
     fi
-    # Also catch any orphan containers (e.g. from an aborted prior run).
     docker ps -a --filter 'name=falconpulsar-' -q 2>/dev/null | xargs -r docker rm -f 2>/dev/null
 fi
-rm -f /home/falconpulsar/compose.yml /home/falconpulsar/.env /home/falconpulsar/gateway.yaml
-echo '[ok] Reinstall prep complete (database at /home/falconpulsar/data preserved)'
-'@
+rm -f '$WslHome/compose.yml' '$WslHome/.env' '$WslHome/gateway.yaml'
+rm -f /home/falconpulsar/compose.yml /home/falconpulsar/.env /home/falconpulsar/gateway.yaml 2>/dev/null
+echo '[ok] Reinstall prep complete (database preserved)'
+"@
     $null = Invoke-WslBash -Distro $Distro -Script $cleanScript -User root
 }
 
@@ -462,11 +522,12 @@ printf '%s\n' \
   "export FP_REGISTRY_SKIP='$regSkipVal'" \
   "export FP_INSTALL_ACTION='$InstallAction'" \
   "export FP_AI_GATEWAY_ENABLED='$AIGateway'" \
+  "export FP_INVOKING_USER='$WslUser'" \
   > "`$ENVFILE"
 . "`$ENVFILE"
 rm -f "`$ENVFILE"
 trap - EXIT
-bash /opt/falconpulsar-installer/linux/install.sh --mode docker --yes
+bash /opt/falconpulsar-installer/linux/install.sh --user '$WslUser' --mode docker --yes
 "@
 
 Write-Info 'Invoking bash installer (this can take 5-10 minutes for image pulls + first-run init)'
@@ -485,15 +546,17 @@ Write-Info "Mirrored AI flag to $winEnvPath"
 
 # Stage the Linux fp binary into WSL so the Windows fp.exe wrapper has
 # something to exec. The wrapper does:
-#   wsl.exe -d <distro> -u falconpulsar --cd /home/falconpulsar -e /home/falconpulsar/bin/fp <args>
+#   wsl.exe -d <distro> --cd <WslHome> -e <WslHome>/bin/fp <args>
+# Belt-and-suspenders for when the bash installer's fp_install_cli call
+# silently no-oped (missing binary, wrong perms, etc.).
 $fpLinuxSrc = Join-Path $InstallDir 'fp-linux-amd64'
 if (Test-Path $fpLinuxSrc) {
     $fpLinuxInWsl = ConvertTo-WslPath -WindowsPath $fpLinuxSrc
     $stageFpScript = @"
 set -e
-install -d -m 0755 -o falconpulsar -g falconpulsar /home/falconpulsar/bin
-install -m 0755 -o falconpulsar -g falconpulsar '$fpLinuxInWsl' /home/falconpulsar/bin/fp
-echo '[ok] Linux fp binary installed at /home/falconpulsar/bin/fp'
+install -d -m 0755 -o '$WslUser' -g '$WslUser' '$WslHome/bin'
+install -m 0755 -o '$WslUser' -g '$WslUser' '$fpLinuxInWsl' '$WslHome/bin/fp'
+echo '[ok] Linux fp binary installed at $WslHome/bin/fp'
 "@
     $null = Invoke-WslBash -Distro $Distro -Script $stageFpScript -User root
 } else {

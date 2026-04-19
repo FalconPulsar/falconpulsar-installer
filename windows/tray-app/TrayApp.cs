@@ -48,10 +48,22 @@ namespace FalconPulsar.Tray
         private ToolStripMenuItem _restartItem;
         private ToolStripMenuItem _autoStartItem;
 
+        // WSL stack location, resolved once at tray startup. The installer
+        // writes `falconpulsar-home.txt` next to the distro sentinel; if
+        // that's missing we probe the distro's default user (`whoami`) and
+        // compute /home/<user>/falconpulsar. As a last resort we fall back
+        // to the legacy /home/falconpulsar path so a legacy install still
+        // works until the user reinstalls.
+        private readonly string _wslHome;
+        private readonly string _wslHomeUnc;
+
         public TrayApp()
         {
             _distro = ReadDistroName();
-            _composePath = "/home/falconpulsar/compose.yml";
+            _wslHome = ReadWslHome(_distro);
+            // Convert /home/<user>/falconpulsar to \\wsl.localhost\<distro>\home\<user>\falconpulsar
+            _wslHomeUnc = $@"\\wsl.localhost\{_distro}" + _wslHome.Replace('/', '\\');
+            _composePath = _wslHome + "/compose.yml";
 
             _http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
 
@@ -92,6 +104,44 @@ namespace FalconPulsar.Tray
             }
 
             return "Ubuntu-24.04";
+        }
+
+        private static string ReadWslHome(string distro)
+        {
+            // 1. Sentinel written by the installer at %TEMP%\falconpulsar-home.txt.
+            var sentinel = Path.Combine(Path.GetTempPath(), "falconpulsar-home.txt");
+            if (File.Exists(sentinel))
+            {
+                var home = File.ReadAllText(sentinel).Trim();
+                if (!string.IsNullOrEmpty(home) && home.StartsWith("/"))
+                    return home;
+            }
+
+            // 2. Ask the distro for the default user's $HOME.
+            try
+            {
+                var psi = new ProcessStartInfo
+                {
+                    FileName = "wsl.exe",
+                    Arguments = $"-d {distro} -- sh -c \"printf %s \\\"$HOME\\\"\"",
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    RedirectStandardOutput = true
+                };
+                using var proc = Process.Start(psi);
+                if (proc != null)
+                {
+                    var stdout = proc.StandardOutput.ReadToEnd();
+                    proc.WaitForExit(3000);
+                    var home = stdout.Replace("\0", "").Trim().TrimStart('\uFEFF');
+                    if (!string.IsNullOrEmpty(home) && home.StartsWith("/"))
+                        return home + "/falconpulsar";
+                }
+            }
+            catch { }
+
+            // 3. Legacy service-user path as a last resort.
+            return "/home/falconpulsar";
         }
 
         private ContextMenuStrip BuildMenu()
@@ -419,7 +469,7 @@ namespace FalconPulsar.Tray
                 var psi = new ProcessStartInfo
                 {
                     FileName = "wsl.exe",
-                    Arguments = $"-d {_distro} -u falconpulsar -- docker compose -f {_composePath} {command}",
+                    Arguments = $"-d {_distro} -- docker compose -f {_composePath} {command}",
                     UseShellExecute = false,
                     CreateNoWindow = true
                 };
@@ -448,22 +498,21 @@ namespace FalconPulsar.Tray
             Process.Start(new ProcessStartInfo
             {
                 FileName = "wsl.exe",
-                Arguments = $"-d {_distro} -u falconpulsar -- docker compose -f {_composePath} logs -f --tail 100",
+                Arguments = $"-d {_distro} -- docker compose -f {_composePath} logs -f --tail 100",
                 UseShellExecute = true
             });
         }
 
         private void OpenDataFolder()
         {
-            Process.Start(new ProcessStartInfo("explorer.exe",
-                $@"\\wsl.localhost\{_distro}\home\falconpulsar")
+            Process.Start(new ProcessStartInfo("explorer.exe", _wslHomeUnc)
             { UseShellExecute = true });
         }
 
         private void EditConfigFile(string filename)
         {
-            // Config files are inside the WSL distro at /home/falconpulsar/
-            var wslPath = $@"\\wsl.localhost\{_distro}\home\falconpulsar\{filename}";
+            // Config files live inside the WSL distro at the resolved stack dir.
+            var wslPath = Path.Combine(_wslHomeUnc, filename.Replace('/', '\\'));
             if (File.Exists(wslPath))
             {
                 Process.Start(new ProcessStartInfo("notepad.exe", wslPath)
@@ -902,10 +951,13 @@ namespace FalconPulsar.Tray
 
         private async Task<(int exitCode, string stdout)> RunWslBashCaptureAsync(string script)
         {
+            // Run as the distro's default user (which is who owns the stack
+            // in per-user installs). No -u override: that would switch to
+            // `falconpulsar` which only exists in legacy installs.
             var psi = new ProcessStartInfo
             {
                 FileName = "wsl.exe",
-                Arguments = $"-d {_distro} -u falconpulsar -- bash",
+                Arguments = $"-d {_distro} -- bash",
                 UseShellExecute = false,
                 CreateNoWindow = true,
                 RedirectStandardInput = true,
@@ -924,7 +976,7 @@ namespace FalconPulsar.Tray
         private async Task<bool> WslGatewayTokenExistsAsync()
         {
             var (rc, _) = await RunWslBashCaptureAsync(
-                "grep -q '^FP_API_KEY=.' /home/falconpulsar/.env");
+                $"grep -q '^FP_API_KEY=.' '{_wslHome}/.env'");
             return rc == 0;
         }
 
@@ -933,9 +985,9 @@ namespace FalconPulsar.Tray
             var safe = token.Replace("'", "'\"'\"'");
             var script =
                 $"TOKEN='{safe}'\n" +
-                "grep -v '^FP_API_KEY=' /home/falconpulsar/.env > /tmp/fp_env.new 2>/dev/null || true\n" +
+                $"grep -v '^FP_API_KEY=' '{_wslHome}/.env' > /tmp/fp_env.new 2>/dev/null || true\n" +
                 "echo \"FP_API_KEY=$TOKEN\" >> /tmp/fp_env.new\n" +
-                "mv /tmp/fp_env.new /home/falconpulsar/.env\n";
+                $"mv /tmp/fp_env.new '{_wslHome}/.env'\n";
             var (rc, _) = await RunWslBashCaptureAsync(script);
             return rc;
         }
@@ -1037,7 +1089,7 @@ namespace FalconPulsar.Tray
                 var psi = new ProcessStartInfo
                 {
                     FileName = "wsl.exe",
-                    Arguments = $"-d {_distro} -u falconpulsar -- bash",
+                    Arguments = $"-d {_distro} -- bash",
                     UseShellExecute = false,
                     CreateNoWindow = true,
                     RedirectStandardInput = true,
@@ -1142,7 +1194,7 @@ namespace FalconPulsar.Tray
                     var token = await CreateGatewayServiceTokenAsync(authed.Token);
                     var rc = await WslWriteTokenAsync(token);
                     if (rc != 0)
-                        throw new Exception("Failed to write FP_API_KEY to WSL /home/falconpulsar/.env");
+                        throw new Exception($"Failed to write FP_API_KEY to WSL {_wslHome}/.env");
                 }
                 catch (Exception ex)
                 {
@@ -1159,7 +1211,7 @@ namespace FalconPulsar.Tray
             var script =
                 "export BUILDKIT_PROGRESS=plain\n" +
                 "export DOCKER_CLI_HINTS=false\n" +
-                "cd /home/falconpulsar || exit 1\n" +
+                $"cd '{_wslHome}' || exit 1\n" +
                 "if [ ! -f gateway.yaml ]; then\n" +
                 "  cat > gateway.yaml <<'EOF'\n" +
                 "# FalconPulsar AI Gateway — default configuration.\n" +
@@ -1221,10 +1273,10 @@ namespace FalconPulsar.Tray
             // data dir inside WSL. Never uses `down -v` because that would also
             // stop core/ui (they have no compose profile → always-active).
             var script =
-                "cd /home/falconpulsar || exit 1\n" +
+                $"cd '{_wslHome}' || exit 1\n" +
                 "echo '[disable-ai] loading environment from .env…'\n" +
                 "set -a\n" +
-                ". /home/falconpulsar/.env 2>/dev/null || true\n" +
+                $". '{_wslHome}/.env' 2>/dev/null || true\n" +
                 "set +a\n" +
                 "IMAGE_REF=\"${FP_REGISTRY:-falconpulsar}/ai-gateway:${FP_VERSION:-latest}\"\n" +
                 "GATEWAY_DATA=\"${FP_GATEWAY_DATA_DIR:-${FP_DATA_DIR}/../ai-gateway-data}\"\n" +
@@ -1235,9 +1287,9 @@ namespace FalconPulsar.Tray
                 "  rm -rf \"$GATEWAY_DATA\"\n" +
                 "fi\n" +
                 "echo '[disable-ai] removing gateway.yaml…'\n" +
-                "rm -f /home/falconpulsar/gateway.yaml\n" +
+                $"rm -f '{_wslHome}/gateway.yaml'\n" +
                 "echo '[disable-ai] clearing FP_API_KEY from .env…'\n" +
-                "grep -v '^FP_API_KEY=' /home/falconpulsar/.env > /tmp/fp_env.new 2>/dev/null && mv /tmp/fp_env.new /home/falconpulsar/.env\n" +
+                $"grep -v '^FP_API_KEY=' '{_wslHome}/.env' > /tmp/fp_env.new 2>/dev/null && mv /tmp/fp_env.new '{_wslHome}/.env'\n" +
                 "echo \"[disable-ai] removing AI gateway image: $IMAGE_REF\"\n" +
                 "docker rmi -f \"$IMAGE_REF\" 2>&1 || true\n" +
                 "echo '[disable-ai] cleanup complete. Core and UI were not touched.'\n";

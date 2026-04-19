@@ -66,8 +66,54 @@ REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 trap 'on_error $LINENO' ERR
 
 # ── Defaults ────────────────────────────────────────────────────────────────
-FP_USER="${FP_USER:-falconpulsar}"
-FP_HOME="${FP_HOME:-/home/${FP_USER}}"
+# Install model (set by arg-parsing / WSL detection below):
+#   service-user   Native Linux. Dedicated `falconpulsar` system user owns
+#                  the stack at /home/falconpulsar. Install + uninstall both
+#                  require root (useradd/userdel, docker group, etc.).
+#   per-user       WSL + future per-user Linux. The invoking human owns the
+#                  stack at /home/<user>/falconpulsar. Install still needs
+#                  root to add the user to the docker group and drop a
+#                  profile.d snippet, but uninstall is entirely user-owned.
+FP_INSTALL_MODEL="${FP_INSTALL_MODEL:-}"
+
+# Compute the default FP_USER + FP_HOME from the install model. If the caller
+# didn't pre-set anything, WSL -> per-user (using the invoking human), native
+# Linux -> service-user (falconpulsar:/home/falconpulsar). Explicit FP_USER or
+# --user overrides this below.
+if [ -z "${FP_USER:-}" ] && [ -z "${FP_HOME:-}" ]; then
+    if is_wsl; then
+        FP_INSTALL_MODEL="per-user"
+        # The invoking human is passed in from the PowerShell side via
+        # FP_INVOKING_USER. If that's missing we fall back to $SUDO_USER, then
+        # to the first real user at UID 1000. As a last resort we give up and
+        # ask for --user explicitly -- installing as root with no human owner
+        # would just recreate the problem we're trying to fix.
+        _fp_default_user="${FP_INVOKING_USER:-${SUDO_USER:-}}"
+        if [ -z "$_fp_default_user" ] || [ "$_fp_default_user" = "root" ]; then
+            _fp_default_user="$(getent passwd 1000 2>/dev/null | cut -d: -f1)"
+        fi
+        FP_USER="${_fp_default_user:-}"
+        if [ -n "$FP_USER" ]; then
+            FP_HOME="/home/${FP_USER}/falconpulsar"
+        fi
+    else
+        FP_INSTALL_MODEL="service-user"
+        FP_USER="falconpulsar"
+        FP_HOME="/home/${FP_USER}"
+    fi
+else
+    # Caller pre-set FP_USER and/or FP_HOME. Infer model from FP_USER:
+    # if it's the real falconpulsar system user we treat as service-user.
+    FP_USER="${FP_USER:-falconpulsar}"
+    if [ "$FP_USER" = "falconpulsar" ] && [ -z "${FP_HOME:-}" ]; then
+        FP_INSTALL_MODEL="${FP_INSTALL_MODEL:-service-user}"
+        FP_HOME="/home/${FP_USER}"
+    else
+        # Non-default user -> per-user install under that user's home.
+        FP_INSTALL_MODEL="${FP_INSTALL_MODEL:-per-user}"
+        FP_HOME="${FP_HOME:-/home/${FP_USER}/falconpulsar}"
+    fi
+fi
 FP_DATA_DIR="${FP_DATA_DIR:-${FP_HOME}/data}"
 FP_GATEWAY_DATA_DIR="${FP_GATEWAY_DATA_DIR:-${FP_HOME}/ai-gateway-data}"
 FP_INSTALL_MODE="${FP_INSTALL_MODE:-}"        # docker | systemd
@@ -85,8 +131,16 @@ Usage: install.sh [options]
 
 Options:
   --mode <docker|systemd>   Install mode (default: ask interactively)
-  --user <name>             System user to create (default: falconpulsar)
-  --data-dir <path>         Database directory (default: ~falconpulsar/data)
+  --user <name>             User who will own the stack.
+                              Native Linux default: falconpulsar (system user).
+                              WSL default: the invoking human user (no
+                              system user is created; stack lives in that
+                              user's home directory).
+  --home <path>             Override the stack directory.
+                              Defaults:
+                                service-user: /home/falconpulsar
+                                per-user:     /home/<user>/falconpulsar
+  --data-dir <path>         Database directory (default: <home>/data)
   --rest-port <n>           REST API port (default: 7433)
   --ui-port <n>             Web UI port (default: 8080)
   --yes, -y                 Assume yes to all prompts (FP_ASSUME_YES=1)
@@ -100,7 +154,22 @@ EOF
 while [ $# -gt 0 ]; do
     case "$1" in
         --mode)        FP_INSTALL_MODE="$2"; shift 2 ;;
-        --user)        FP_USER="$2"; FP_HOME="/home/${FP_USER}"; shift 2 ;;
+        --user)
+            FP_USER="$2"
+            # Keep whichever model was picked above. Only re-derive FP_HOME
+            # if it wasn't explicitly set by the caller.
+            if [ -z "${FP_HOME_EXPLICIT:-}" ]; then
+                if [ "$FP_INSTALL_MODEL" = "per-user" ]; then
+                    FP_HOME="/home/${FP_USER}/falconpulsar"
+                else
+                    FP_HOME="/home/${FP_USER}"
+                fi
+            fi
+            FP_DATA_DIR="${FP_HOME}/data"
+            FP_GATEWAY_DATA_DIR="${FP_HOME}/ai-gateway-data"
+            shift 2
+            ;;
+        --home)        FP_HOME="$2"; FP_HOME_EXPLICIT=1; FP_DATA_DIR="${FP_HOME}/data"; FP_GATEWAY_DATA_DIR="${FP_HOME}/ai-gateway-data"; shift 2 ;;
         --data-dir)    FP_DATA_DIR="$2"; shift 2 ;;
         --rest-port)   FP_REST_PORT="$2"; shift 2 ;;
         --ui-port)     FP_UI_PORT="$2"; shift 2 ;;
@@ -113,6 +182,17 @@ done
 
 export FP_ASSUME_YES="${FP_ASSUME_YES:-0}"
 export FP_DEBUG="${FP_DEBUG:-0}"
+
+# If we're in per-user mode we must know which human user to install under.
+# Failing fast here beats chowning the stack to some half-resolved value.
+if [ "$FP_INSTALL_MODEL" = "per-user" ]; then
+    if [ -z "${FP_USER:-}" ] || [ "$FP_USER" = "root" ]; then
+        die "per-user install requires --user <name> (could not infer the invoking user)"
+    fi
+    if ! id "$FP_USER" >/dev/null 2>&1; then
+        die "per-user install target '${FP_USER}' does not exist in this system"
+    fi
+fi
 
 # ── Banner ──────────────────────────────────────────────────────────────────
 cat >&2 <<EOF
@@ -243,6 +323,10 @@ fp_registry_ensure_access
 log_step "step 3/8 — system user '${FP_USER}'"
 if id "$FP_USER" >/dev/null 2>&1; then
     log_success "user ${FP_USER} already exists"
+elif [ "$FP_INSTALL_MODEL" = "per-user" ]; then
+    # Per-user installs never create a user -- the invoking human must
+    # already exist (we validated this up top).
+    die "user ${FP_USER} does not exist (per-user install cannot create it)"
 else
     useradd \
         --system \
@@ -477,10 +561,18 @@ else
     chown -R "${FP_USER}:${FP_USER}" "${FP_HOME}/bin" 2>/dev/null || true
 fi
 chmod 0755 "${FP_HOME}/bin" "${FP_HOME}/bin/fp" 2>/dev/null || true
-# PATH append targets the invoking user's shell rc, not root's
-if [ -n "${SUDO_USER:-}" ]; then
-    sudo -u "$SUDO_USER" -H bash -c "
-        export HOME=\"\$(getent passwd $SUDO_USER | cut -d: -f6)\"
+# PATH append targets the invoking human's shell rc, not root's. Pick the
+# right target: per-user install means FP_USER is the human; SUDO_USER is
+# the fallback for native Linux server installs run via `sudo install.sh`.
+_fp_path_user=""
+if [ "$FP_INSTALL_MODEL" = "per-user" ] && [ -n "${FP_USER:-}" ] && [ "$FP_USER" != "root" ]; then
+    _fp_path_user="$FP_USER"
+elif [ -n "${SUDO_USER:-}" ]; then
+    _fp_path_user="$SUDO_USER"
+fi
+if [ -n "$_fp_path_user" ]; then
+    sudo -u "$_fp_path_user" -H bash -c "
+        export HOME=\"\$(getent passwd $_fp_path_user | cut -d: -f6)\"
         source '${REPO_ROOT}/shared/lib/common.sh'
         source '${REPO_ROOT}/shared/lib/fpcli.sh'
         FP_ASSUME_YES='${FP_ASSUME_YES:-0}' FP_ADD_TO_PATH='${FP_ADD_TO_PATH:-}' \
@@ -489,9 +581,29 @@ if [ -n "${SUDO_USER:-}" ]; then
 else
     fp_offer_path_append "$FP_HOME"
 fi
+# Also drop a system-wide profile.d snippet so `fp` is on the PATH of every
+# shell in the distro, for every user (useful on WSL where the default user
+# might not be the one who ran the installer). Idempotent; no-ops on systems
+# that don't source /etc/profile.d.
+if [ -d /etc/profile.d ]; then
+    cat > /etc/profile.d/falconpulsar.sh <<SNIPPET
+# Added by FalconPulsar installer -- puts the fp CLI on PATH for every shell.
+case ":\$PATH:" in
+    *":${FP_HOME}/bin:"*) ;;
+    *) PATH="\$PATH:${FP_HOME}/bin" ;;
+esac
+export PATH
+SNIPPET
+    chmod 0644 /etc/profile.d/falconpulsar.sh
+    log_info "PATH snippet: /etc/profile.d/falconpulsar.sh (new shells will pick up fp)"
+fi
 
 # ── Step 8: systemd registration (optional) ─────────────────────────────────
 log_step "step 8/8 — lifecycle registration"
+if [ "$FP_INSTALL_MODE" = "systemd" ] && is_wsl; then
+    log_warn "WSL doesn't run user-level systemd by default -- falling back to docker mode"
+    FP_INSTALL_MODE="docker"
+fi
 if [ "$FP_INSTALL_MODE" = "systemd" ]; then
     UNIT_DIR="${FP_HOME}/.config/systemd/user"
     install -d -m 0755 -o "$FP_USER" -g "$FP_USER" "$UNIT_DIR"

@@ -3,16 +3,19 @@
 // FalconPulsar's real `fp` CLI is a Linux binary that lives inside the user's
 // WSL distro alongside the Core/UI/AI-gateway containers. A Windows-native
 // Go build would look at `%USERPROFILE%\falconpulsar\` for state, which is
-// the wrong filesystem — the stack is in WSL at `/home/falconpulsar/`.
+// the wrong filesystem — the stack is in WSL, owned by the WSL default user.
 //
 // This tiny wrapper ships as `fp.exe` on Windows. It:
 //
 //  1. Locates the installed WSL distro (sentinel file or `wsl -l -q`).
-//  2. Execs `wsl.exe -d <distro> -u falconpulsar --cd /home/falconpulsar
-//     -e /home/falconpulsar/bin/fp [args...]` with stdin/stdout/stderr
-//     passed through so the TUI, colours, and credential prompts work
-//     verbatim.
-//  3. Propagates the Linux fp's exit code.
+//  2. Locates the stack home path inside that distro (sentinel file written
+//     by the installer at %TEMP%\falconpulsar-home.txt, e.g.
+//     "/home/pruizleon/falconpulsar").
+//  3. Execs `wsl.exe -d <distro> --cd <home> -e <home>/bin/fp [args...]`
+//     with stdin/stdout/stderr passed through so the TUI, colours, and
+//     credential prompts work verbatim. No `-u` flag: fp runs as the
+//     distro's default user (the same human who owns the stack).
+//  4. Propagates the Linux fp's exit code.
 //
 // Power users can also invoke the Linux `fp` directly from inside WSL —
 // this wrapper is only for convenience when typing `fp` in PowerShell
@@ -37,10 +40,6 @@ var fallbackDistros = []string{
 	"Debian",
 }
 
-// remoteFpPath is where `40-run-fp-installer.ps1` installs the Linux fp
-// binary inside WSL. Hard-coded so PATH inside WSL doesn't matter.
-const remoteFpPath = "/home/falconpulsar/bin/fp"
-
 func main() {
 	distro, err := resolveDistro()
 	if err != nil {
@@ -49,11 +48,12 @@ func main() {
 		os.Exit(1)
 	}
 
+	home := resolveHome(distro)
+
 	args := []string{
 		"-d", distro,
-		"-u", "falconpulsar",
-		"--cd", "/home/falconpulsar",
-		"-e", remoteFpPath,
+		"--cd", home,
+		"-e", home + "/bin/fp",
 	}
 	args = append(args, os.Args[1:]...)
 
@@ -69,6 +69,41 @@ func main() {
 		fmt.Fprintf(os.Stderr, "fp: wsl.exe failed: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// resolveHome returns the WSL stack directory. Resolution order:
+//
+//  1. FP_HOME env var (explicit override — useful for debugging).
+//  2. %TEMP%\falconpulsar-home.txt sentinel (installer writes this).
+//  3. Ask the distro what the default user's $HOME is and append
+//     "/falconpulsar" — last-resort fallback matching the installer's
+//     per-user layout.
+func resolveHome(distro string) string {
+	if h := strings.TrimSpace(os.Getenv("FP_HOME")); h != "" {
+		return h
+	}
+	if tmp := os.Getenv("TEMP"); tmp != "" {
+		sentinel := filepath.Join(tmp, "falconpulsar-home.txt")
+		if data, err := os.ReadFile(sentinel); err == nil {
+			if h := strings.TrimSpace(string(data)); h != "" {
+				return h
+			}
+		}
+	}
+	// Query WSL for the default user's $HOME. This matches the installer
+	// because the installer uses `whoami` against the same distro.
+	out, err := exec.Command("wsl.exe", "-d", distro, "--", "sh", "-c", "printf %s \"$HOME\"").Output()
+	if err == nil {
+		h := strings.TrimSpace(strings.ReplaceAll(string(out), "\x00", ""))
+		h = strings.TrimPrefix(h, "\ufeff")
+		if h != "" && strings.HasPrefix(h, "/") {
+			return h + "/falconpulsar"
+		}
+	}
+	// Last-ditch: the legacy service-user path. If we ever get here and
+	// this path isn't valid either, wsl -e will simply fail and the user
+	// will see a clear "file not found" error.
+	return "/home/falconpulsar"
 }
 
 func resolveDistro() (string, error) {

@@ -120,6 +120,9 @@ if ($allOk) {
 } else {
     Write-Err 'One or more required containers are not running.'
     Write-Err 'Check the logs manually:'
-    Write-Err "  wsl -d $Distro -u falconpulsar -- docker compose -f /home/falconpulsar/compose.yml logs"
+    # Read the home sentinel so we point at the right path for this install.
+    $homeSentinel = Join-Path $env:TEMP 'falconpulsar-home.txt'
+    $stackHome = if (Test-Path $homeSentinel) { (Get-Content $homeSentinel -Raw).Trim() } else { '/home/falconpulsar' }
+    Write-Err "  wsl -d $Distro -- docker compose -f ${stackHome}/compose.yml logs"
     exit 1
 }

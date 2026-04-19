@@ -68,14 +68,16 @@ function New-WslShortcut {
 
     $linkPath = Join-Path $groupDir ("$Name.lnk")
     $sc = $shell.CreateShortcut($linkPath)
+    # No -u override: run as the distro's default user (owns the stack in
+    # per-user installs; legacy installs override via -u on the command line).
     if ($Interactive) {
         # Keep the console window open so the user can read the output.
         # cmd.exe /k holds the window after wsl.exe exits.
         $sc.TargetPath = "$env:WINDIR\System32\cmd.exe"
-        $sc.Arguments  = "/k `"wsl.exe -d $Distro -u falconpulsar -- bash -ilc `"$BashCommand`"`""
+        $sc.Arguments  = "/k `"wsl.exe -d $Distro -- bash -ilc `"$BashCommand`"`""
     } else {
         $sc.TargetPath = "$env:WINDIR\System32\wsl.exe"
-        $sc.Arguments = "-d $Distro -u falconpulsar -- bash -ilc `"$BashCommand`""
+        $sc.Arguments = "-d $Distro -- bash -ilc `"$BashCommand`""
     }
     $sc.Description  = $Name
     # Use the falcon icon if available

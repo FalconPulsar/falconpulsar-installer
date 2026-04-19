@@ -1321,6 +1321,7 @@ var
   RC: Integer;
   Sentinel: String;
   Content: AnsiString;
+  WslStackPath: String;
 begin
   ExistingDetectionDone := False;
   ExistingHasPrior      := False;
@@ -1368,17 +1369,22 @@ begin
   ExistingHasImages     := (StrToIntDef(SentinelGet(Content, 'Images'),     0) > 0);
 
   // Build the multi-line inventory shown on the wizard page.
+  // WslHomeDir is the actual resolved stack path emitted by
+  // 06-detect-existing-install.ps1 (either /home/<user>/falconpulsar for
+  // per-user installs or /home/falconpulsar for legacy service-user ones).
   ExistingInventoryText := '';
+  WslStackPath := SentinelGet(Content, 'WslHomeDir');
+  if WslStackPath = '' then WslStackPath := '/home/falconpulsar';
   if SentinelGet(Content, 'WslHome') = 'yes' then
   begin
-    ExistingInventoryText := ExistingInventoryText + '  * WSL stack directory: /home/falconpulsar';
+    ExistingInventoryText := ExistingInventoryText + '  * WSL stack directory: ' + WslStackPath;
     if SentinelGet(Content, 'WslHomeSize') <> '' then
       ExistingInventoryText := ExistingInventoryText + ' (' + SentinelGet(Content, 'WslHomeSize') + ')';
     ExistingInventoryText := ExistingInventoryText + #13#10;
   end;
   if SentinelGet(Content, 'WslData') = 'yes' then
   begin
-    ExistingInventoryText := ExistingInventoryText + '  * Database (WSL): /home/falconpulsar/data';
+    ExistingInventoryText := ExistingInventoryText + '  * Database (WSL): ' + WslStackPath + '/data';
     if SentinelGet(Content, 'WslDataSize') <> '' then
       ExistingInventoryText := ExistingInventoryText + ' (' + SentinelGet(Content, 'WslDataSize') + ')  -- PRESERVED unless you choose Fresh';
     ExistingInventoryText := ExistingInventoryText + #13#10;

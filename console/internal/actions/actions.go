@@ -18,33 +18,45 @@ import (
 
 // HomeDir resolves the stack directory.
 //
-// Resolution order:
-//  1. FP_HOME env var (explicit override).
-//  2. On Linux/WSL: if /home/falconpulsar/{compose.yml,.env} exists, use
-//     /home/falconpulsar directly. This is required because the installer
-//     creates a dedicated `falconpulsar` system user and drops the stack in
-//     that user's HOME, so joining $HOME+"falconpulsar" would produce
-//     /home/falconpulsar/falconpulsar (doubled).
-//  3. Fallback: $HOME/falconpulsar (macOS path).
+// Resolution order, in priority:
+//  1. FP_HOME env var (explicit override -- useful for debugging).
+//  2. $HOME/falconpulsar if it contains a real install (compose.yml or .env).
+//     This is the macOS model AND the new Linux/WSL per-user model.
+//  3. On Linux only: /home/falconpulsar if it contains a real install.
+//     That's the legacy service-user path. We probe it so `fp` still works
+//     for users upgrading from a pre-refactor install.
+//  4. Otherwise: $HOME/falconpulsar (unconditional default). Writes that
+//     happen here will fail cleanly if the directory doesn't exist, which
+//     is the right signal ("no install here").
 func HomeDir() string {
 	if override := os.Getenv("FP_HOME"); override != "" {
 		return override
 	}
-	if runtime.GOOS == "linux" {
-		for _, candidate := range []string{
-			"/home/falconpulsar/compose.yml",
-			"/home/falconpulsar/.env",
-		} {
-			if _, err := os.Stat(candidate); err == nil {
-				return "/home/falconpulsar"
+
+	hasInstall := func(dir string) bool {
+		for _, marker := range []string{"compose.yml", ".env"} {
+			if _, err := os.Stat(filepath.Join(dir, marker)); err == nil {
+				return true
 			}
 		}
+		return false
 	}
-	h, err := os.UserHomeDir()
-	if err != nil {
+
+	if h, err := os.UserHomeDir(); err == nil {
+		userStack := filepath.Join(h, "falconpulsar")
+		if hasInstall(userStack) {
+			return userStack
+		}
+	}
+
+	if runtime.GOOS == "linux" && hasInstall("/home/falconpulsar") {
 		return "/home/falconpulsar"
 	}
-	return filepath.Join(h, "falconpulsar")
+
+	if h, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(h, "falconpulsar")
+	}
+	return "/home/falconpulsar"
 }
 
 func dockerPath() string {

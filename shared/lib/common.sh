@@ -96,6 +96,13 @@ require_root() {
     is_root || die "this step must run as root (try: sudo bash $0)"
 }
 
+# Returns 0 if we are running inside a WSL distro. WSL exposes itself via
+# two independent markers; either is sufficient.
+is_wsl() {
+    [ -e /proc/sys/fs/binfmt_misc/WSLInterop ] && return 0
+    grep -qiE 'microsoft|wsl' /proc/version 2>/dev/null
+}
+
 require_not_root() {
     if is_root; then
         die "do not run this as root — the installer will use sudo where needed"

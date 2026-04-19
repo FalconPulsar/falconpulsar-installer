@@ -46,23 +46,60 @@ fi
 
 trap 'on_error $LINENO' ERR
 
-FP_USER="${FP_USER:-falconpulsar}"
-FP_HOME="${FP_HOME:-/home/${FP_USER}}"
+# Defaults and install-model inference -- mirror linux/install.sh.
+FP_INSTALL_MODEL="${FP_INSTALL_MODEL:-}"
+if [ -z "${FP_USER:-}" ] && [ -z "${FP_HOME:-}" ]; then
+    if command -v is_wsl >/dev/null 2>&1 && is_wsl; then
+        FP_INSTALL_MODEL="per-user"
+        # Prefer a real human user: not root.
+        _fp_default_user="${FP_INVOKING_USER:-${SUDO_USER:-$(id -un)}}"
+        if [ -z "$_fp_default_user" ] || [ "$_fp_default_user" = "root" ]; then
+            _fp_default_user="$(getent passwd 1000 2>/dev/null | cut -d: -f1)"
+        fi
+        FP_USER="${_fp_default_user:-}"
+        [ -n "$FP_USER" ] && FP_HOME="/home/${FP_USER}/falconpulsar"
+    else
+        FP_INSTALL_MODEL="service-user"
+        FP_USER="falconpulsar"
+        FP_HOME="/home/${FP_USER}"
+    fi
+else
+    FP_USER="${FP_USER:-falconpulsar}"
+    if [ "$FP_USER" = "falconpulsar" ] && [ -z "${FP_HOME:-}" ]; then
+        FP_INSTALL_MODEL="${FP_INSTALL_MODEL:-service-user}"
+        FP_HOME="/home/${FP_USER}"
+    else
+        FP_INSTALL_MODEL="${FP_INSTALL_MODEL:-per-user}"
+        FP_HOME="${FP_HOME:-/home/${FP_USER}/falconpulsar}"
+    fi
+fi
 FP_PURGE=0
 FP_FORCE=0
 FP_LOG_FILE="${FP_LOG_FILE:-/tmp/falconpulsar-install.log}"
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --user)   FP_USER="$2"; FP_HOME="/home/${FP_USER}"; shift 2 ;;
+        --user)
+            FP_USER="$2"
+            if [ "$FP_INSTALL_MODEL" = "per-user" ]; then
+                FP_HOME="/home/${FP_USER}/falconpulsar"
+            else
+                FP_HOME="/home/${FP_USER}"
+            fi
+            shift 2 ;;
+        --home)   FP_HOME="$2"; shift 2 ;;
         --purge)  FP_PURGE=1; shift ;;
         -y|--yes) FP_ASSUME_YES=1; shift ;;
         --force)  FP_FORCE=1; shift ;;
         -h|--help)
             cat <<'EOF'
 Usage: uninstall.sh [options]
-  --user <name>   System user to remove (default: falconpulsar)
-  --purge         Also delete data directory and the system user
+  --user <name>   User who owns the stack
+                    Native Linux default: falconpulsar (system user -- also removed)
+                    WSL default:          the invoking human user (NOT removed)
+  --home <path>   Stack directory (default derived from --user)
+  --purge         Also delete the stack directory and its database
+                    (service-user mode: also removes the system user)
   --yes, -y       Assume yes to all prompts
   --force         Skip admin authentication (emergency use only)
 EOF
@@ -73,10 +110,30 @@ EOF
 done
 export FP_ASSUME_YES="${FP_ASSUME_YES:-0}"
 
-require_root
+# Per-user install: no root needed -- the invoking user owns everything
+# and is in the docker group. Service-user install: root is required
+# because we're stopping another user's containers + deleting their home +
+# possibly calling userdel.
+if [ "$FP_INSTALL_MODEL" = "service-user" ]; then
+    require_root
+elif ! id "$FP_USER" >/dev/null 2>&1; then
+    log_warn "user ${FP_USER} does not exist -- nothing to uninstall"
+    exit 0
+fi
+
+# run_as_fp_user: run a shell command as the stack owner with the docker
+# group active. When we're already that user (per-user mode without root),
+# skip sudo and just use sg docker.
+run_as_fp_user() {
+    if [ "$(id -un)" = "$FP_USER" ]; then
+        sg docker -c "$1"
+    else
+        sudo -u "$FP_USER" -H sg docker -c "$1"
+    fi
+}
 
 if ! id "$FP_USER" >/dev/null 2>&1; then
-    log_warn "user ${FP_USER} does not exist — nothing to uninstall"
+    log_warn "user ${FP_USER} does not exist -- nothing to uninstall"
     exit 0
 fi
 
@@ -145,48 +202,47 @@ log_step "stopping the stack"
 if [ -f "${FP_HOME}/compose.yml" ]; then
     if [ "$FP_PURGE" -eq 1 ]; then
         # --volumes removes named Docker volumes declared in compose.yml
-        sudo -u "$FP_USER" -H sg docker -c "cd '${FP_HOME}' && docker compose --profile ai down --remove-orphans --volumes" || \
-            log_warn "docker compose down failed — continuing anyway"
+        run_as_fp_user "cd '${FP_HOME}' && docker compose --profile ai down --remove-orphans --volumes" || \
+            log_warn "docker compose down failed -- continuing anyway"
     else
-        sudo -u "$FP_USER" -H sg docker -c "cd '${FP_HOME}' && docker compose --profile ai down --remove-orphans" || \
-            log_warn "docker compose down failed — continuing anyway"
+        run_as_fp_user "cd '${FP_HOME}' && docker compose --profile ai down --remove-orphans" || \
+            log_warn "docker compose down failed -- continuing anyway"
     fi
 else
     log_info "no compose.yml in ${FP_HOME}, skipping docker compose down"
 fi
 
 log_step "removing Docker images"
-# Wrap in `set +e` — failing image queries with errexit+pipefail abort the
+# Wrap in `set +e` -- failing image queries with errexit+pipefail abort the
 # whole script. GNU xargs does have -r but we use `while read` for parity.
 set +e
 if [ -f "${FP_HOME}/compose.yml" ]; then
-    IMAGES="$(sudo -u "$FP_USER" -H sg docker -c "cd '${FP_HOME}' && docker compose config --images" 2>/dev/null | sort -u)"
+    IMAGES="$(run_as_fp_user "cd '${FP_HOME}' && docker compose config --images" 2>/dev/null | sort -u)"
     if [ -n "$IMAGES" ]; then
         echo "$IMAGES" | while IFS= read -r img; do
-            [ -n "$img" ] && sudo -u "$FP_USER" -H sg docker -c "docker rmi -f '$img'" >/dev/null 2>&1
+            [ -n "$img" ] && run_as_fp_user "docker rmi -f '$img'" >/dev/null 2>&1
         done
     fi
 fi
-sudo -u "$FP_USER" -H sg docker -c \
-    "docker images --format '{{.Repository}}:{{.Tag}}'" 2>/dev/null | \
+run_as_fp_user "docker images --format '{{.Repository}}:{{.Tag}}'" 2>/dev/null | \
     grep -E '^falconpulsar/' | while IFS= read -r img; do
-    [ -n "$img" ] && sudo -u "$FP_USER" -H sg docker -c "docker rmi -f '$img'" >/dev/null 2>&1
+    [ -n "$img" ] && run_as_fp_user "docker rmi -f '$img'" >/dev/null 2>&1
 done
 set -e
 
 if [ "$FP_PURGE" -eq 1 ]; then
     log_step "pruning orphan volumes"
     set +e
-    sudo -u "$FP_USER" -H sg docker -c "docker volume ls --format '{{.Name}}'" 2>/dev/null | \
+    run_as_fp_user "docker volume ls --format '{{.Name}}'" 2>/dev/null | \
         grep -E '^falconpulsar' | while IFS= read -r vol; do
-        [ -n "$vol" ] && sudo -u "$FP_USER" -H sg docker -c "docker volume rm -f '$vol'" >/dev/null 2>&1
+        [ -n "$vol" ] && run_as_fp_user "docker volume rm -f '$vol'" >/dev/null 2>&1
     done
     set -e
 fi
 
 log_step "removing systemd user unit (if any)"
 UNIT_FILE="${FP_HOME}/.config/systemd/user/falconpulsar.service"
-if [ -f "$UNIT_FILE" ]; then
+if [ -f "$UNIT_FILE" ] && [ "$FP_INSTALL_MODEL" = "service-user" ]; then
     sudo -u "$FP_USER" -H XDG_RUNTIME_DIR="/run/user/${FP_UID}" \
         systemctl --user disable --now falconpulsar.service 2>/dev/null || true
     rm -f "$UNIT_FILE"
@@ -194,6 +250,13 @@ if [ -f "$UNIT_FILE" ]; then
     log_success "systemd unit removed"
 else
     log_info "no systemd unit found"
+fi
+
+# Remove the /etc/profile.d PATH snippet if we planted one. Needs root;
+# only attempt it when we have root (service-user mode always does;
+# per-user mode may not, so we silently skip).
+if [ -w /etc/profile.d ] || [ "$(id -u)" -eq 0 ]; then
+    rm -f /etc/profile.d/falconpulsar.sh 2>/dev/null || true
 fi
 
 # IMPORTANT: rm -rf $FP_HOME is the LAST filesystem operation below.
@@ -208,10 +271,14 @@ if [ "$FP_PURGE" -eq 1 ] || confirm "delete ${FP_HOME} (including the time-serie
     rm -rf "${FP_HOME:?}"
     log_success "deleted ${FP_HOME}"
 
-    if [ "$FP_PURGE" -eq 1 ] || confirm "remove the ${FP_USER} system user?" default-no; then
-        log_step "removing user ${FP_USER}"
-        userdel "$FP_USER" 2>/dev/null || true
-        log_success "user ${FP_USER} removed"
+    if [ "$FP_INSTALL_MODEL" = "service-user" ]; then
+        if [ "$FP_PURGE" -eq 1 ] || confirm "remove the ${FP_USER} system user?" default-no; then
+            log_step "removing user ${FP_USER}"
+            userdel "$FP_USER" 2>/dev/null || true
+            log_success "user ${FP_USER} removed"
+        fi
+    else
+        log_info "per-user install -- leaving the human user '${FP_USER}' in place"
     fi
 else
     log_info "${FP_HOME} preserved. Re-run with --purge to delete it."

@@ -47,6 +47,33 @@ if (-not (Test-WslDistroPresent -Name $Distro)) {
     exit 0
 }
 
+# Resolve the WSL-side stack directory. Per-user installs live under
+# /home/<user>/falconpulsar; legacy service-user installs under
+# /home/falconpulsar. We try sentinels first (cheap + exact), then probe
+# the distro for the default user, then fall back to the legacy path.
+$WslHome = ''
+$homeSentinel = Join-Path $env:TEMP 'falconpulsar-home.txt'
+if (Test-Path $homeSentinel) {
+    $WslHome = (Get-Content $homeSentinel -Raw).Trim()
+}
+if ([string]::IsNullOrEmpty($WslHome)) {
+    $WslUser = & wsl.exe -d $Distro -- whoami 2>$null
+    $WslUser = "$WslUser".Trim().Trim([char]0)
+    if ([string]::IsNullOrEmpty($WslUser) -or $WslUser -eq 'root') {
+        $WslUser = & wsl.exe -d $Distro -u root -- bash -c "getent passwd 1000 2>/dev/null | cut -d: -f1" 2>$null
+        $WslUser = "$WslUser".Trim().Trim([char]0)
+    }
+    if (-not [string]::IsNullOrEmpty($WslUser) -and $WslUser -ne 'root') {
+        $WslHome = "/home/$WslUser/falconpulsar"
+    }
+}
+# If we STILL don't have it, the legacy path is our only option.
+$WslHomes = @()
+if ($WslHome) { $WslHomes += $WslHome }
+$WslHomes += '/home/falconpulsar'
+$WslHomes = $WslHomes | Select-Object -Unique
+Write-Info ("Uninstall target paths: {0}" -f ($WslHomes -join ', '))
+
 # Admin authentication gate -- require the FalconPulsar admin password before
 # any destructive action. -Force bypasses for emergencies (broken Core).
 if ($Force) {
@@ -76,85 +103,84 @@ if ($Purge) {
     Write-Info 'Mode: keep data (containers removed, database preserved)'
 }
 
-# Step 1: Stop and remove containers (+ volumes if purging)
-Write-Info 'Stopping FalconPulsar containers...'
+# Step 1+2: Stop containers, remove images + stack files, across every
+# candidate home directory (new per-user + legacy). Running the same
+# cleanup against both is idempotent and catches mixed-state systems.
+Write-Info 'Stopping FalconPulsar containers and removing stack files...'
 $purgeFlag = if ($Purge) { '1' } else { '0' }
-$stopScript = @"
+foreach ($home in $WslHomes) {
+    Write-Info ("  -> cleanup pass: {0}" -f $home)
+    $cleanupScript = @"
 set +e
+HOME_DIR='$home'
 PURGE=$purgeFlag
 if command -v docker >/dev/null 2>&1; then
-    if [ -f /home/falconpulsar/compose.yml ]; then
-        cd /home/falconpulsar
-        if [ "`$PURGE" = "1" ]; then
-            sudo -u falconpulsar -H sg docker -c "docker compose --profile ai down --remove-orphans --volumes" 2>/dev/null
-            echo "[info] Containers and named volumes removed"
+    # Determine the owner of the stack dir so we can run docker as them
+    # (per-user = the human; legacy = the falconpulsar system user).
+    OWNER=`$(stat -c '%U' "`$HOME_DIR" 2>/dev/null)
+    [ -z "`$OWNER" ] && OWNER=root
+    COMPOSE="docker compose --profile ai down --remove-orphans"
+    [ "`$PURGE" = "1" ] && COMPOSE="`$COMPOSE --volumes"
+    if [ -f "`$HOME_DIR/compose.yml" ]; then
+        if [ "`$OWNER" = "root" ] || [ "`$OWNER" = "`$(id -un)" ]; then
+            ( cd "`$HOME_DIR" && sg docker -c "`$COMPOSE" ) 2>/dev/null
         else
-            sudo -u falconpulsar -H sg docker -c "docker compose --profile ai down --remove-orphans" 2>/dev/null
-            echo "[info] Containers stopped and removed (volumes preserved)"
+            ( cd "`$HOME_DIR" && sudo -u "`$OWNER" -H sg docker -c "`$COMPOSE" ) 2>/dev/null
         fi
-    else
-        echo "[info] No compose.yml found -- skipping container stop"
-    fi
-else
-    echo "[info] Docker not available -- skipping container stop"
-fi
-"@
-$null = Invoke-WslBash -Distro $Distro -Script $stopScript -User root
-Write-Info 'Containers stopped'
-
-# Step 2: Remove Docker images + stack files (+ orphan volumes on purge)
-Write-Info 'Removing Docker images and stack files...'
-$cleanScript = @"
-set +e
-PURGE=$purgeFlag
-if command -v docker >/dev/null 2>&1; then
-    # Harvest images referenced by compose.yml first (catches custom registries)
-    if [ -f /home/falconpulsar/compose.yml ]; then
-        IMAGES="`$(cd /home/falconpulsar && sudo -u falconpulsar -H sg docker -c 'docker compose config --images' 2>/dev/null | sort -u)"
+        # Harvest compose-referenced images + generic falconpulsar/* tags.
+        IMAGES=`$( cd "`$HOME_DIR" && sudo -u "`$OWNER" -H sg docker -c 'docker compose config --images' 2>/dev/null | sort -u )
         if [ -n "`$IMAGES" ]; then
-            echo "`$IMAGES" | xargs -r sudo -u falconpulsar -H sg docker -c 'docker rmi -f `"`$@`"' _ 2>/dev/null
+            echo "`$IMAGES" | while IFS= read -r img; do
+                [ -n "`$img" ] && docker rmi -f "`$img" >/dev/null 2>&1
+            done
         fi
     fi
-    # Fallback to known names (older installs)
-    sudo -u falconpulsar -H sg docker -c "docker images --format '{{.Repository}}:{{.Tag}}' | grep -E '^falconpulsar/' | xargs -r docker rmi -f" 2>/dev/null
-    # Orphan volumes on purge
+    docker images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | \
+        grep -E '^falconpulsar/' | while IFS= read -r img; do
+        [ -n "`$img" ] && docker rmi -f "`$img" >/dev/null 2>&1
+    done
     if [ "`$PURGE" = "1" ]; then
-        sudo -u falconpulsar -H sg docker -c "docker volume ls --format '{{.Name}}' | grep -E '^falconpulsar' | xargs -r docker volume rm -f" 2>/dev/null
+        docker volume ls --format '{{.Name}}' 2>/dev/null | \
+            grep -E '^falconpulsar' | while IFS= read -r vol; do
+            [ -n "`$vol" ] && docker volume rm -f "`$vol" >/dev/null 2>&1
+        done
     fi
-    echo "[info] Docker images removed"
 fi
-rm -f /home/falconpulsar/compose.yml 2>/dev/null
-rm -f /home/falconpulsar/.env 2>/dev/null
-rm -rf /opt/falconpulsar-installer 2>/dev/null
-echo "[info] Stack files removed"
+# Remove stack files in this home (but NOT the data dir unless -Purge).
+rm -f "`$HOME_DIR/compose.yml" "`$HOME_DIR/.env" "`$HOME_DIR/gateway.yaml" 2>/dev/null
+echo "[info] cleaned `$HOME_DIR"
 "@
-$null = Invoke-WslBash -Distro $Distro -Script $cleanScript -User root
+    $null = Invoke-WslBash -Distro $Distro -Script $cleanupScript -User root
+}
+# Staged installer tree in /opt/falconpulsar-installer is always gone.
+$null = Invoke-WslBash -Distro $Distro -Script 'rm -rf /opt/falconpulsar-installer 2>/dev/null; echo [info] staged installer removed' -User root
 Write-Info 'Stack files removed'
 
-# Step 3: If purge, remove everything
+# Step 3: If purge, remove the stack home dir(s) + the legacy system user.
 if ($Purge) {
-    Write-Info 'Removing all data, database, and user...'
-    $purgeScript = @'
+    Write-Info 'Removing all data, database, and per-user stack state...'
+    $homeList = ($WslHomes | ForEach-Object { "'$_'" }) -join ' '
+    $purgeScript = @"
 set +e
-# Remove the home directory (contains database)
-rm -rf /home/falconpulsar 2>/dev/null
-echo "[info] /home/falconpulsar removed (database deleted)"
-# Remove the system user
-# Remove systemd unit before removing user
-rm -f /home/falconpulsar/.config/systemd/user/falconpulsar.service 2>/dev/null
+for H in $homeList; do
+    rm -rf "`$H" 2>/dev/null && echo "[info] `$H removed"
+done
+# Legacy service-user cleanup: kill linger, remove systemd unit, userdel.
 loginctl disable-linger falconpulsar 2>/dev/null
-# Remove the system user (--force to handle lingering processes)
 if id falconpulsar >/dev/null 2>&1; then
     userdel --force falconpulsar 2>/dev/null
-    echo "[info] falconpulsar user removed"
+    echo '[info] falconpulsar system user removed'
 fi
-echo "[info] Purge complete"
-'@
+# System-wide PATH snippet (installed by per-user mode).
+rm -f /etc/profile.d/falconpulsar.sh 2>/dev/null
+echo '[info] Purge complete'
+"@
     $null = Invoke-WslBash -Distro $Distro -Script $purgeScript -User root
     Write-Info 'Full purge complete'
 } else {
-    Write-Info 'Data preserved at /home/falconpulsar/data'
-    Write-Info "To access: wsl -d $Distro -u root -- ls /home/falconpulsar/data"
+    $firstHome = $WslHomes | Select-Object -First 1
+    Write-Info ("Data preserved at {0}/data" -f $firstHome)
+    Write-Info ("To access: wsl -d {0} -- ls '{1}/data'" -f $Distro, $firstHome)
 }
 
 # Step 4: Remove Start Menu shortcuts (always -- they're broken if the
@@ -187,13 +213,17 @@ if ($Purge) {
     }
 }
 
-# Sentinel cleanup
+# Sentinel cleanup -- remove the distro + home + user sentinels so a
+# subsequent reinstall re-detects everything from scratch.
 Remove-Item -Path $sentinel -Force -ErrorAction SilentlyContinue
+Remove-Item -Path $homeSentinel -Force -ErrorAction SilentlyContinue
+Remove-Item -Path (Join-Path $env:TEMP 'falconpulsar-user.txt') -Force -ErrorAction SilentlyContinue
 
 Write-Output ''
 Write-Output '[ok] Uninstall complete'
 if (-not $Purge) {
-    Write-Output '  Your database is preserved at /home/falconpulsar/data'
+    $firstHome = $WslHomes | Select-Object -First 1
+    Write-Output ('  Your database is preserved at {0}/data' -f $firstHome)
     Write-Output '  Reinstall FalconPulsar to resume using your existing data.'
 }
 
