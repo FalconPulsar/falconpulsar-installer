@@ -35,6 +35,27 @@ param(
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'lib.ps1')
 
+# Catch ANY uncaught error, write it to the install log, and exit 1.
+# Without this, Inno Setup's RunHelper sees only "exited with code 1"
+# and the user has no way to know what went wrong because the helper
+# is launched with SW_HIDE and we don't capture stdout/stderr from it.
+trap {
+    $msg = $_.Exception.Message
+    $where = $_.InvocationInfo.PositionMessage
+    Write-FpLogLine ''
+    Write-FpLogLine "[error] 40-run-fp-installer.ps1 crashed: $msg"
+    Write-FpLogLine "[error] At: $where"
+    Write-FpLogLine "[error] Stack:"
+    foreach ($line in ($_.ScriptStackTrace -split "`n")) {
+        Write-FpLogLine "[error]   $line"
+    }
+    exit 1
+}
+
+# Heartbeat — confirms the helper at least started running.
+Write-FpLogLine ''
+Write-FpLogLine "==> 40-run-fp-installer.ps1 entered (PSVersion=$($PSVersionTable.PSVersion))"
+
 Write-Step 'Running the FalconPulsar bash installer inside WSL'
 
 # -- Sentinel: pick the right distro name -----------------------------------

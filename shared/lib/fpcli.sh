@@ -38,11 +38,23 @@ fp_install_cli() {
         return 0
     fi
 
+    local dest="${home}/bin/fp"
+    mkdir -p "${home}/bin"
+
+    # Prefer a local copy bundled by the GUI installer (FP_LOCAL_FP_BINARY).
+    # Falling back to the GitHub release means a network round-trip and only
+    # works if v${version} is actually tagged. Bundled binaries are how the
+    # macOS DMG and the Windows installer ship fp; this branch keeps install
+    # working even when GitHub is unreachable or the release is missing.
+    if [ -n "${FP_LOCAL_FP_BINARY:-}" ] && [ -f "${FP_LOCAL_FP_BINARY}" ]; then
+        cp "${FP_LOCAL_FP_BINARY}" "${dest}"
+        chmod +x "${dest}"
+        log_success "fp CLI installed at ${dest} (from bundled binary)"
+        return 0
+    fi
+
     local repo="${FP_REPO:-FalconPulsar/falconpulsar-installer}"
     local url="https://github.com/${repo}/releases/download/v${version}/fp-${suffix}"
-    local dest="${home}/bin/fp"
-
-    mkdir -p "${home}/bin"
 
     log_info "downloading fp CLI (${suffix}) from ${url}"
     if ! curl -fsSL -o "${dest}" "$url"; then
@@ -57,12 +69,10 @@ fp_offer_path_append() {
     local home="$1"
     local bin_dir="${home}/bin"
 
-    # Skip on non-interactive runs (FP_ASSUME_YES) unless explicitly opted in.
-    if [ "${FP_ASSUME_YES:-0}" = "1" ] && [ "${FP_ADD_TO_PATH:-0}" != "1" ]; then
-        log_info "skipping PATH append (non-interactive); run with FP_ADD_TO_PATH=1 to enable"
-        return 0
-    fi
-
+    # Non-interactive runs default to ADDING the path (the GUI installer
+    # always sets FP_ASSUME_YES=1, and a `fp: command not found` after
+    # install is a worse default than a one-line PATH append). Set
+    # FP_ADD_TO_PATH=0 explicitly to opt out.
     if [ "${FP_ADD_TO_PATH:-}" = "0" ]; then
         log_info "skipping PATH append (FP_ADD_TO_PATH=0)"
         return 0

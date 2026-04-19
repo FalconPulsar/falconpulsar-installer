@@ -230,6 +230,13 @@ enum InstallRunner {
             // Single-quote escape for bash: ' -> '\''
             return s.replacingOccurrences(of: "'", with: "'\\''")
         }
+        // Point install.sh at the fp binary embedded inside Installer.app
+        // (Contents/Resources/fp). Without this, fp_install_cli would try
+        // to download from GitHub releases — which fails when the version
+        // isn't tagged, leaving the user with `fp: command not found`.
+        let bundledFp = (Bundle.main.bundlePath as NSString)
+            .appendingPathComponent("Contents/Resources/fp")
+
         let envLines = [
             "export FP_ASSUME_YES=1",
             "export FP_LEGAL_ACCEPTED=1",
@@ -240,7 +247,14 @@ enum InstallRunner {
             "export FP_REGISTRY_USER='\(sh(state.registryUser))'",
             "export FP_REGISTRY_PASS='\(sh(state.registryPass))'",
             state.registrySkip ? "export FP_REGISTRY_SKIP=1" : "",
-            "export FP_AI_GATEWAY_ENABLED=\(state.aiGatewayEnabled ? "true" : "false")"
+            "export FP_AI_GATEWAY_ENABLED=\(state.aiGatewayEnabled ? "true" : "false")",
+            // Use the bundled fp binary instead of downloading from GitHub
+            // releases. Path is the macOS-arm64 binary embedded by build-dmg.sh.
+            FileManager.default.fileExists(atPath: bundledFp)
+                ? "export FP_LOCAL_FP_BINARY='\(sh(bundledFp))'" : "",
+            // GUI install ALWAYS adds fp to PATH — without this the user
+            // sees `fp: command not found` even though we just installed it.
+            "export FP_ADD_TO_PATH=1"
         ].filter { !$0.isEmpty }.joined(separator: "\n") + "\n"
 
         let envFile = "/tmp/fp-install-env-\(getpid()).sh"
