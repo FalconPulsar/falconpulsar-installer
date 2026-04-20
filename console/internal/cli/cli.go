@@ -516,7 +516,57 @@ func runWindowsUninstaller(purge, yes bool) error {
 	c.Stdin = os.Stdin
 	c.Stdout = os.Stdout
 	c.Stderr = os.Stderr
-	return c.Run()
+	runErr := c.Run()
+
+	// After the Windows uninstaller returns, surface the install log path
+	// in the user's WSL terminal too. The Windows-side uninstall.ps1 opens
+	// it in Notepad; we echo the path here so users invoking `fp uninstall`
+	// from a WSL shell always see where the log lives, regardless of
+	// whether Notepad actually popped. Best-effort path discovery via the
+	// `cmd.exe /c echo %TEMP%` interop trick -- gives us the Windows temp
+	// dir and we convert it to a /mnt/c path for WSL.
+	fmt.Fprintln(os.Stderr, "")
+	if winTemp := winTempDir(); winTemp != "" {
+		logWin := winTemp + `\falconpulsar-install.log`
+		logWsl := winPathToWslPath(logWin)
+		fmt.Fprintln(os.Stderr, "Uninstall finished.")
+		fmt.Fprintln(os.Stderr, "  Log (Windows): "+logWin)
+		if logWsl != "" {
+			fmt.Fprintln(os.Stderr, "  Log (WSL):     "+logWsl)
+		}
+	} else {
+		fmt.Fprintln(os.Stderr, "Uninstall finished.")
+		// Split the message so go vet doesn't flag %T as a printf verb.
+		tempVar := "%" + "TEMP%"
+		fmt.Fprintln(os.Stderr, "  Install log is at "+tempVar+`\falconpulsar-install.log on Windows.`)
+	}
+	return runErr
+}
+
+// winTempDir returns the Windows TEMP path, queried via cmd.exe interop.
+// Empty string on failure.
+func winTempDir() string {
+	out, err := exec.Command("/mnt/c/Windows/System32/cmd.exe", "/c", "echo %TEMP%").Output()
+	if err != nil {
+		return ""
+	}
+	t := strings.TrimSpace(strings.ReplaceAll(string(out), "\r", ""))
+	if t == "" || strings.HasPrefix(t, "%") {
+		return ""
+	}
+	return t
+}
+
+// winPathToWslPath converts "C:\Users\foo\bar" to "/mnt/c/Users/foo/bar".
+// Not bulletproof (doesn't handle UNC, non-c: drives it still handles); good
+// enough for standard %TEMP% paths under C:\Users\.
+func winPathToWslPath(p string) string {
+	if len(p) < 3 || p[1] != ':' {
+		return ""
+	}
+	drive := strings.ToLower(string(p[0]))
+	rest := strings.ReplaceAll(p[2:], `\`, "/")
+	return "/mnt/" + drive + rest
 }
 
 // copyToTemp duplicates the uninstall script to /tmp so bash doesn't die when

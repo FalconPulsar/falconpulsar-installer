@@ -324,9 +324,29 @@ if (-not $Purge) {
 # complete record (installation -> uninstallation) in one place.
 Write-FpLogLine '=== end ==='
 Write-Output ''
-Write-Output "  Full log: $Script:FpLogPath"
-# Open the log in Notepad so the user can read it immediately.
 if (Test-Path $Script:FpLogPath) {
-    try { Start-Process -FilePath 'notepad.exe' -ArgumentList $Script:FpLogPath -ErrorAction SilentlyContinue } catch { }
+    Write-Output "  Install log: $Script:FpLogPath"
+    # Open the log in Notepad so the user sees what happened even if the
+    # Inno Setup window closed first. Belt-and-suspenders:
+    #   1. Full path to notepad.exe (not PATH-dependent)
+    #   2. -WindowStyle Normal so it isn't inherited hidden from the
+    #      parent when the uninstaller was launched via /SILENT
+    #   3. Print the path above FIRST, so even if Notepad fails to
+    #      launch (policy block, corp lockdown, etc.) the user still
+    #      knows exactly where to find the file.
+    $notepad = Join-Path $env:SystemRoot 'System32\notepad.exe'
+    if (Test-Path $notepad) {
+        try {
+            Start-Process -FilePath $notepad `
+                          -ArgumentList ('"{0}"' -f $Script:FpLogPath) `
+                          -WindowStyle Normal -ErrorAction Stop
+        } catch {
+            Write-Output ('  (could not auto-open Notepad: {0})' -f $_.Exception.Message)
+        }
+    } else {
+        Write-Output '  (notepad.exe not found at its standard location; open the log manually)'
+    }
+} else {
+    Write-Output "  (install log not found at $Script:FpLogPath)"
 }
 exit 0

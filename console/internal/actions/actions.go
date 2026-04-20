@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/falconpulsar/falconpulsar-installer/console/internal/api"
 )
@@ -332,9 +333,16 @@ func containerRunning(ctx context.Context, name string) bool {
 }
 
 // EnsureGatewayConfig makes sure ~/falconpulsar/gateway.yaml is a valid
-// config file. Replaces the file if it's a directory (Docker creates one
-// when the bind-mount source is missing) OR if it contains the known-bad
-// `providers: []` pattern from earlier installer versions.
+// config file. Replaces the file if:
+//  1. It's a directory (Docker creates one when the bind-mount source is
+//     missing).
+//  2. It contains the known-bad `providers: []` pattern from earlier
+//     installer versions.
+//  3. It's not valid UTF-8. This catches the CP1252-encoded em-dash
+//     (single byte 0x97) that older Windows tray builds wrote via a
+//     C#->stdin->bash pipeline — Python's yaml.safe_load crashes on
+//     that byte and the ai-gateway container crash-loops on startup.
+//     Detecting invalid UTF-8 is a cheap superset of "contains 0x97".
 func EnsureGatewayConfig() {
 	p := filepath.Join(HomeDir(), "gateway.yaml")
 	fi, err := os.Stat(p)
@@ -345,10 +353,14 @@ func EnsureGatewayConfig() {
 	if _, err := os.Stat(p); os.IsNotExist(err) {
 		needsWrite = true
 	} else if data, err := os.ReadFile(p); err == nil {
-		content := string(data)
-		if strings.Contains(content, "providers: []") ||
-			strings.Contains(content, "providers: {}") {
+		if !utf8.Valid(data) {
 			needsWrite = true
+		} else {
+			content := string(data)
+			if strings.Contains(content, "providers: []") ||
+				strings.Contains(content, "providers: {}") {
+				needsWrite = true
+			}
 		}
 	}
 	if needsWrite {

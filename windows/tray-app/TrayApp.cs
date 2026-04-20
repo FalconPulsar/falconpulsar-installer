@@ -1006,6 +1006,14 @@ namespace FalconPulsar.Tray
                 RedirectStandardInput = true,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
+                // Force UTF-8 on stdin. Without this, .NET defaults to the
+                // Windows OEM codepage (CP1252 on en-US). Non-ASCII bytes
+                // in the piped bash script (e.g. the em-dash in the inline
+                // gateway.yaml heredoc) get transliterated to single CP1252
+                // bytes (0x97 for em-dash) and bash writes those verbatim.
+                // Python's yaml.safe_load then crashes:
+                //   UnicodeDecodeError: 'utf-8' codec can't decode byte 0x97
+                StandardInputEncoding = new System.Text.UTF8Encoding(false),
             };
             using var proc = Process.Start(psi);
             if (proc == null) return (-1, string.Empty);
@@ -1138,6 +1146,9 @@ namespace FalconPulsar.Tray
                     RedirectStandardInput = true,
                     RedirectStandardOutput = true,
                     RedirectStandardError = true,
+                    // Force UTF-8 on stdin -- see RunWslBashCaptureAsync for
+                    // the full explanation. Same bug, same fix.
+                    StandardInputEncoding = new System.Text.UTF8Encoding(false),
                 };
                 using var proc = new Process { StartInfo = psi };
                 proc.OutputDataReceived += (s, e) => OnLine(e.Data);
@@ -1255,9 +1266,18 @@ namespace FalconPulsar.Tray
                 "export BUILDKIT_PROGRESS=plain\n" +
                 "export DOCKER_CLI_HINTS=false\n" +
                 $"cd '{_wslHome}' || exit 1\n" +
+                // Self-heal: if a prior (pre-UTF-8-fix) tray build left a
+                // gateway.yaml containing a CP1252-encoded em-dash (byte
+                // 0x97) it's not valid UTF-8 and yaml.safe_load will crash
+                // the container on startup. Delete it here so the heredoc
+                // below rewrites it cleanly.
+                "if [ -f gateway.yaml ] && LC_ALL=C grep -q $'\\x97' gateway.yaml 2>/dev/null; then\n" +
+                "    echo '[enable-ai] stale CP1252-encoded gateway.yaml detected -- rewriting'\n" +
+                "    rm -f gateway.yaml\n" +
+                "fi\n" +
                 "if [ ! -f gateway.yaml ]; then\n" +
                 "  cat > gateway.yaml <<'EOF'\n" +
-                "# FalconPulsar AI Gateway — default configuration.\n" +
+                "# FalconPulsar AI Gateway -- default configuration.\n" +
                 "# Providers and models are managed via the Web UI.\n" +
                 "server:\n  host: \"0.0.0.0\"\n  port: 7436\n" +
                 "falconpulsar:\n  url: \"http://localhost:7433\"\n  timeout: 30\n" +
