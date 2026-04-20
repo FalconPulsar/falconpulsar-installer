@@ -271,6 +271,43 @@ Remove-Item -Path $sentinel -Force -ErrorAction SilentlyContinue
 Remove-Item -Path $homeSentinel -Force -ErrorAction SilentlyContinue
 Remove-Item -Path (Join-Path $env:TEMP 'falconpulsar-user.txt') -Force -ErrorAction SilentlyContinue
 
+# Strip stale HKCU\Environment\Path entries pointing at any falconpulsar
+# location. Inno Setup's [Registry] directive APPENDS the addtopath entry
+# on every install but never removes it on uninstall, so users who
+# reinstall N times accumulate N copies. Clean them all out here. Uses
+# REG_EXPAND_SZ to preserve variables like %USERPROFILE% if present.
+try {
+    $envKey = 'HKCU:\Environment'
+    $cur = (Get-ItemProperty -Path $envKey -Name Path -ErrorAction Stop).Path
+    if ($cur) {
+        $parts = $cur -split ';' | Where-Object {
+            $_ -ne '' -and $_ -notmatch '(?i)\\falconpulsar(\\|$)'
+        }
+        $new = ($parts -join ';')
+        if ($new -ne $cur) {
+            # -Type ExpandString keeps REG_EXPAND_SZ semantics; using
+            # Set-ItemProperty with a different type would change the
+            # registry value kind and surprise other apps reading PATH.
+            Set-ItemProperty -Path $envKey -Name Path -Value $new -Type ExpandString
+            Write-Info 'Cleaned falconpulsar entries from HKCU Environment Path'
+            # Broadcast WM_SETTINGCHANGE so new shells pick it up immediately.
+            $sig = @'
+[DllImport("user32.dll", SetLastError=true, CharSet=CharSet.Auto)]
+public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, UIntPtr wParam, string lParam, uint fuFlags, uint uTimeout, out UIntPtr lpdwResult);
+'@
+            Add-Type -Namespace FP -Name NativeMethods -MemberDefinition $sig -ErrorAction SilentlyContinue
+            $HWND_BROADCAST = [IntPtr]0xffff
+            $WM_SETTINGCHANGE = 0x1A
+            $result = [UIntPtr]::Zero
+            [void][FP.NativeMethods]::SendMessageTimeout(
+                $HWND_BROADCAST, $WM_SETTINGCHANGE, [UIntPtr]::Zero, 'Environment',
+                2, 5000, [ref]$result)
+        }
+    }
+} catch {
+    Write-Warn "Could not clean HKCU PATH: $($_.Exception.Message)"
+}
+
 Write-Output ''
 Write-Output '[ok] Uninstall complete'
 if (-not $Purge) {

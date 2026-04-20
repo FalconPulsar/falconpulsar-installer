@@ -677,6 +677,66 @@ begin
   Result := True;
 end;
 
+// Dedup HKCU Environment Path. Inno Setup's [Registry] directive with
+// {olddata};{localappdata}\falconpulsar\bin APPENDS on every install and
+// never removes on uninstall, so reinstalling N times leaves N copies of
+// the entry. This routine reads the current Path, strips every piece
+// whose case-insensitive text contains "\falconpulsar\" or ends in
+// "\falconpulsar", then writes the remaining entries back plus ONE fresh
+// falconpulsar\bin entry. Runs in ssPostInstall -- after [Registry] has
+// appended -- so the end state is always exactly one entry, regardless
+// of how many times the user has reinstalled.
+procedure DedupFalconPulsarPath();
+var
+  Current: String;
+  Parts: TStringList;
+  Kept: TStringList;
+  NewPath: String;
+  I: Integer;
+  Lower: String;
+  FpBin: String;
+begin
+  if not RegQueryStringValue(HKEY_CURRENT_USER, 'Environment', 'Path', Current) then
+    Exit;
+  if Length(Current) = 0 then
+    Exit;
+  FpBin := ExpandConstant('{localappdata}\falconpulsar\bin');
+
+  Parts := TStringList.Create;
+  Kept  := TStringList.Create;
+  try
+    Parts.Delimiter     := ';';
+    Parts.StrictDelimiter := True;
+    Parts.DelimitedText := Current;
+    for I := 0 to Parts.Count - 1 do
+    begin
+      if Length(Parts[I]) = 0 then Continue;
+      Lower := Lowercase(Parts[I]);
+      // Drop anything referencing a falconpulsar folder -- both the
+      // bin entry we're about to re-add and any stale variants.
+      if (Pos('\falconpulsar\', Lower) > 0)
+         or (Copy(Lower, Length(Lower) - 12, 13) = '\falconpulsar') then
+        Continue;
+      Kept.Add(Parts[I]);
+    end;
+    Kept.Add(FpBin);
+
+    Kept.Delimiter := ';';
+    Kept.StrictDelimiter := True;
+    NewPath := Kept.DelimitedText;
+
+    if NewPath <> Current then
+    begin
+      // REG_EXPAND_SZ preserves %VAR% references that might be in PATH.
+      RegWriteExpandStringValue(HKEY_CURRENT_USER, 'Environment', 'Path', NewPath);
+      LogInfo('Deduped HKCU Environment\Path (one falconpulsar entry retained)');
+    end;
+  finally
+    Parts.Free;
+    Kept.Free;
+  end;
+end;
+
 // ── Install orchestrator ───────────────────────────────────────────────────
 // Called by Inno Setup at each install step transition. We hook
 // ssPostInstall (after all [Files] are copied to {app}) and run the
@@ -700,6 +760,11 @@ var
 begin
   if CurStep = ssPostInstall then
   begin
+    // Immediately dedup HKCU Environment\Path -- the [Registry] directive
+    // has already run by ssPostInstall, so this collapses any prior stale
+    // falconpulsar entries (plus the one we just appended) down to one.
+    DedupFalconPulsarPath();
+
     // Log user choices (never log passwords)
     LogStep('Install phase starting');
 
