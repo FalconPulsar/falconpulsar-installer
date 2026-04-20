@@ -64,10 +64,11 @@ jobs:
           chmod +x "dist/install-macos-${GITHUB_REF_NAME}.sh"
           cp "dist/install-macos-${GITHUB_REF_NAME}.sh" dist/install-macos.sh
 
-      - name: Copy reference files
-        run: |
-          cp shared/init.example.json dist/
-          cp shared/compose.yml dist/
+      # No separate copy of compose.yml / init.example.json as release
+      # assets -- compose.yml is already embedded inside install-linux.sh
+      # and install-macos.sh (users never need the raw file), and
+      # init.example.json is a schema reference that lives in the repo.
+      # Publishing both was noise -- 16 assets became 14 meaningful ones.
 
       - name: Upload bundles
         uses: actions/upload-artifact@v5
