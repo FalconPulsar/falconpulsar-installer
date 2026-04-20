@@ -116,11 +116,18 @@ if ($Purge) {
 # silently when sudo/sg failed. Running as root avoids both issues.
 Write-Info 'Stopping FalconPulsar containers and removing stack files...'
 $purgeFlag = if ($Purge) { '1' } else { '0' }
-foreach ($home in $WslHomes) {
-    Write-Info ("  -> cleanup pass: {0}" -f $home)
+# IMPORTANT: do NOT name this loop variable $home -- that is a PowerShell
+# automatic variable (Constant in Windows PowerShell 5.1) and foreach
+# assignment to it silently throws "Cannot overwrite variable HOME
+# because it is read-only or constant." With $ErrorActionPreference =
+# 'Continue' the script then skips the entire foreach body, so no docker
+# cleanup runs and the user sees containers/images/volumes still present
+# after uninstall. Use $stackHome instead.
+foreach ($stackHome in $WslHomes) {
+    Write-Info ("  -> cleanup pass: {0}" -f $stackHome)
     $cleanupScript = @"
 set +e
-HOME_DIR='$home'
+HOME_DIR='$stackHome'
 PURGE=$purgeFlag
 echo "[info] === cleanup pass: `$HOME_DIR (purge=`$PURGE) ==="
 
