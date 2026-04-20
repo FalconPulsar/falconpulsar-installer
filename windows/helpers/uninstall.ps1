@@ -271,11 +271,15 @@ Remove-Item -Path $sentinel -Force -ErrorAction SilentlyContinue
 Remove-Item -Path $homeSentinel -Force -ErrorAction SilentlyContinue
 Remove-Item -Path (Join-Path $env:TEMP 'falconpulsar-user.txt') -Force -ErrorAction SilentlyContinue
 
-# Strip stale HKCU\Environment\Path entries pointing at any falconpulsar
-# location. Inno Setup's [Registry] directive APPENDS the addtopath entry
-# on every install but never removes it on uninstall, so users who
-# reinstall N times accumulate N copies. Clean them all out here. Uses
-# REG_EXPAND_SZ to preserve variables like %USERPROFILE% if present.
+# One-way migration cleanup: strip ANY stale HKCU\Environment\Path entry
+# pointing at a falconpulsar folder. Older installer builds (up to the
+# WindowsApps refactor) used a [Registry] directive that APPENDED an entry
+# on every install and never removed it on uninstall, so users who
+# reinstalled N times accumulated N copies. Current builds don't write
+# this key at all -- fp.exe lives in %LOCALAPPDATA%\Microsoft\WindowsApps\
+# which Windows already has on PATH by default. This block exists solely
+# to clean up what the OLD installer left behind; after one uninstall
+# cycle, the HKCU key is clean and stays clean.
 try {
     $envKey = 'HKCU:\Environment'
     $cur = (Get-ItemProperty -Path $envKey -Name Path -ErrorAction Stop).Path

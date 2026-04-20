@@ -170,9 +170,6 @@ Name: "aigateway"; \
     Description: "Install AI Capabilities (requires an LLM API key or local Ollama — can be enabled later with fp ai enable)"; \
     GroupDescription: "AI Capabilities:"; \
     Flags: unchecked
-Name: "addtopath"; \
-    Description: "Add fp console to my PATH (lets you run ""fp"" from PowerShell anywhere)"; \
-    GroupDescription: "fp console CLI:"
 
 [Run]
 ; Open the Web UI in the default browser at the end (postinstall checkbox).
@@ -195,12 +192,11 @@ Root: HKCU; Subkey: "SOFTWARE\Microsoft\Windows\CurrentVersion\Run"; \
     ValueName: "FalconPulsar"; ValueType: string; \
     ValueData: """{app}\FalconPulsarTray.exe"""; Flags: uninsdeletevalue
 
-; Optional: append the fp console to the user PATH (opt-in via the Tasks page).
-; {olddata} preserves the existing PATH value so we don't clobber it.
-Root: HKCU; Subkey: "Environment"; \
-    ValueName: "Path"; ValueType: expandsz; \
-    ValueData: "{olddata};{localappdata}\falconpulsar\bin"; \
-    Tasks: addtopath; Flags: preservestringtype
+; fp.exe is installed to %LOCALAPPDATA%\Microsoft\WindowsApps\ in the [Files]
+; section above, which is already on every Windows user's PATH (Win10 1709+,
+; set there by Windows itself). No HKCU\Environment\Path writes needed -- the
+; previous design that appended here caused 26-copy PATH bloat because Inno
+; Setup has no auto-remove for appended registry entries.
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{commonprograms}\FalconPulsar"
@@ -677,66 +673,6 @@ begin
   Result := True;
 end;
 
-// Dedup HKCU Environment Path. Inno Setup's [Registry] directive with
-// {olddata};{localappdata}\falconpulsar\bin APPENDS on every install and
-// never removes on uninstall, so reinstalling N times leaves N copies of
-// the entry. This routine reads the current Path, strips every piece
-// whose case-insensitive text contains "\falconpulsar\" or ends in
-// "\falconpulsar", then writes the remaining entries back plus ONE fresh
-// falconpulsar\bin entry. Runs in ssPostInstall -- after [Registry] has
-// appended -- so the end state is always exactly one entry, regardless
-// of how many times the user has reinstalled.
-procedure DedupFalconPulsarPath();
-var
-  Current: String;
-  Parts: TStringList;
-  Kept: TStringList;
-  NewPath: String;
-  I: Integer;
-  Lower: String;
-  FpBin: String;
-begin
-  if not RegQueryStringValue(HKEY_CURRENT_USER, 'Environment', 'Path', Current) then
-    Exit;
-  if Length(Current) = 0 then
-    Exit;
-  FpBin := ExpandConstant('{localappdata}\falconpulsar\bin');
-
-  Parts := TStringList.Create;
-  Kept  := TStringList.Create;
-  try
-    Parts.Delimiter     := ';';
-    Parts.StrictDelimiter := True;
-    Parts.DelimitedText := Current;
-    for I := 0 to Parts.Count - 1 do
-    begin
-      if Length(Parts[I]) = 0 then Continue;
-      Lower := Lowercase(Parts[I]);
-      // Drop anything referencing a falconpulsar folder -- both the
-      // bin entry we're about to re-add and any stale variants.
-      if (Pos('\falconpulsar\', Lower) > 0)
-         or (Copy(Lower, Length(Lower) - 12, 13) = '\falconpulsar') then
-        Continue;
-      Kept.Add(Parts[I]);
-    end;
-    Kept.Add(FpBin);
-
-    Kept.Delimiter := ';';
-    Kept.StrictDelimiter := True;
-    NewPath := Kept.DelimitedText;
-
-    if NewPath <> Current then
-    begin
-      // REG_EXPAND_SZ preserves %VAR% references that might be in PATH.
-      RegWriteExpandStringValue(HKEY_CURRENT_USER, 'Environment', 'Path', NewPath);
-      LogInfo('Deduped HKCU Environment\Path (one falconpulsar entry retained)');
-    end;
-  finally
-    Parts.Free;
-    Kept.Free;
-  end;
-end;
-
 // ── Install orchestrator ───────────────────────────────────────────────────
 // Called by Inno Setup at each install step transition. We hook
 // ssPostInstall (after all [Files] are copied to {app}) and run the
@@ -760,11 +696,6 @@ var
 begin
   if CurStep = ssPostInstall then
   begin
-    // Immediately dedup HKCU Environment\Path -- the [Registry] directive
-    // has already run by ssPostInstall, so this collapses any prior stale
-    // falconpulsar entries (plus the one we just appended) down to one.
-    DedupFalconPulsarPath();
-
     // Log user choices (never log passwords)
     LogStep('Install phase starting');
 
