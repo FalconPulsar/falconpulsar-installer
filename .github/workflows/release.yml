@@ -92,17 +92,35 @@ jobs:
           go-version: '1.22'
           cache-dependency-path: console/go.sum
 
-      - name: Build fp.exe (to be bundled by the installer)
+      - name: Build fp.exe wrapper (launches Linux fp inside WSL)
+        # Must match build-windows.yml step-for-step: the wrapper is a
+        # tiny stub in windows/fp-wrapper/ that execs the real Linux fp
+        # via wsl.exe. installer.iss [Files] expects it at
+        # ../console/dist/fp-windows-amd64.exe.
         shell: bash
         env:
           GOOS: windows
           GOARCH: amd64
           CGO_ENABLED: '0'
         run: |
+          cd windows/fp-wrapper
+          mkdir -p ../../console/dist
+          go build -ldflags="-s -w" -o ../../console/dist/fp-windows-amd64.exe .
+          ls -lh ../../console/dist/fp-windows-amd64.exe
+
+      - name: Build Linux fp (staged into WSL at install time)
+        # installer.iss [Files] at line 158 requires this binary; the
+        # Windows installer copies it into WSL alongside the bash
+        # installer and the Windows fp.exe wrapper execs it.
+        shell: bash
+        env:
+          GOOS: linux
+          GOARCH: amd64
+          CGO_ENABLED: '0'
+        run: |
           cd console
-          mkdir -p dist
-          go build -ldflags="-s -w" -o dist/fp-windows-amd64.exe ./cmd/fp
-          ls -lh dist/
+          go build -ldflags="-s -w" -o dist/fp-linux-amd64 ./cmd/fp
+          ls -lh dist/fp-linux-amd64
 
       - name: Build tray app
         shell: powershell
