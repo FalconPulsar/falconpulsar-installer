@@ -33,6 +33,35 @@ param(
 
 $ErrorActionPreference = 'Continue'
 . (Join-Path $PSScriptRoot 'lib.ps1')
+# NOTE: lib.ps1 sets $ErrorActionPreference = 'Stop' in the caller's
+# scope (dot-source semantics). Anything that throws past this line
+# -- including assignment to a read-only automatic variable like $HOME
+# -- is a TERMINATING error and will halt the script unless caught.
+
+# Global trap so any unhandled exception writes its cause to the install
+# log before we die. Without this, a silent halt (the $home-shadowing
+# bug that caused docker cleanup to no-op, for example) leaves the user
+# with a log that just stops mid-sentence and no way to tell why.
+# Mirror of the trap pattern in 40-run-fp-installer.ps1.
+trap {
+    $msg   = $_.Exception.Message
+    $where = $_.InvocationInfo.PositionMessage
+    $stack = $_.ScriptStackTrace
+    try {
+        Write-FpLogLine ''
+        Write-FpLogLine "[fatal] uninstall.ps1 crashed: $msg"
+        Write-FpLogLine "[fatal] At: $where"
+        Write-FpLogLine "[fatal] Stack:"
+        Write-FpLogLine $stack
+    } catch { }
+    try {
+        [Console]::Error.WriteLine("[fatal] uninstall.ps1 crashed: $msg")
+        [Console]::Error.WriteLine("[fatal] At: $where")
+        [Console]::Error.WriteLine("[fatal] Stack:")
+        [Console]::Error.WriteLine($stack)
+    } catch { }
+    exit 1
+}
 
 Write-Step 'Uninstalling FalconPulsar from WSL'
 
