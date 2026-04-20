@@ -106,6 +106,14 @@ if ($Purge) {
 # Step 1+2: Stop containers, remove images + stack files, across every
 # candidate home directory (new per-user + legacy). Running the same
 # cleanup against both is idempotent and catches mixed-state systems.
+#
+# The script executes as root (Invoke-WslBash -User root) and runs docker
+# commands directly -- root has access to docker.sock on both Docker
+# Desktop WSL integration AND native Docker Engine installs. The earlier
+# implementation sudo-switched to the stack owner for this; that was
+# fragile (relied on group membership propagating through sudo + sg docker)
+# and swallowed every error via 2>/dev/null, so cleanup would no-op
+# silently when sudo/sg failed. Running as root avoids both issues.
 Write-Info 'Stopping FalconPulsar containers and removing stack files...'
 $purgeFlag = if ($Purge) { '1' } else { '0' }
 foreach ($home in $WslHomes) {
@@ -114,39 +122,75 @@ foreach ($home in $WslHomes) {
 set +e
 HOME_DIR='$home'
 PURGE=$purgeFlag
-if command -v docker >/dev/null 2>&1; then
-    # Determine the owner of the stack dir so we can run docker as them
-    # (per-user = the human; legacy = the falconpulsar system user).
-    OWNER=`$(stat -c '%U' "`$HOME_DIR" 2>/dev/null)
-    [ -z "`$OWNER" ] && OWNER=root
-    COMPOSE="docker compose --profile ai down --remove-orphans"
-    [ "`$PURGE" = "1" ] && COMPOSE="`$COMPOSE --volumes"
+echo "[info] === cleanup pass: `$HOME_DIR (purge=`$PURGE) ==="
+
+if ! command -v docker >/dev/null 2>&1; then
+    echo '[info] docker not installed in distro -- skipping container/image cleanup'
+else
+    COMPOSE_FLAGS='--profile ai down --remove-orphans'
+    [ "`$PURGE" = "1" ] && COMPOSE_FLAGS="`$COMPOSE_FLAGS --volumes"
+
     if [ -f "`$HOME_DIR/compose.yml" ]; then
-        if [ "`$OWNER" = "root" ] || [ "`$OWNER" = "`$(id -un)" ]; then
-            ( cd "`$HOME_DIR" && sg docker -c "`$COMPOSE" ) 2>/dev/null
-        else
-            ( cd "`$HOME_DIR" && sudo -u "`$OWNER" -H sg docker -c "`$COMPOSE" ) 2>/dev/null
-        fi
-        # Harvest compose-referenced images + generic falconpulsar/* tags.
-        IMAGES=`$( cd "`$HOME_DIR" && sudo -u "`$OWNER" -H sg docker -c 'docker compose config --images' 2>/dev/null | sort -u )
+        echo "[info] docker compose `$COMPOSE_FLAGS (in `$HOME_DIR)"
+        ( cd "`$HOME_DIR" && docker compose `$COMPOSE_FLAGS ) 2>&1 | sed 's/^/[compose] /'
+
+        # Harvest compose-referenced images -- removes images from
+        # non-default registries too (not just falconpulsar/*).
+        IMAGES=`$( cd "`$HOME_DIR" && docker compose config --images 2>/dev/null | sort -u )
         if [ -n "`$IMAGES" ]; then
+            echo "[info] removing compose-referenced images:"
+            echo "`$IMAGES" | sed 's/^/[img]  /'
             echo "`$IMAGES" | while IFS= read -r img; do
-                [ -n "`$img" ] && docker rmi -f "`$img" >/dev/null 2>&1
+                [ -n "`$img" ] && docker rmi -f "`$img" 2>&1 | sed 's/^/[rmi] /'
             done
         fi
     fi
-    docker images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | \
-        grep -E '^falconpulsar/' | while IFS= read -r img; do
-        [ -n "`$img" ] && docker rmi -f "`$img" >/dev/null 2>&1
-    done
-    if [ "`$PURGE" = "1" ]; then
-        docker volume ls --format '{{.Name}}' 2>/dev/null | \
-            grep -E '^falconpulsar' | while IFS= read -r vol; do
-            [ -n "`$vol" ] && docker volume rm -f "`$vol" >/dev/null 2>&1
+
+    # Sweep any orphan falconpulsar-* containers not tied to compose
+    # (e.g. left behind by an aborted prior run).
+    ORPHANS=`$(docker ps -a --filter 'name=falconpulsar-' --format '{{.Names}}' 2>/dev/null)
+    if [ -n "`$ORPHANS" ]; then
+        echo "[info] removing orphan containers:"
+        echo "`$ORPHANS" | sed 's/^/[ps]   /'
+        echo "`$ORPHANS" | while IFS= read -r name; do
+            [ -n "`$name" ] && docker rm -f "`$name" 2>&1 | sed 's/^/[rm]  /'
         done
     fi
+
+    # Generic falconpulsar/* image cleanup (covers images not referenced
+    # by the current compose.yml -- stale tags from prior versions).
+    MATCHES=`$(docker images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | grep -E '^falconpulsar/')
+    if [ -n "`$MATCHES" ]; then
+        echo "[info] removing falconpulsar/* images:"
+        echo "`$MATCHES" | sed 's/^/[img]  /'
+        echo "`$MATCHES" | while IFS= read -r img; do
+            [ -n "`$img" ] && docker rmi -f "`$img" 2>&1 | sed 's/^/[rmi] /'
+        done
+    fi
+    # Also catch reference='*falconpulsar*' (custom registries)
+    EXTRA=`$(docker images --filter 'reference=*falconpulsar*' --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | sort -u)
+    if [ -n "`$EXTRA" ]; then
+        echo "`$EXTRA" | while IFS= read -r img; do
+            [ -n "`$img" ] && docker rmi -f "`$img" 2>&1 | sed 's/^/[rmi] /'
+        done
+    fi
+
+    if [ "`$PURGE" = "1" ]; then
+        VOLS=`$(docker volume ls --format '{{.Name}}' 2>/dev/null | grep -E '^falconpulsar')
+        if [ -n "`$VOLS" ]; then
+            echo "[info] removing falconpulsar volumes:"
+            echo "`$VOLS" | sed 's/^/[vol]  /'
+            echo "`$VOLS" | while IFS= read -r vol; do
+                [ -n "`$vol" ] && docker volume rm -f "`$vol" 2>&1 | sed 's/^/[volrm] /'
+            done
+        fi
+        # Network created by compose
+        docker network rm falconpulsar 2>&1 | sed 's/^/[net] /' || true
+    fi
 fi
-# Remove stack files in this home (but NOT the data dir unless -Purge).
+
+# Remove stack files in this home (but NOT the data dir unless -Purge;
+# -Purge deletes the whole home in Step 3 below).
 rm -f "`$HOME_DIR/compose.yml" "`$HOME_DIR/.env" "`$HOME_DIR/gateway.yaml" 2>/dev/null
 echo "[info] cleaned `$HOME_DIR"
 "@
