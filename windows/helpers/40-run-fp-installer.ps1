@@ -275,21 +275,15 @@ echo '[ok] WSL state wiped -- ready for fresh install'
 "@
     $null = Invoke-WslBash -Distro $Distro -Script $cleanScript -User root
 
-    # Windows-side cleanup: mirror files + registry + Start Menu. Without
-    # this, a "Fresh" install from a prior working state leaves the .env
-    # mirror in %USERPROFILE%\falconpulsar, fp.exe in %LOCALAPPDATA%, the
-    # HKCU Run key, and the Start Menu folder -- making the "fresh" install
-    # not actually fresh from the user's point of view.
-    Write-Info 'Fresh install -- wiping Windows-side mirror files and registry'
-    Remove-Item -Recurse -Force (Join-Path $env:USERPROFILE 'falconpulsar') -ErrorAction SilentlyContinue
-    Remove-Item -Recurse -Force (Join-Path $env:LOCALAPPDATA 'falconpulsar') -ErrorAction SilentlyContinue
-    Remove-Item -Force (Join-Path $env:LOCALAPPDATA 'Microsoft\WindowsApps\fp.exe') -ErrorAction SilentlyContinue
-    $startMenu = [Environment]::GetFolderPath('CommonPrograms')
-    if ($startMenu) {
-        Remove-Item -Recurse -Force (Join-Path $startMenu 'FalconPulsar') -ErrorAction SilentlyContinue
-    }
-    Remove-ItemProperty -Path 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run' `
-                        -Name 'FalconPulsar' -ErrorAction SilentlyContinue
+    # NOTE: We deliberately do NOT delete the Windows-side files here
+    # (%LOCALAPPDATA%\falconpulsar, %LOCALAPPDATA%\Microsoft\WindowsApps\fp.exe,
+    # %USERPROFILE%\falconpulsar, the Start Menu folder, the HKCU Run key).
+    # This script runs in ssPostInstall -- AFTER Inno Setup's [Files]
+    # section has just deposited fp.exe at those locations. Wiping them
+    # here means every "fresh" install ends with a working PATH entry
+    # but no fp.exe on disk (verified empirically). Cleanup of those
+    # paths belongs in the UNINSTALL flow, where uninstall.ps1 -Purge
+    # already handles them.
 }
 
 # For 'reinstall' -- lighter cleanup: stop the stack + remove stack files,
