@@ -36,8 +36,27 @@ jobs:
           mkdir -p dist
           ./.github/scripts/bundle.sh linux > "dist/install-linux-${GITHUB_REF_NAME}.sh"
           chmod +x "dist/install-linux-${GITHUB_REF_NAME}.sh"
-          # Unversioned alias for stable redirect URLs (get.falconpulsar.com/linux)
+          # Unversioned alias for stable redirect URLs.
           cp "dist/install-linux-${GITHUB_REF_NAME}.sh" dist/install-linux.sh
+
+      - name: Bundle Linux uninstaller
+        run: |
+          # Self-contained uninstall bundle for users whose machine no longer
+          # has ~/falconpulsar/uninstall.sh (broken install, manual cleanup).
+          # curl -fsSL .../uninstall-linux.sh | sudo bash
+          ./.github/scripts/bundle.sh linux-uninstall > "dist/uninstall-linux-${GITHUB_REF_NAME}.sh"
+          chmod +x "dist/uninstall-linux-${GITHUB_REF_NAME}.sh"
+          cp "dist/uninstall-linux-${GITHUB_REF_NAME}.sh" dist/uninstall-linux.sh
+
+      - name: Ship Linux bootstrap (dispatcher)
+        run: |
+          # linux.sh is the tiny dispatcher served at
+          # https://get.falconpulsar.com/linux. It downloads both bundles
+          # above on every run and execs the one the user asked for
+          # (default: install; `-s -- uninstall` for uninstall).
+          cp linux/bootstrap.sh "dist/linux-${GITHUB_REF_NAME}.sh"
+          chmod +x "dist/linux-${GITHUB_REF_NAME}.sh"
+          cp "dist/linux-${GITHUB_REF_NAME}.sh" dist/linux.sh
 
       - name: Bundle macOS installer
         run: |

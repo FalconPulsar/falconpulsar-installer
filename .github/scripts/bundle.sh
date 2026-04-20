@@ -1,36 +1,49 @@
 #!/usr/bin/env bash
 # =============================================================================
-# bundle.sh — produce a single self-contained installer script.
+# bundle.sh — produce a single self-contained install/uninstall script.
 #
-# Inlines shared/lib/*.sh into linux/install.sh or macos/install.sh and
-# embeds shared/compose.yml as a heredoc that the installer extracts at
-# runtime. This lets users do `curl ... | bash` without cloning the repo.
+# Inlines shared/lib/*.sh into the chosen top-level script and embeds the
+# auxiliary files (compose.yml, systemd template, uninstall.sh) as here-
+# docs that the script extracts at runtime. This lets users do
+# `curl ... | bash` without cloning the repo.
 #
 # Usage:
-#   ./bundle.sh linux > install-linux.sh
-#   ./bundle.sh macos > install-macos.sh
+#   ./bundle.sh linux            > install-linux.sh
+#   ./bundle.sh macos            > install-macos.sh
+#   ./bundle.sh linux-uninstall  > uninstall-linux.sh
 #
-# Strategy:
-#   - Strip the `. "${REPO_ROOT}/shared/lib/*.sh"` source statements
-#   - Replace them with the literal contents of those files
-#   - Replace the `${REPO_ROOT}/shared/compose.yml` install with an inline
-#     heredoc that writes the file to a temp dir and points the rest of the
-#     installer at it via REPO_ROOT
+# Flavors:
+#   linux            install bundle: install.sh + all libs + compose.yml +
+#                    systemd template + uninstall.sh (for the in-install
+#                    reconciliation copy)
+#   macos            install bundle: install.sh + all libs + compose.yml
+#   linux-uninstall  lean uninstall bundle: uninstall.sh + common.sh + auth.sh
 # =============================================================================
 
 set -o errexit
 set -o nounset
 set -o pipefail
 
-PLATFORM="${1:?usage: $0 <linux|macos>}"
+PLATFORM="${1:?usage: $0 <linux|macos|linux-uninstall>}"
 
 case "$PLATFORM" in
-    linux|macos) ;;
-    *) echo "ERROR: platform must be 'linux' or 'macos'" >&2; exit 1 ;;
+    linux|macos|linux-uninstall) ;;
+    *) echo "ERROR: platform must be 'linux', 'macos', or 'linux-uninstall'" >&2; exit 1 ;;
 esac
 
 REPO_ROOT="$(cd -- "$(dirname -- "$0")/../.." && pwd)"
-INSTALL_SH="${REPO_ROOT}/${PLATFORM}/install.sh"
+# Which top-level script becomes the bundle body depends on the flavor.
+# 'linux' and 'macos' bundle install.sh; 'linux-uninstall' bundles
+# linux/uninstall.sh so users can `curl .../uninstall-linux.sh | bash`
+# against a broken install that doesn't have $FP_HOME/uninstall.sh.
+if [ "$PLATFORM" = "linux-uninstall" ]; then
+    INSTALL_SH="${REPO_ROOT}/linux/uninstall.sh"
+    SUBDIR="linux"
+else
+    INSTALL_SH="${REPO_ROOT}/${PLATFORM}/install.sh"
+    SUBDIR="$PLATFORM"
+fi
+UNINSTALL_SH="${REPO_ROOT}/linux/uninstall.sh"
 LIB_DIR="${REPO_ROOT}/shared/lib"
 COMPOSE_YML="${REPO_ROOT}/shared/compose.yml"
 
@@ -54,26 +67,39 @@ set -o pipefail
 # REPO_ROOT for the installer body below.
 __FP_BUNDLE_DIR="$(mktemp -d -t falconpulsar-installer-XXXXXXXX)"
 trap 'rm -rf "$__FP_BUNDLE_DIR"' EXIT
-mkdir -p "${__FP_BUNDLE_DIR}/shared/lib" "${__FP_BUNDLE_DIR}/linux/systemd"
+mkdir -p "${__FP_BUNDLE_DIR}/shared/lib" "${__FP_BUNDLE_DIR}/linux" "${__FP_BUNDLE_DIR}/linux/systemd" "${__FP_BUNDLE_DIR}/macos"
 
 BUNDLE_HEADER
 
 # ── Embed shared/lib/*.sh ────────────────────────────────────────────────────
-for libname in common.sh checks.sh prompts.sh bootstrap.sh registry_auth.sh fpcli.sh existing.sh; do
+# Pick only the libs each flavor actually sources. The uninstall flavor is
+# lean: uninstall.sh only needs common.sh (fatal-path helpers) and
+# auth.sh (admin-password challenge). The install flavor needs the full set.
+if [ "$PLATFORM" = "linux-uninstall" ]; then
+    LIB_LIST="common.sh auth.sh"
+else
+    LIB_LIST="common.sh checks.sh prompts.sh bootstrap.sh registry_auth.sh fpcli.sh existing.sh auth.sh"
+fi
+for libname in $LIB_LIST; do
     libfile="${LIB_DIR}/${libname}"
     [ -f "$libfile" ] || { echo "ERROR: missing $libfile" >&2; exit 1; }
-    printf 'cat >"${__FP_BUNDLE_DIR}/shared/lib/%s" <<'\''__FP_EOF_%s__'\''\n' "$libname" "$libname"
+    libsafe="$(echo "$libname" | tr '.' '_')"
+    printf 'cat >"${__FP_BUNDLE_DIR}/shared/lib/%s" <<'\''__FP_EOF_%s__'\''\n' "$libname" "$libsafe"
     cat "$libfile"
-    printf '\n__FP_EOF_%s__\n\n' "$libname"
+    printf '\n__FP_EOF_%s__\n\n' "$libsafe"
 done
 
-# ── Embed shared/compose.yml ────────────────────────────────────────────────
-[ -f "$COMPOSE_YML" ] || { echo "ERROR: missing $COMPOSE_YML" >&2; exit 1; }
-printf 'cat >"${__FP_BUNDLE_DIR}/shared/compose.yml" <<'\''__FP_EOF_COMPOSE__'\''\n'
-cat "$COMPOSE_YML"
-printf '\n__FP_EOF_COMPOSE__\n\n'
+# ── Embed shared/compose.yml (install flavors only) ─────────────────────────
+# The uninstall bundle doesn't need it -- uninstall.sh reads compose from
+# the already-installed $FP_HOME/compose.yml if it exists.
+if [ "$PLATFORM" != "linux-uninstall" ]; then
+    [ -f "$COMPOSE_YML" ] || { echo "ERROR: missing $COMPOSE_YML" >&2; exit 1; }
+    printf 'cat >"${__FP_BUNDLE_DIR}/shared/compose.yml" <<'\''__FP_EOF_COMPOSE__'\''\n'
+    cat "$COMPOSE_YML"
+    printf '\n__FP_EOF_COMPOSE__\n\n'
+fi
 
-# ── Embed linux/systemd/falconpulsar.service.template (Linux bundle only) ──
+# ── Embed linux/systemd/falconpulsar.service.template (linux install only) ──
 if [ "$PLATFORM" = "linux" ]; then
     SYSTEMD_TPL="${REPO_ROOT}/linux/systemd/falconpulsar.service.template"
     [ -f "$SYSTEMD_TPL" ] || { echo "ERROR: missing $SYSTEMD_TPL" >&2; exit 1; }
@@ -82,19 +108,42 @@ if [ "$PLATFORM" = "linux" ]; then
     printf '\n__FP_EOF_SYSTEMD__\n\n'
 fi
 
-# ── Embed install.sh body ──────────────────────────────────────────────────
-# We strip the existing shebang, set/trap lines, and SCRIPT_DIR/REPO_ROOT
+# ── Embed linux/uninstall.sh next to install.sh (linux install only) ───────
+# install.sh's reconciliation block copies ${SCRIPT_DIR}/uninstall.sh into
+# $FP_HOME/uninstall.sh during install. Before this embed, the bundled
+# curl | sh path had no uninstall.sh next to install.sh, so users ended
+# up with a freshly-installed stack and no on-disk uninstaller.
+if [ "$PLATFORM" = "linux" ]; then
+    [ -f "$UNINSTALL_SH" ] || { echo "ERROR: missing $UNINSTALL_SH" >&2; exit 1; }
+    printf 'cat >"${__FP_BUNDLE_DIR}/linux/uninstall.sh" <<'\''__FP_EOF_UNINSTALL__'\''\n'
+    cat "$UNINSTALL_SH"
+    printf '\n__FP_EOF_UNINSTALL__\n'
+    # Ensure it's executable so install(1) can copy it with sensible perms.
+    echo 'chmod +x "${__FP_BUNDLE_DIR}/linux/uninstall.sh"'
+    echo
+fi
+
+# ── Embed top-level script body ────────────────────────────────────────────
+# Strip the source file's shebang, set/trap lines, and SCRIPT_DIR/REPO_ROOT
 # resolution (we provide our own REPO_ROOT pointing at the temp dir). The
-# `. shared/lib/*.sh` source lines are kept verbatim — they will pick up the
+# `. shared/lib/*.sh` source lines are kept verbatim -- they pick up the
 # extracted files via REPO_ROOT.
-echo '# ---------- begin embedded install.sh ----------'
+if [ "$PLATFORM" = "linux-uninstall" ]; then
+    echo '# ---------- begin embedded uninstall.sh ----------'
+else
+    echo '# ---------- begin embedded install.sh ----------'
+fi
 echo "REPO_ROOT=\"\${__FP_BUNDLE_DIR}\""
-echo 'SCRIPT_DIR="${REPO_ROOT}/'"${PLATFORM}"'"'
+echo 'SCRIPT_DIR="${REPO_ROOT}/'"${SUBDIR}"'"'
 echo
-# Skip the first 50 lines of header (shebang, top comment, set -o, SCRIPT_DIR/
-# REPO_ROOT resolution) — start from the first "# shellcheck source" line.
+# Skip the header up to the first "# shellcheck source=" line (which is
+# the first sourced lib in both install.sh and uninstall.sh).
 awk '
     /^# shellcheck source=/ { found=1 }
     found { print }
 ' "$INSTALL_SH"
-echo '# ---------- end embedded install.sh ----------'
+if [ "$PLATFORM" = "linux-uninstall" ]; then
+    echo '# ---------- end embedded uninstall.sh ----------'
+else
+    echo '# ---------- end embedded install.sh ----------'
+fi

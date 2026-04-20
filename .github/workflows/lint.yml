@@ -51,6 +51,7 @@ jobs:
             -e SC1091 \
             linux/install.sh \
             linux/uninstall.sh \
+            linux/bootstrap.sh \
             macos/install.sh \
             macos/uninstall.sh \
             shared/lib/common.sh \
