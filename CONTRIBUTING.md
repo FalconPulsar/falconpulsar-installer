@@ -17,16 +17,20 @@ changes on each platform, and what we look for in a pull request.
 
 ```
 falconpulsar-installer/
-├── linux/        Bash installer for Linux servers
-├── macos/        Bash installer for macOS (Intel + Apple Silicon)
-├── windows/      Inno Setup + PowerShell installer for Windows
-├── shared/       compose.yml, init schema, shared bash libraries
-└── .github/      CI workflows
+├── linux/        Bash installer + bootstrap dispatcher for Linux servers
+├── macos/        Bash installer + SwiftUI GUI + AppKit menu bar app
+├── windows/      Inno Setup + PowerShell + C# tray + Go fp.exe wrapper
+├── console/      fp CLI (Go) — cross-compiled and shipped with installers
+├── shared/       compose.yml, gateway.yaml, bash libraries
+├── infra/        Cloudflare Worker (release-asset auth-proxy)
+├── docs/         ARCHITECTURE.md and reference docs
+└── .github/      CI workflows + bundle.sh release-bundler
 ```
 
 Each platform directory is self-contained and can be developed independently.
-`shared/` is the single source of truth for the production `compose.yml` and the
-shared bash helpers in `shared/lib/`.
+`shared/` is the single source of truth for the production `compose.yml` and
+the shared bash helpers in `shared/lib/`. `console/` builds the `fp` CLI that
+every platform ships.
 
 **Before making any non-trivial change**, read
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). It explains the three-installer
@@ -37,19 +41,34 @@ reference, and a list of real-world gotchas that will save you hours.
 
 ### Prerequisites
 
-- `bash` 4.0+ and `shellcheck` for Linux / macOS work
-- A Linux VM, container, or box to smoke-test the Linux installer
-- A macOS 13+ machine for the macOS installer
-- A Windows 10/11 machine (or VM) with WSL2 and [Inno Setup 6](https://jrsoftware.org/isdl.php)
-  for the Windows installer
+Depending on which pieces you touch, you'll need some of these installed:
+
+- **Bash 4.0+ and `shellcheck`** — for every `*.sh` file in the repo
+- **Go 1.22+** — for `console/` (the `fp` CLI) and `windows/fp-wrapper/`
+- **Swift toolchain (Xcode 15+)** — for `macos/installer-app/` and
+  `macos/menu-bar-app/`. macOS only.
+- **.NET 8 SDK** — for `windows/tray-app/`. Works on any OS for builds;
+  the resulting binary runs only on Windows.
+- **Inno Setup 6** — to compile `windows/installer.iss` into an `.exe`.
+  Windows or Wine. [https://jrsoftware.org/isdl.php](https://jrsoftware.org/isdl.php)
+- A Linux VM, container, or real box to smoke-test the Linux installer.
+- A macOS 13+ machine to test the macOS installer end-to-end.
+- A Windows 10/11 machine (or VM) with WSL2 to test the Windows installer
+  end-to-end.
 
 ### Linting
 
 ```bash
-shellcheck linux/install.sh macos/install.sh shared/lib/*.sh
+shellcheck linux/install.sh linux/uninstall.sh linux/bootstrap.sh \
+           macos/install.sh macos/uninstall.sh \
+           shared/lib/*.sh
 ```
 
-CI runs the same command on every push.
+```bash
+cd console && go vet ./... && go build ./...
+```
+
+CI runs the same commands on every push.
 
 ## Testing changes
 
@@ -181,12 +200,16 @@ Windows installer. Full details in
 |---|---|
 | `lib.ps1` | Shared logging, WSL probes, `Invoke-WslBash` (the only correct way to run bash inside WSL) |
 | `00-check-prereqs.ps1` | Admin, Windows build, x64, VT-x checks |
+| `05-detect-environment.ps1` | Early-wizard probe for WSL state, distro candidates, Docker Desktop, disk |
+| `06-detect-existing-install.ps1` | Detect prior FalconPulsar state (WSL stack dir, containers, images, Windows mirror) so the Existing-Install wizard page can offer Upgrade / Reinstall / Fresh |
 | `10-enable-wsl.ps1` | Enable WSL + VM Platform features, update kernel |
 | `20-install-distro.ps1` | Install Ubuntu-24.04, write `falconpulsar-distro.txt` sentinel |
+| `25-test-registry.ps1` | Test Docker registry reachability + credentials from inside WSL |
 | `30-configure-distro.ps1` | Write `systemd=true` to `/etc/wsl.conf` |
-| `40-run-fp-installer.ps1` | Stage `linux/` + `shared/` into WSL, run `linux/install.sh` |
+| `40-run-fp-installer.ps1` | Resolve the WSL default user, stage `linux/` + `shared/` into WSL, run `linux/install.sh` |
+| `45-verify-health.ps1` | Post-install probe — container status, REST API reachability, report problems |
 | `50-register-shortcuts.ps1` | Create Start Menu shortcuts |
-| `uninstall.ps1` | Terminate WSL distro on uninstall |
+| `uninstall.ps1` | Full WSL + Windows cleanup: stop/remove containers, images, volumes, networks; remove stack dir(s); clear Windows mirror folders, Start Menu, HKCU Run reg key, HKCU PATH entries. Does NOT unregister the WSL distro itself. |
 
 ## Pull request guidelines
 
@@ -235,18 +258,24 @@ redirect URLs stay stable.
 
 ### Post-release verification
 
-- [ ] GitHub Release page shows all four assets (linux, macos, windows .exe,
-      init.example.json)
-- [ ] `curl -fsSLI https://get.falconpulsar.com/linux` chains `302` →
-      `302` → `200`
-- [ ] `curl -fsSLI https://get.falconpulsar.com/macos` chains `302` →
-      `302` → `200`
-- [ ] `curl -fsSLI https://get.falconpulsar.com/windows` chains `302` →
-      `302` → `200`
-- [ ] A fresh `curl -fsSL https://get.falconpulsar.com/linux | sudo sh` on
-      a clean VM installs cleanly
+- [ ] GitHub Release page shows the expected assets:
+      - `linux.sh` (bootstrap dispatcher) + `linux-<tag>.sh`
+      - `install-linux.sh` + `install-linux-<tag>.sh`
+      - `uninstall-linux.sh` + `uninstall-linux-<tag>.sh`
+      - `install-macos.sh` + `install-macos-<tag>.sh`
+      - `FalconPulsar-Setup.dmg` + `FalconPulsar-Setup-<tag>.dmg`
+      - `FalconPulsar-Setup.exe` + `FalconPulsar-Setup-<tag>.exe`
+- [ ] `curl -fsSLI https://get.falconpulsar.com/linux` returns a working
+      response (either a `200` from the Cloudflare Worker auth-proxy, or
+      a redirect chain terminating at `200` on the release asset).
+- [ ] `curl -fsSLI https://get.falconpulsar.com/macos` same.
+- [ ] `curl -fsSLI https://get.falconpulsar.com/windows` same.
+- [ ] A fresh `curl -fsSL https://get.falconpulsar.com/linux | sudo bash`
+      on a clean VM installs cleanly, and
+      `curl -fsSL https://get.falconpulsar.com/linux | sudo bash -s -- uninstall`
+      removes it cleanly.
 - [ ] Update release notes on the GitHub Release page with the highlights
-      from this version
+      from this version.
 
 ## Questions?
 

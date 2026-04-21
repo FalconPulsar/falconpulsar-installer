@@ -12,48 +12,63 @@
 [![license](https://img.shields.io/badge/license-AGPL%20v3-blue)](LICENSE)
 [![release](https://img.shields.io/github/v/release/FalconPulsar/falconpulsar-installer?display_name=tag&sort=semver)](https://github.com/FalconPulsar/falconpulsar-installer/releases)
 
-**Self-host FalconPulsar in 3 minutes. One command, your infrastructure,
-no cloud account, no credit card, no telemetry.**
+This repository contains the installers that take a fresh Linux, macOS, or
+Windows machine from zero to a running FalconPulsar stack. **This repo is
+only the installer — for what FalconPulsar is, its features, and how to
+use it, see [falconpulsar.com](https://falconpulsar.com).**
 
-FalconPulsar is a high-performance time-series database. This repository
-contains the source code for the three official installers that take a fresh
-machine from zero to a running FalconPulsar stack.
+Scope of this repo: prerequisite checks, container-engine setup, stack
+file generation, first-run initialization, lifecycle hooks, and an
+uninstaller. Every step is documented and reversible.
 
-Learn more at **[falconpulsar.com](https://falconpulsar.com)** •
-Full install guide at **[falconpulsar.com/install](https://falconpulsar.com/install)**
-
-> **Status**: pre-release. v0.x — APIs and behaviour may change.
+> **Status**: pre-release. v0.x — installer behaviour may change.
 
 ---
 
-## Install in 3 minutes
+## Install
 
 ### Linux
 
 ```bash
-curl -fsSL https://get.falconpulsar.com/linux | sudo sh
+curl -fsSL https://get.falconpulsar.com/linux | sudo bash
 ```
 
-Works on Ubuntu, Debian, RHEL, Rocky, AlmaLinux, Fedora, and openSUSE. The
-installer installs Docker Engine via the official `get.docker.com` script if
-it's not already present.
+Installs the stack on Ubuntu, Debian, RHEL, Rocky, AlmaLinux, Fedora, or
+openSUSE. Docker Engine is installed via `get.docker.com` if it isn't
+already present.
+
+To uninstall:
+
+```bash
+curl -fsSL https://get.falconpulsar.com/linux | sudo bash -s -- uninstall
+# add --purge to also delete the local database
+```
 
 ### macOS
+
+**GUI installer (recommended):** download
+**[FalconPulsar-Setup.dmg](https://get.falconpulsar.com/macos)**, open it,
+drag the `.app` into `/Applications`, and run it. Requires macOS 13 Ventura
+or newer, Apple Silicon or Intel, and a container runtime already installed
+(Docker Desktop, Colima, OrbStack, or Rancher Desktop — the installer
+doesn't modify your Mac's system.)
+
+**Headless / CI:**
 
 ```bash
 curl -fsSL https://get.falconpulsar.com/macos | bash
 ```
 
-Requires macOS 13 Ventura or newer, Apple Silicon or Intel. A container
-runtime (Docker Desktop, Colima, OrbStack, or Rancher Desktop) must already
-be installed — the installer doesn't touch your Mac's system.
-
 ### Windows
 
 Download **[FalconPulsar-Setup.exe](https://get.falconpulsar.com/windows)**
 and double-click. The GUI installer handles WSL2, Ubuntu, Docker, and the
-FalconPulsar stack end-to-end. Requires Windows 10 22H2 or Windows 11 with
-VT-x / AMD-V enabled in the BIOS.
+stack end-to-end. Requires Windows 10 22H2 or Windows 11 with virtualization
+(VT-x / AMD-V) enabled in the BIOS.
+
+To uninstall: **Settings → Apps → FalconPulsar → Uninstall**, or from the
+Start Menu → FalconPulsar → Uninstall, or `fp uninstall` from any
+PowerShell / cmd window.
 
 ---
 
@@ -65,162 +80,213 @@ VT-x / AMD-V enabled in the BIOS.
 | **macOS** | 4 GB RAM, 10 GB disk | 8 GB RAM | Docker Desktop / Colima / OrbStack / Rancher Desktop |
 | **Windows** | 4 GB RAM, 10 GB disk | 8 GB RAM | Win 10 22H2+ or Win 11, VT-x / AMD-V in BIOS |
 
-See [REQUIREMENTS.md](REQUIREMENTS.md) for the full support matrix —
-supported OS versions, architectures, kernel requirements, and hardware
-minimums.
+Full matrix (OS versions, kernel requirements, architecture notes) is in
+[REQUIREMENTS.md](REQUIREMENTS.md).
 
 ## What the installer does
 
-Designed for transparency. Every step is documented up-front, reversible,
-and runs with the minimum privileges required. End to end, all three
-installers do the same six things:
+End to end, all three installers do the same six things:
 
 1. **Check prerequisites** — OS version, RAM, disk, free ports
    (`8080`, `7433`, `7434`, `7436`), virtualization support.
 2. **Install / verify a container engine** — Docker Engine via
    `get.docker.com` on Linux, WSL2 + Docker inside Ubuntu on Windows.
    macOS expects a container runtime to already be present.
-3. **Create a dedicated `falconpulsar` user** with its own home directory
-   (`/home/falconpulsar/` on Linux, `~/falconpulsar/` on macOS,
-   `\\wsl.localhost\Ubuntu\home\falconpulsar\` on Windows).
+3. **Resolve the install user and stack directory.**
+   - **Native Linux**: creates a dedicated `falconpulsar` system user;
+     stack lives at `/home/falconpulsar/`.
+   - **WSL (via the Windows installer)**: stack is owned by the WSL
+     default user at `/home/<user>/falconpulsar/`. No service user is
+     created.
+   - **macOS**: stack lives under the invoking user's home at
+     `~/falconpulsar/`.
 4. **Generate the production stack files** — `compose.yml`, `.env`, and
-   optionally `init.json` — under the falconpulsar user's home directory.
-5. **Pull and start the containers** — `core`, `ui`, `ai-gateway` from
-   [Docker Hub](https://hub.docker.com/u/falconpulsar). Wait for
-   healthchecks to pass.
-6. **Register lifecycle management** — systemd user unit on Linux,
-   `restart: always` on macOS, Start Menu shortcuts on Windows.
+   optionally `gateway.yaml` — in the stack directory.
+5. **Pull and start the containers** — `core`, `ui`, and optionally
+   `ai-gateway`. Wait for healthchecks to pass.
+6. **Register lifecycle management** — optional systemd user unit on
+   Linux, `restart: always` on macOS, Start Menu shortcuts + system tray
+   auto-start on Windows.
 
-**Nothing runs as root.** The installer needs `sudo` briefly for user
-creation, Docker installation, and systemd-unit registration on Linux.
-Everything else — including every ongoing operation — runs as the
-unprivileged `falconpulsar` user. Every step is reversible via the bundled
-`uninstall.sh` scripts or the Windows uninstaller.
+The installer requires `sudo` / admin briefly (package install,
+user-creation on Linux, WSL configuration on Windows). Ongoing operation
+never runs with elevated privileges. Every step has a matching removal
+path in the uninstaller.
 
 ## Alternative container registries
 
-By default the installer pulls images from **`falconpulsar`** on
-Docker Hub. If you need to pull from somewhere else — a private mirror,
-an air-gapped internal registry, or a cloud-native registry like AWS ECR,
-Google Artifact Registry, or Azure ACR — set `FP_REGISTRY` to the new
-prefix and provide credentials via `FP_REGISTRY_USER` / `FP_REGISTRY_PASS`.
+By default, images are pulled from `falconpulsar` on Docker Hub. To use a
+different registry — private mirror, air-gapped internal registry, AWS
+ECR, Google Artifact Registry, Azure ACR — set `FP_REGISTRY` and provide
+credentials via `FP_REGISTRY_USER` / `FP_REGISTRY_PASS`.
 
 ```bash
 FP_REGISTRY=ghcr.io/your-org/falconpulsar \
 FP_REGISTRY_USER=your-github-username \
 FP_REGISTRY_PASS=ghp_your_personal_access_token \
-    curl -fsSL https://get.falconpulsar.com/linux | sudo -E sh
+    curl -fsSL https://get.falconpulsar.com/linux | sudo -E bash
 ```
 
-The Windows installer has a dedicated **"Container Registry"** page with a
-Test Connection button that runs a probe inside WSL before you continue.
+The Windows installer has a dedicated **Container Registry** wizard page
+with a Test Connection button that runs a probe inside WSL.
 
-Any OCI-compliant registry works — Docker Hub, GHCR, Quay, Harbor,
-GitLab, AWS ECR (public or private), GCR / Google Artifact Registry,
-Azure ACR, or a self-hosted mirror. See the
+Any OCI-compliant registry works. See the
 [container registry section in ARCHITECTURE.md](docs/ARCHITECTURE.md#credentials-for-cloud-native-registries)
-for per-provider token recipes.
+for per-provider credential recipes.
 
 ## After the install
 
-Open **[http://localhost:8080](http://localhost:8080)** in any browser.
-Log in with the admin credentials you set during install.
+The installer ends when the stack is up and healthchecks pass. You can:
 
-Next steps once you're in:
+- Open **http://localhost:8080** — the FalconPulsar Web UI
+- Run **`fp status`** in any terminal — local stack health
+- See **[falconpulsar.com/docs](https://falconpulsar.com/docs)** — how to
+  use the product
 
-- Create your first **asset** (plant, area, equipment)
-- Add a **datasource** — OPC-UA, Modbus TCP/RTU, MQTT, EtherNet/IP, or S7
-- Map series to datasource tags and start collecting time-series data
+## Uninstall
 
-Full product documentation lives at
-**[falconpulsar.com/docs](https://falconpulsar.com/docs)**.
+| Platform | Command |
+|---|---|
+| **Linux** | `curl -fsSL https://get.falconpulsar.com/linux \| sudo bash -s -- uninstall` <br> Add `--purge` to also delete the database. |
+| **macOS** | Run the installer `.app` again and choose Uninstall, or: <br> `curl -fsSL https://get.falconpulsar.com/macos \| bash -s -- uninstall` |
+| **Windows** | Settings → Apps → FalconPulsar → Uninstall, or the tray's "Uninstall" entry, or `fp uninstall` in any shell. |
+
+All paths ultimately run the same cleanup: stop and remove the
+containers and images, remove the stack directory (or preserve the
+database unless `--purge` is specified), remove auto-start hooks and
+Start Menu shortcuts, and (on `--purge`) remove the system user.
 
 ## Troubleshooting
 
-For installation issues — corporate proxies, Docker Hub rate limits,
-air-gapped installs, WSL2 + Docker Desktop integration, SmartScreen
-warnings, SELinux / AppArmor, port conflicts, first-run init failures —
-see the full troubleshooting guide at
+Installation issues — corporate proxies, Docker Hub rate limits, air-gapped
+installs, WSL2 + Docker Desktop integration, SmartScreen warnings,
+SELinux / AppArmor, port conflicts, first-run init failures — are covered at
 **[falconpulsar.com/install#troubleshooting](https://falconpulsar.com/install#troubleshooting)**.
 
 If the guide doesn't cover your issue, please
 [open an issue](https://github.com/FalconPulsar/falconpulsar-installer/issues/new/choose)
-with the installer log attached.
+with the installer log attached. Log locations:
+
+- Linux / macOS: `/tmp/falconpulsar-install.log`
+- Windows: `%TEMP%\falconpulsar-install.log`
 
 ---
 
 ## How it works (for developers)
 
 FalconPulsar ships three installers, but **Linux is the canonical one**.
-macOS is a bash variant that diverges only where the platform forces it,
-and Windows is an orchestration wrapper around the Linux installer running
-inside WSL2. There is no Windows-native install logic — every step that
+macOS is a bash variant that diverges only where the platform forces it.
+Windows is an orchestration wrapper around the Linux installer running
+inside WSL2 — there is no Windows-native install logic; every step that
 actually deploys the stack is the same code that runs on a bare-metal
-Ubuntu server.
+Linux server.
 
 **Three rules that make this work:**
 
 1. **`shared/compose.yml` is the one compose file.** All three installers
    copy it verbatim.
-2. **`shared/lib/*.sh` is sourced by both Linux and macOS.** Shared logic
-   lives here, not in platform-specific scripts.
+2. **`shared/lib/*.sh` is sourced by the Linux and macOS installers and
+   uninstallers.** Shared logic lives here, not in platform-specific
+   scripts.
 3. **Windows does not implement install logic.** `installer.iss` and the
-   PowerShell helpers set up WSL2 + Ubuntu + systemd, then hand off to
+   PowerShell helpers set up WSL2 + Ubuntu, then hand off to
    `linux/install.sh`. A Linux bug is also a Windows bug.
 
-For the full reference — function call order, per-helper breakdown, env
-var table, CI pipeline matrix, and real-world gotchas — see
+The companion `fp` CLI (Go, in `console/`) is cross-compiled and shipped
+with each installer. On Windows it's a thin Go wrapper that execs the
+Linux `fp` binary inside WSL.
+
+For the full reference — function call order, per-helper breakdown,
+environment variable table, CI pipeline matrix, and real-world gotchas — see
 **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
 
 ## Repository layout
 
 ```
 falconpulsar-installer/
-├── README.md                  ← this file
-├── REQUIREMENTS.md            ← supported OS versions, hardware specs
-├── LICENSE                    ← GNU AGPL v3
-├── SECURITY.md                ← responsible disclosure
-├── CONTRIBUTING.md            ← dev setup, testing, PR guidelines
+├── README.md                    ← this file
+├── REQUIREMENTS.md              ← supported OS versions, hardware specs
+├── LICENSE                      ← GNU AGPL v3
+├── SECURITY.md                  ← responsible disclosure
+├── CONTRIBUTING.md              ← dev setup, testing, PR guidelines
 ├── CODE_OF_CONDUCT.md
 │
-├── linux/                     ← Linux installer (bash)
-│   ├── install.sh
-│   ├── uninstall.sh
+├── linux/                       ← Linux installer (bash)
+│   ├── install.sh               main installer
+│   ├── uninstall.sh             uninstaller
+│   ├── bootstrap.sh             curl-able dispatcher: picks install vs uninstall
 │   └── systemd/
 │       └── falconpulsar.service.template
 │
-├── macos/                     ← macOS installer (bash)
-│   ├── install.sh
-│   └── uninstall.sh
+├── macos/                       ← macOS installer (bash + Swift)
+│   ├── install.sh               headless installer
+│   ├── uninstall.sh             uninstaller
+│   ├── build-dmg.sh             assembles the signed .dmg
+│   ├── installer-app/           SwiftUI GUI installer
+│   ├── menu-bar-app/            AppKit status-bar manager
+│   └── pkg/                     .pkg builder and welcome/license panes
 │
-├── windows/                   ← Windows GUI installer (Inno Setup)
-│   ├── installer.iss
-│   ├── helpers/               PowerShell scripts called by Inno Setup
-│   └── assets/                Icons, banner, license text
+├── windows/                     ← Windows installer (Inno Setup + PS + C# + Go)
+│   ├── installer.iss            Inno Setup script (Pascal)
+│   ├── helpers/                 PowerShell orchestration (numbered pipeline)
+│   ├── tray-app/                C# .NET 8 system-tray manager
+│   ├── fp-wrapper/              Go wrapper that forwards fp.exe to WSL
+│   └── assets/                  Wizard images, icons, license.rtf
 │
-├── shared/                    ← Files used by all three installers
-│   ├── compose.yml            production docker-compose file
-│   ├── init.example.json      rich init schema (FP_INIT_CONFIG)
-│   └── lib/                   shared bash libraries
-│       ├── common.sh          colors, logging, error handling
-│       ├── checks.sh          OS, RAM, disk, port checks
-│       └── prompts.sh         interactive password / confirmation prompts
+├── console/                     ← fp CLI (Go)
+│   ├── cmd/fp/                  main entry point
+│   └── internal/
+│       ├── cli/                 command definitions (cobra)
+│       ├── tui/                 terminal UI (tview)
+│       ├── actions/             compose/docker operations
+│       ├── api/                 FalconPulsar REST client
+│       ├── auth/                admin-password authentication
+│       └── configbackup/        encrypted config export/import
 │
-└── .github/workflows/         CI: lint, test, release
+├── shared/                      ← used by all installers
+│   ├── compose.yml              production docker-compose file
+│   ├── gateway.yaml             AI-gateway default config
+│   ├── nginx.conf               reverse-proxy config inside the UI container
+│   ├── init.example.json        rich init-schema reference
+│   └── lib/                     shared bash libraries
+│       ├── common.sh            colors, logging, error handling
+│       ├── checks.sh            OS, RAM, disk, port checks
+│       ├── prompts.sh           interactive prompts
+│       ├── bootstrap.sh         first-run admin + token bootstrap
+│       ├── auth.sh              admin-password challenge
+│       ├── registry_auth.sh     docker-registry login probe
+│       ├── fpcli.sh             fp CLI installer (local symlink)
+│       └── existing.sh          detect prior installs
+│
+├── infra/
+│   └── cloudflare/              Cloudflare Worker for release-asset
+│                                auth-proxy (get.falconpulsar.com/*)
+│
+├── docs/
+│   └── ARCHITECTURE.md          full reference doc
+│
+└── .github/
+    ├── workflows/               CI: lint, test-linux, build-fp,
+    │                            build-macos, build-windows, release
+    └── scripts/
+        └── bundle.sh            produces the single-file install bundles
 ```
 
 ## How to develop
 
-### Linting (locally)
+### Linting
 
 ```bash
-shellcheck linux/install.sh macos/install.sh shared/lib/*.sh
+shellcheck linux/install.sh linux/uninstall.sh linux/bootstrap.sh \
+           macos/install.sh macos/uninstall.sh \
+           shared/lib/*.sh
 ```
 
-### Smoke testing the Linux installer locally
+CI runs the same commands on every push.
+
+### Smoke-testing the Linux installer locally
 
 ```bash
-# Start a clean Ubuntu container, mount the repo, run the installer
 docker run --rm -it \
     -v "$PWD":/installer:ro \
     --privileged \
@@ -231,10 +297,13 @@ docker run --rm -it \
     "
 ```
 
-### Building the Windows installer locally
+### Building platform installers locally
 
-See [windows/README-windows-build.md](windows/README-windows-build.md).
-Requires a Windows machine (or VM) with Inno Setup 6 installed.
+- **macOS DMG**: `./macos/build-dmg.sh` (requires Xcode tooling)
+- **Windows .exe**: see
+  [windows/README-windows-build.md](windows/README-windows-build.md)
+  (requires Windows + Inno Setup 6)
+- **fp CLI**: `cd console && go build ./cmd/fp`
 
 Full contributor guide: **[CONTRIBUTING.md](CONTRIBUTING.md)**.
 
@@ -249,17 +318,18 @@ git push origin v0.1.0
 
 This produces a GitHub Release with:
 
-- `install-linux-v0.1.0.sh` — the bundled Linux installer
-- `install-macos-v0.1.0.sh` — the bundled macOS installer
-- `FalconPulsar-Setup-v0.1.0.exe` — the compiled Windows GUI installer
-- `init.example.json` — the rich init schema template
+- `linux.sh` — the **bootstrap dispatcher** for `curl | bash` installs
+- `install-linux.sh` — bundled Linux installer (self-contained)
+- `uninstall-linux.sh` — bundled Linux uninstaller (self-contained)
+- `install-macos.sh` — bundled macOS headless installer
+- `FalconPulsar-Setup.dmg` — macOS GUI installer
+- `FalconPulsar-Setup.exe` — Windows GUI installer
+- Versioned copies of every asset (`linux-v<tag>.sh`, etc.) alongside
+  the unversioned "always-latest" aliases
 
-Stable unversioned aliases are published alongside the versioned assets so
-the `get.falconpulsar.com/*` redirects always resolve to the latest release:
-
-- `https://get.falconpulsar.com/linux` → latest `install-linux.sh`
-- `https://get.falconpulsar.com/macos` → latest `install-macos.sh`
-- `https://get.falconpulsar.com/windows` → latest `FalconPulsar-Setup.exe`
+The unversioned aliases back the stable redirects at
+`https://get.falconpulsar.com/<platform>` so end users always pull the
+current release without URL changes between versions.
 
 ## Contributing
 
@@ -270,8 +340,8 @@ participants are expected to follow our
 
 ## Security
 
-If you believe you've found a security vulnerability, **please do not open
-a public issue**. See [SECURITY.md](SECURITY.md) for the responsible
+If you believe you have found a security vulnerability, **please do not
+open a public issue**. See [SECURITY.md](SECURITY.md) for the responsible
 disclosure process.
 
 ## License
