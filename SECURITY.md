@@ -25,12 +25,9 @@ identifier, and publish a coordinated advisory when the fix ships.
 ### Alternative — email
 
 If GitHub Private Vulnerability Reporting is not an option for you
-(no GitHub account, corporate firewall, or you need to attach an
-encrypted payload), email:
+(no GitHub account, corporate firewall, etc.), email:
 
 **security@falconpulsar.com**
-
-For encrypted reports, see the [PGP key](#pgp-key) section below.
 
 ### What to include
 
@@ -143,43 +140,3 @@ will be updated to reflect which versions receive backported fixes.
 |---|---|
 | Latest `v0.x` | ✅ |
 | Older `v0.x` | ❌ |
-
-## PGP key
-
-<!--
-  Replace the placeholder below with the real public key before
-  publishing. Generate one with:
-
-      gpg --quick-generate-key "FalconPulsar Security <security@falconpulsar.com>" default default 2y
-      gpg --armor --export security@falconpulsar.com > security-pubkey.asc
-      gpg --fingerprint security@falconpulsar.com
-
-  Then paste:
-    - the fingerprint into "Fingerprint:" below
-    - the ASCII-armored public key into the code block below
-    - upload the key to keys.openpgp.org and keyserver.ubuntu.com
-
-  Until then, the PGP section is a stub. Do not ship the repo public
-  with the placeholder visible.
--->
-
-For encrypted reports to `security@falconpulsar.com`, use the
-FalconPulsar security PGP public key below.
-
-**Fingerprint:** *(not yet published — coming before v1.0)*
-
-Key servers: [keys.openpgp.org](https://keys.openpgp.org) and
-[keyserver.ubuntu.com](https://keyserver.ubuntu.com) (once published).
-
-```
------BEGIN PGP PUBLIC KEY BLOCK-----
-
-(public key will be inserted here before the repo goes public)
-
------END PGP PUBLIC KEY BLOCK-----
-```
-
-If this section still shows the placeholder when you read it, the key
-hasn't been published yet. Use GitHub Private Vulnerability Reporting
-(first option above) in the meantime — reports travel over TLS to
-GitHub and are visible only to maintainers.
