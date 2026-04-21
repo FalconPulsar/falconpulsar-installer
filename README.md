@@ -131,7 +131,7 @@ The Windows installer has a dedicated **Container Registry** wizard page
 with a Test Connection button that runs a probe inside WSL.
 
 Any OCI-compliant registry works. See the
-[container registry section in ARCHITECTURE.md](docs/ARCHITECTURE.md#credentials-for-cloud-native-registries)
+[container registry section in ARCHITECTURE.md](ARCHITECTURE.md#credentials-for-cloud-native-registries)
 for per-provider credential recipes.
 
 ## After the install
@@ -198,7 +198,7 @@ Linux `fp` binary inside WSL.
 
 For the full reference — function call order, per-helper breakdown,
 environment variable table, CI pipeline matrix, and real-world gotchas — see
-**[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
+**[ARCHITECTURE.md](ARCHITECTURE.md)**.
 
 ## Repository layout
 
@@ -206,6 +206,7 @@ environment variable table, CI pipeline matrix, and real-world gotchas — see
 falconpulsar-installer/
 ├── README.md                    ← this file
 ├── REQUIREMENTS.md              ← supported OS versions, hardware specs
+├── ARCHITECTURE.md              ← full contributor reference
 ├── LICENSE                      ← GNU AGPL v3
 ├── SECURITY.md                  ← responsible disclosure
 ├── CONTRIBUTING.md              ← dev setup, testing, PR guidelines
@@ -257,9 +258,6 @@ falconpulsar-installer/
 │       ├── registry_auth.sh     docker-registry login probe
 │       ├── fpcli.sh             fp CLI installer (local symlink)
 │       └── existing.sh          detect prior installs
-│
-├── docs/
-│   └── ARCHITECTURE.md          full reference doc
 │
 └── .github/
     ├── workflows/               CI: lint, test-linux, build-fp,

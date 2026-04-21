@@ -32,7 +32,7 @@ the shared bash helpers in `shared/lib/`. `console/` builds the `fp` CLI that
 every platform ships.
 
 **Before making any non-trivial change**, read
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). It explains the three-installer
+[ARCHITECTURE.md](ARCHITECTURE.md). It explains the three-installer
 model, the Windows → WSL2 → Linux delegation, the full environment variable
 reference, and a list of real-world gotchas that will save you hours.
 
@@ -148,7 +148,7 @@ which files to touch, in order, and how to verify.
    `linux/install.sh` / `macos/install.sh` — declare it with a default.
 2. **`shared/compose.yml`** — reference it as `${FP_*}` in the relevant
    service's `environment:` block.
-3. **`docs/ARCHITECTURE.md`** — add a row to the environment variables
+3. **`ARCHITECTURE.md`** — add a row to the environment variables
    reference table so future contributors know it exists.
 4. **`README.md`** — if the variable is user-facing (e.g. `FP_LOG_LEVEL`),
    document it there too.
@@ -161,7 +161,7 @@ which files to touch, in order, and how to verify.
    for `try`/`catch` and `Invoke-WslBash`.
 3. **Test locally** — re-run the specific helper manually (see the
    "Debugging tips" section in
-   [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#debugging-tips)) rather than
+   [ARCHITECTURE.md](ARCHITECTURE.md#debugging-tips)) rather than
    the whole installer every time.
 4. **Then rebuild the `.exe`** and run it on a clean Windows VM end-to-end
    before opening the PR.
@@ -193,7 +193,7 @@ which files to touch, in order, and how to verify.
 
 Quick one-line summary of every helper for when you're navigating the
 Windows installer. Full details in
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#powershell-helpers-execution-order).
+[ARCHITECTURE.md](ARCHITECTURE.md#powershell-helpers-execution-order).
 
 | Helper | What it does |
 |---|---|
@@ -239,7 +239,7 @@ in order — skipping steps is how we ship broken installers.
 - [ ] Windows installer tested end-to-end on a clean Windows 11 VM — fresh
       install and upgrade-in-place flow
 - [ ] `REQUIREMENTS.md` reflects any new supported OS versions
-- [ ] `docs/ARCHITECTURE.md` updated if any architectural change
+- [ ] `ARCHITECTURE.md` updated if any architectural change
 - [ ] `README.md` updated if any user-facing change
 
 ### Cutting the release
