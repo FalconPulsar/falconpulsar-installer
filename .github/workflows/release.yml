@@ -220,12 +220,52 @@ jobs:
       - name: List release assets
         run: ls -lh dist/
 
+      - name: Compute SHA-256 checksums
+        # Canonical hashes users can verify their downloads against.
+        # The published asset covers every file in dist/ (installers,
+        # bundles, bootstrap, DMG, EXE) so integrity checks are
+        # self-contained.  SECURITY.md's "compromised release artifacts"
+        # section tells users how to use this.
+        working-directory: dist
+        run: |
+          # Sort so the file is reproducible run-to-run.
+          # Exclude SHA256SUMS.txt itself if it somehow leaks in.
+          find . -maxdepth 1 -type f ! -name 'SHA256SUMS.txt' -printf '%f\n' \
+            | LC_ALL=C sort \
+            | xargs -I{} sha256sum {} \
+            > SHA256SUMS.txt
+          echo '--- SHA256SUMS.txt ---'
+          cat SHA256SUMS.txt
+
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          NOTES=$(cat <<EOF
+          See REQUIREMENTS.md for supported platforms.
+
+          - **Linux / macOS:** \`curl -fsSL <url> | bash\`
+          - **Windows:** download the .exe and double-click
+
+          ### Verifying your download
+
+          Every asset is listed in \`SHA256SUMS.txt\` with its canonical
+          SHA-256 hash. To verify:
+
+          \`\`\`
+          # macOS / Linux
+          shasum -a 256 -c SHA256SUMS.txt --ignore-missing
+
+          # Windows (PowerShell)
+          Get-FileHash .\FalconPulsar-Setup.exe -Algorithm SHA256
+          \`\`\`
+
+          If a hash does not match, **do not install** — see SECURITY.md
+          for reporting instructions.
+          EOF
+          )
           gh release create "${GITHUB_REF_NAME}" \
             --title "FalconPulsar Installer ${GITHUB_REF_NAME}" \
-            --notes "See REQUIREMENTS.md for supported platforms. Linux/macOS: \`curl -fsSL <url> | bash\`. Windows: download the .exe and double-click." \
+            --notes "$NOTES" \
             --repo "${GITHUB_REPOSITORY}" \
             dist/*
