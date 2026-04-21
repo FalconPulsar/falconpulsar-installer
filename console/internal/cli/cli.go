@@ -353,7 +353,7 @@ func cmdAbout() *cobra.Command {
 			fmt.Println("Website:  https://falconpulsar.com")
 			fmt.Println("Docs:     https://falconpulsar.com/docs")
 			fmt.Println("Roadmap:  https://falconpulsar.com/roadmap")
-			fmt.Println("(c) 2026 FalconPulsar Contributors — Apache 2.0")
+			fmt.Println("(c) 2026 FalconPulsar Contributors — GNU AGPL v3")
 			return nil
 		},
 	}

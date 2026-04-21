@@ -9,7 +9,7 @@
 ![Windows](https://img.shields.io/badge/Windows-supported-success?logo=windows&logoColor=white)
 ![arch](https://img.shields.io/badge/arch-x64%20%7C%20arm64-informational)
 ![status](https://img.shields.io/badge/status-pre--release-orange)
-[![license](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
+[![license](https://img.shields.io/badge/license-AGPL%20v3-blue)](LICENSE)
 [![release](https://img.shields.io/github/v/release/FalconPulsar/falconpulsar-installer?display_name=tag&sort=semver)](https://github.com/FalconPulsar/falconpulsar-installer/releases)
 
 **Self-host FalconPulsar in 3 minutes. One command, your infrastructure,
@@ -178,7 +178,7 @@ var table, CI pipeline matrix, and real-world gotchas — see
 falconpulsar-installer/
 ├── README.md                  ← this file
 ├── REQUIREMENTS.md            ← supported OS versions, hardware specs
-├── LICENSE                    ← Apache 2.0
+├── LICENSE                    ← GNU AGPL v3
 ├── SECURITY.md                ← responsible disclosure
 ├── CONTRIBUTING.md            ← dev setup, testing, PR guidelines
 ├── CODE_OF_CONDUCT.md
@@ -276,9 +276,13 @@ disclosure process.
 
 ## License
 
-Licensed under the **[Apache License 2.0](LICENSE)**. You are free to use,
-modify, and redistribute this installer in accordance with the license
-terms.
+Licensed under the **[GNU Affero General Public License v3.0](LICENSE)**.
+
+You are free to use, modify, and redistribute this installer under the
+terms of the AGPL v3. Note the key AGPL clause: if you run a modified
+version of this code as a network-accessible service, you must make the
+corresponding source code available to users of that service. See the
+[full license text](LICENSE) for the exact terms.
 
 FalconPulsar is developed by the FalconPulsar team.
 Learn more at **[falconpulsar.com](https://falconpulsar.com)**.

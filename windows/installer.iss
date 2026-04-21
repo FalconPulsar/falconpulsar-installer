@@ -1686,7 +1686,7 @@ begin
       'Version {#MyAppVersion}' + #13#10 +
       'Self-host in 3 minutes. Your infrastructure, your data.' + #13#10 +
       'https://falconpulsar.com' + #13#10 +
-      '(c) 2026 {#MyAppPublisher}. Apache 2.0 License.' + #13#10 + #13#10 +
+      '(c) 2026 {#MyAppPublisher}. GNU AGPL v3 License.' + #13#10 + #13#10 +
       'Your environment:' + #13#10;
     if DetectedWslStatus = 'working' then
       Summary := Summary + '  WSL2: detected' + #13#10

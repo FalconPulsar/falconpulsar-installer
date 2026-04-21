@@ -880,7 +880,7 @@ func (a *App) showAbout() {
 			"Website:     https://falconpulsar.com\n"+
 			"Docs:        https://falconpulsar.com/docs\n"+
 			"Roadmap:     https://falconpulsar.com/roadmap\n\n"+
-			"(c) 2026 FalconPulsar Contributors — Apache 2.0\n\n"+
+			"(c) 2026 FalconPulsar Contributors — GNU AGPL v3\n\n"+
 			"[#6B7280]Press Esc or Enter to close.[-]",
 		cli.Version, actions.HomeDir()))
 	tv.SetInputCapture(func(ev *tcell.EventKey) *tcell.EventKey {
