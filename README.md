@@ -258,10 +258,6 @@ falconpulsar-installer/
 │       ├── fpcli.sh             fp CLI installer (local symlink)
 │       └── existing.sh          detect prior installs
 │
-├── infra/
-│   └── cloudflare/              Cloudflare Worker for release-asset
-│                                auth-proxy (get.falconpulsar.com/*)
-│
 ├── docs/
 │   └── ARCHITECTURE.md          full reference doc
 │

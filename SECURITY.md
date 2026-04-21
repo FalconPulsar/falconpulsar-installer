@@ -41,7 +41,6 @@ This policy covers:
 - The `fp` CLI and tray / menu-bar / GUI apps shipped with the installers
   (`console/`, `windows/tray-app/`, `windows/fp-wrapper/`,
   `macos/menu-bar-app/`, `macos/installer-app/`)
-- The release-asset auth-proxy Cloudflare Worker (`infra/cloudflare/`)
 - The compiled installer artifacts published to GitHub Releases
 - The build pipeline that produces those artifacts
 

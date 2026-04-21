@@ -22,7 +22,6 @@ falconpulsar-installer/
 ├── windows/      Inno Setup + PowerShell + C# tray + Go fp.exe wrapper
 ├── console/      fp CLI (Go) — cross-compiled and shipped with installers
 ├── shared/       compose.yml, gateway.yaml, bash libraries
-├── infra/        Cloudflare Worker (release-asset auth-proxy)
 ├── docs/         ARCHITECTURE.md and reference docs
 └── .github/      CI workflows + bundle.sh release-bundler
 ```
@@ -265,9 +264,8 @@ redirect URLs stay stable.
       - `install-macos.sh` + `install-macos-<tag>.sh`
       - `FalconPulsar-Setup.dmg` + `FalconPulsar-Setup-<tag>.dmg`
       - `FalconPulsar-Setup.exe` + `FalconPulsar-Setup-<tag>.exe`
-- [ ] `curl -fsSLI https://get.falconpulsar.com/linux` returns a working
-      response (either a `200` from the Cloudflare Worker auth-proxy, or
-      a redirect chain terminating at `200` on the release asset).
+- [ ] `curl -fsSLI https://get.falconpulsar.com/linux` resolves to the
+      published release asset (redirect chain ending at `200`).
 - [ ] `curl -fsSLI https://get.falconpulsar.com/macos` same.
 - [ ] `curl -fsSLI https://get.falconpulsar.com/windows` same.
 - [ ] A fresh `curl -fsSL https://get.falconpulsar.com/linux | sudo bash`
