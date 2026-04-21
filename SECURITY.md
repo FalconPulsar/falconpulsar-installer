@@ -10,13 +10,17 @@ or in any FalconPulsar component, please report it to us privately —
 
 ### Preferred channel — GitHub Private Vulnerability Reporting
 
-Submit a private advisory at:
-
-**https://github.com/FalconPulsar/falconpulsar-installer/security/advisories/new**
+From the repository's **Security** tab → **Advisories** → click
+**Report a vulnerability**.
 
 This creates a private thread visible only to the reporter and the
 project maintainers. It lets us collaborate on the fix, track a CVE
 identifier, and publish a coordinated advisory when the fix ships.
+
+> If the "Report a vulnerability" button isn't visible on the Security
+> tab, the feature has not yet been enabled on this repository. Use the
+> email channel below instead, and please let us know — we want to know
+> if our own policy is unreachable.
 
 ### Alternative — email
 
