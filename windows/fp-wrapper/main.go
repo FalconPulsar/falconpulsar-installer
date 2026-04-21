@@ -10,7 +10,7 @@
 //  1. Locates the installed WSL distro (sentinel file or `wsl -l -q`).
 //  2. Locates the stack home path inside that distro (sentinel file written
 //     by the installer at %TEMP%\falconpulsar-home.txt, e.g.
-//     "/home/pruizleon/falconpulsar").
+//     "/home/<user>/falconpulsar" where <user> is the distro's default user).
 //  3. Execs `wsl.exe -d <distro> --cd <home> -e <home>/bin/fp [args...]`
 //     with stdin/stdout/stderr passed through so the TUI, colours, and
 //     credential prompts work verbatim. No `-u` flag: fp runs as the
