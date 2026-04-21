@@ -97,6 +97,7 @@ fp_offer_path_append() {
 
     {
         printf '\n# Added by FalconPulsar installer\n'
+        # shellcheck disable=SC2016  # literal $PATH intended in the rc file
         printf 'export PATH="%s:$PATH"\n' "$bin_dir"
     } >> "$rc"
     log_success "added ${bin_dir} to PATH in ${rc} (open a new terminal or run: source ${rc})"

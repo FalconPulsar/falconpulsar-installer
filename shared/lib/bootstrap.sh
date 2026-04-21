@@ -161,8 +161,7 @@ fp_bootstrap_gateway_token() {
     # Linux installer sets .env to 0640 falconpulsar:docker while macOS
     # keeps it 0600 user:staff -- the two platforms must not clobber each
     # other when this helper is shared.
-    local env_dir env_owner env_group env_mode
-    env_dir=$(dirname "$env_file")
+    local env_owner env_group env_mode
     env_owner=$(stat -c '%U' "$env_file" 2>/dev/null || stat -f '%Su' "$env_file" 2>/dev/null || echo "")
     env_group=$(stat -c '%G' "$env_file" 2>/dev/null || stat -f '%Sg' "$env_file" 2>/dev/null || echo "")
     env_mode=$(stat -c '%a' "$env_file" 2>/dev/null || stat -f '%Lp' "$env_file" 2>/dev/null || echo "600")

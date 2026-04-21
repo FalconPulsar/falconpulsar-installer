@@ -173,11 +173,15 @@ fp_apply_existing_action() {
             if command -v docker >/dev/null 2>&1; then
                 docker images --filter reference='*falconpulsar*' --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | \
                     while IFS= read -r img; do
-                    [ -n "$img" ] && docker rmi -f "$img" >/dev/null 2>&1 || true
+                    if [ -n "$img" ]; then
+                        docker rmi -f "$img" >/dev/null 2>&1 || true
+                    fi
                 done
                 docker volume ls --format '{{.Name}}' 2>/dev/null | grep -E '^falconpulsar' | \
                     while IFS= read -r vol; do
-                    [ -n "$vol" ] && docker volume rm -f "$vol" >/dev/null 2>&1 || true
+                    if [ -n "$vol" ]; then
+                        docker volume rm -f "$vol" >/dev/null 2>&1 || true
+                    fi
                 done
             fi
             if [ -n "$home" ] && [ "$home" != "/" ]; then
