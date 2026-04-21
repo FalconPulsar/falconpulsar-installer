@@ -15,18 +15,31 @@ cd console
 go build -o dist/fp ./cmd/fp
 ```
 
-Cross-compile for Linux, macOS, Windows (from any host):
+Cross-compile for Linux + macOS (from any host):
 
 ```sh
 GOOS=linux   GOARCH=amd64 go build -o dist/fp-linux-amd64  ./cmd/fp
 GOOS=linux   GOARCH=arm64 go build -o dist/fp-linux-arm64  ./cmd/fp
 GOOS=darwin  GOARCH=arm64 go build -o dist/fp-macos-arm64  ./cmd/fp
-GOOS=windows GOARCH=amd64 go build -o dist/fp-windows-amd64.exe ./cmd/fp
+GOOS=darwin  GOARCH=amd64 go build -o dist/fp-macos-amd64  ./cmd/fp
+```
+
+On **Windows**, `fp.exe` is NOT this binary — it's a tiny Go wrapper in
+`windows/fp-wrapper/` that execs the Linux `fp` inside WSL. Build that
+instead when producing release artifacts:
+
+```sh
+cd ../windows/fp-wrapper
+GOOS=windows GOARCH=amd64 go build -o ../../console/dist/fp-windows-amd64.exe .
 ```
 
 ## Install target
 
-`install.sh` drops the right binary at `/usr/local/bin/fp`.
+The Linux/macOS installer drops the right binary at `$FP_HOME/bin/fp`
+(`/home/<user>/falconpulsar/bin/fp` in per-user / WSL installs,
+`/home/falconpulsar/bin/fp` in native-Linux service-user installs,
+`~/falconpulsar/bin/fp` on macOS) and adds that directory to the user's
+PATH. The install path is wired in `shared/lib/fpcli.sh`.
 
 ## Features
 
@@ -40,7 +53,7 @@ GOOS=windows GOARCH=amd64 go build -o dist/fp-windows-amd64.exe ./cmd/fp
 | `fp config export <file>` | F7 | admin-only, AES-256-GCM `.fpconfig` |
 | `fp config import <file>` | F8 | admin-only, replaces config |
 | `fp about` / `docs` / `request-feature` | Help menu | |
-| `fp uninstall` | — | delegates to `shared/uninstall.sh` |
+| `fp uninstall` | — | On Linux / macOS runs `linux/uninstall.sh` (copied to `$FP_HOME/uninstall.sh` at install). On WSL hands off to the Windows Inno Setup uninstaller (`unins000.exe`) via interop. |
 
 ## `.fpconfig` backup format
 

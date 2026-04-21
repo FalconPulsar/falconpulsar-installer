@@ -22,7 +22,6 @@ falconpulsar-installer/
 ├── windows/      Inno Setup + PowerShell + C# tray + Go fp.exe wrapper
 ├── console/      fp CLI (Go) — cross-compiled and shipped with installers
 ├── shared/       compose.yml, gateway.yaml, bash libraries
-├── docs/         ARCHITECTURE.md and reference docs
 └── .github/      CI workflows + bundle.sh release-bundler
 ```
 

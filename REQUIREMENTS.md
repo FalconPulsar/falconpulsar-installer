@@ -87,8 +87,13 @@ have one already. The installer detects which one is present and uses it.
 | **Disk** | 10 GB free | 50 GB+ for the time-series database |
 | **Network** | Outbound HTTPS to `docker.io`, `ghcr.io`, `get.docker.com` (during install) | (same) |
 
-For air-gapped deployments, see the offline install instructions in
-`linux/README-offline.md` (Phase 2).
+For air-gapped deployments, use `FP_REGISTRY` + `FP_REGISTRY_USER` +
+`FP_REGISTRY_PASS` env vars to point the installer at an internal
+OCI-compliant mirror that has the FalconPulsar images pre-pulled.
+The Windows installer exposes the same knobs through its Container
+Registry wizard page. See
+[ARCHITECTURE.md](ARCHITECTURE.md#credentials-for-cloud-native-registries)
+for per-provider credential recipes.
 
 ## What is NOT supported
 

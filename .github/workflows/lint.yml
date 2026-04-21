@@ -57,7 +57,11 @@ jobs:
             shared/lib/common.sh \
             shared/lib/checks.sh \
             shared/lib/prompts.sh \
-            shared/lib/registry_auth.sh
+            shared/lib/bootstrap.sh \
+            shared/lib/registry_auth.sh \
+            shared/lib/auth.sh \
+            shared/lib/fpcli.sh \
+            shared/lib/existing.sh
 
   validate-compose:
     name: validate compose.yml

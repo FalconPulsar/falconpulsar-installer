@@ -11,21 +11,32 @@ A single `.exe` file at `windows/Output/FalconPulsar-Setup-{version}.exe`.
 It contains:
 
 - `linux/install.sh` + `linux/uninstall.sh` + the systemd unit template
-- `shared/compose.yml` + `shared/init.example.json` + `shared/lib/*.sh`
-- `windows/helpers/*.ps1` (the seven staged PowerShell helpers)
-- `windows/assets/license.rtf`
+- `shared/compose.yml` + `shared/gateway.yaml` + `shared/nginx.conf`
+  + `shared/init.example.json` + `shared/lib/*.sh`
+- `windows/helpers/*.ps1` (the 12 staged PowerShell helpers below)
+- `windows/tray-app/publish/FalconPulsarTray.exe` (self-contained .NET 8 tray)
+- `console/dist/fp-windows-amd64.exe` (the Go fp.exe WSL wrapper)
+- `console/dist/fp-linux-amd64` (the Linux fp binary, staged into WSL at install)
+- `windows/assets/license.rtf`, wizard BMPs, icons
 - A copy of `README.md` and `REQUIREMENTS.md` for reference
 
-The PowerShell helpers run during install in this order:
+The PowerShell helpers run during install in this order (full reference
+in [ARCHITECTURE.md](../ARCHITECTURE.md#powershell-helpers-execution-order)):
 
 | # | Helper | What it does |
 |---|---|---|
+| — | `lib.ps1` | Shared logging, WSL probes, `Invoke-WslBash` |
 | 00 | `00-check-prereqs.ps1` | Windows version, edition, x64, virtualization |
+| 05 | `05-detect-environment.ps1` | Early-wizard probe of WSL state, Docker Desktop, disk |
+| 06 | `06-detect-existing-install.ps1` | Detect a prior FalconPulsar install (populates the Existing-Install wizard page) |
 | 10 | `10-enable-wsl.ps1` | Enables WSL2 + VirtualMachinePlatform features |
 | 20 | `20-install-distro.ps1` | Installs Ubuntu 24.04 (or reuses an existing compatible distro) |
+| 25 | `25-test-registry.ps1` | Registry probe from the Container Registry wizard page (Test Connection button) |
 | 30 | `30-configure-distro.ps1` | Sets `systemd=true` in `/etc/wsl.conf` |
-| 40 | `40-run-fp-installer.ps1` | Stages + runs the bash installer inside the distro |
+| 40 | `40-run-fp-installer.ps1` | Resolves the WSL default user, stages + runs the bash installer inside the distro |
+| 45 | `45-verify-health.ps1` | Post-install container + REST API health probe |
 | 50 | `50-register-shortcuts.ps1` | Start Menu shortcuts that wrap `wsl.exe` calls |
+| — | `uninstall.ps1` | Full two-sided cleanup (WSL + Windows mirror + registry) on uninstall |
 
 The installer is **idempotent** — re-running it after a Windows reboot
 picks up where it left off because every helper checks state before
@@ -153,19 +164,20 @@ requires the **Windows Subsystem for Linux Update Package**, which
 
 ### Bash installer fails inside WSL with "pull access denied"
 
-The user needs to `docker login` to a Docker Hub account that has read
-access to the private `falconpulsar/*` repos. The Windows installer
-does NOT prompt for Docker Hub credentials in v0.1 — see the comment
-in `40-run-fp-installer.ps1` for the rationale.
+The user needs read access to the private `falconpulsar/*` registry
+repos. The Windows installer's **Container Registry** wizard page
+collects a registry URL + optional username / password and its
+**Test Connection** button runs `25-test-registry.ps1` to probe
+access before committing to the install.
 
-Workaround until the images are public:
+If the installer gets past that page and still fails deeper in the
+WSL handoff:
 
 ```powershell
+# Log in manually inside the distro, then re-run the installer:
 wsl -d Ubuntu-24.04 -u root -- docker login
-# enter your Docker Hub username + token
+# enter your Docker Hub (or alternative registry) username + token
 ```
-
-then re-run the FalconPulsar installer.
 
 ## Code signing (deferred to v1.0)
 
