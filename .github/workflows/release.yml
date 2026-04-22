@@ -155,7 +155,7 @@ jobs:
           path: windows/Output/*.exe
 
   build-macos-dmg:
-    name: build macOS DMG
+    name: build macOS DMG (signed + notarized)
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v5
@@ -166,12 +166,116 @@ jobs:
           go-version: '1.22'
           cache-dependency-path: console/go.sum
 
-      - name: Build DMG via build-dmg.sh
+      # ── Apple signing + notarization setup ─────────────────────────────
+      # Every APPLE_* secret below must be present. A tag push with a
+      # missing secret fails here rather than silently producing an
+      # unsigned DMG: shipping "ERROR: you need to right-click Open" is
+      # worse than aborting the release and fixing the secret.
+      #
+      # Secret names (set under Settings → Secrets and variables → Actions):
+      #   APPLE_DEV_ID_APPLICATION_P12_BASE64    base64-encoded .p12 of the
+      #                                          Developer ID Application
+      #                                          cert (private key included)
+      #   APPLE_DEV_ID_APPLICATION_P12_PASSWORD  password set when exporting
+      #                                          the .p12 from Keychain Access
+      #   APPLE_SIGNING_IDENTITY                 full cert CN, exactly as it
+      #                                          appears in `security
+      #                                          find-identity -v`, e.g.
+      #                                          "Developer ID Application:
+      #                                           Jane Doe (ABCD1234)"
+      #   APPLE_NOTARY_KEY_ID                    App Store Connect API
+      #                                          Key ID (10 chars)
+      #   APPLE_NOTARY_ISSUER_ID                 issuer UUID for the team
+      #   APPLE_NOTARY_KEY_P8_BASE64             base64-encoded .p8 private key
+      #
+      # The keychain password is NOT a secret — we generate a random one
+      # inline and use it only to unlock the ephemeral build keychain,
+      # which is deleted in the cleanup step.  No value in storing it.
+      - name: Import Developer ID signing certificate
+        env:
+          APPLE_DEV_ID_APPLICATION_P12_BASE64:   ${{ secrets.APPLE_DEV_ID_APPLICATION_P12_BASE64 }}
+          APPLE_DEV_ID_APPLICATION_P12_PASSWORD: ${{ secrets.APPLE_DEV_ID_APPLICATION_P12_PASSWORD }}
         run: |
+          set -euo pipefail
+          : "${APPLE_DEV_ID_APPLICATION_P12_BASE64:?secret APPLE_DEV_ID_APPLICATION_P12_BASE64 is required}"
+          : "${APPLE_DEV_ID_APPLICATION_P12_PASSWORD:?secret APPLE_DEV_ID_APPLICATION_P12_PASSWORD is required}"
+
+          # Fresh random keychain password for this job. 32 hex chars of
+          # entropy from /dev/urandom — never reused, never persisted.
+          KC_PASS="$(openssl rand -hex 32)"
+
+          # Decode .p12 to a 600-mode file on /tmp (wiped at end of job).
+          P12=/tmp/fp-cert.p12
+          echo "$APPLE_DEV_ID_APPLICATION_P12_BASE64" | base64 --decode > "$P12"
+          chmod 600 "$P12"
+
+          # Create an ephemeral keychain scoped to this job only. We never
+          # touch the runner's login keychain — makes cleanup trivial and
+          # avoids any collision with pre-installed Apple certs on the image.
+          KC=fp-build.keychain
+          security create-keychain      -p "$KC_PASS" "$KC"
+          security set-keychain-settings -lut 21600     "$KC"
+          security unlock-keychain      -p "$KC_PASS" "$KC"
+          security default-keychain     -s             "$KC"
+
+          # Import cert + private key. `-T /usr/bin/codesign` whitelists
+          # codesign to use the private key without triggering the
+          # "allow access" GUI prompt (which a headless runner can't answer).
+          security import "$P12" \
+            -k "$KC" \
+            -P "$APPLE_DEV_ID_APPLICATION_P12_PASSWORD" \
+            -T /usr/bin/codesign \
+            -T /usr/bin/security
+
+          # Grant codesign partition access non-interactively. Required
+          # on macOS 10.12+; without it codesign still prompts at runtime.
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s -k "$KC_PASS" "$KC"
+
+          rm -f "$P12"
+          unset KC_PASS
+
+          echo '--- identities visible to codesign ---'
+          security find-identity -v -p codesigning "$KC"
+
+      - name: Write notary API key
+        env:
+          APPLE_NOTARY_KEY_P8_BASE64: ${{ secrets.APPLE_NOTARY_KEY_P8_BASE64 }}
+        run: |
+          set -euo pipefail
+          : "${APPLE_NOTARY_KEY_P8_BASE64:?secret APPLE_NOTARY_KEY_P8_BASE64 is required}"
+          mkdir -p "$RUNNER_TEMP/notary"
+          KEY="$RUNNER_TEMP/notary/AuthKey.p8"
+          echo "$APPLE_NOTARY_KEY_P8_BASE64" | base64 --decode > "$KEY"
+          chmod 600 "$KEY"
+          # Pass the path to the signed-build step via the job env.
+          echo "FP_NOTARY_KEY_P8_PATH=$KEY" >> "$GITHUB_ENV"
+
+      - name: Build signed + notarized DMG
+        env:
+          FP_SIGN:             '1'
+          FP_SIGN_IDENTITY:    ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          FP_NOTARY_KEY_ID:    ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          FP_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+          # FP_NOTARY_KEY_P8_PATH comes from the previous step via $GITHUB_ENV
+        run: |
+          set -euo pipefail
+          : "${FP_SIGN_IDENTITY:?secret APPLE_SIGNING_IDENTITY is required}"
+          : "${FP_NOTARY_KEY_ID:?secret APPLE_NOTARY_KEY_ID is required}"
+          : "${FP_NOTARY_ISSUER_ID:?secret APPLE_NOTARY_ISSUER_ID is required}"
           chmod +x macos/build-dmg.sh
           FP_VERSION="${GITHUB_REF_NAME#v}" ./macos/build-dmg.sh
           cp dist/FalconPulsar-Setup.dmg "dist/FalconPulsar-Setup-${GITHUB_REF_NAME}.dmg"
           ls -lh dist/*.dmg
+
+      - name: Cleanup signing materials
+        # Runs even if a previous step failed — we never want the .p8 key
+        # or the temporary keychain to survive past this job.
+        if: always()
+        run: |
+          security delete-keychain fp-build.keychain 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/notary/AuthKey.p8" 2>/dev/null || true
 
       - name: Upload DMG
         uses: actions/upload-artifact@v5

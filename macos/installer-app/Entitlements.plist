@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  FalconPulsar Installer.app — Hardened Runtime entitlements.
+
+  This file is passed to `codesign --options runtime --entitlements ...` when
+  the installer is signed with a real Developer ID certificate (FP_SIGN=1).
+  It activates Hardened Runtime with NO exceptions, which is the most
+  restrictive (and thus most secure) configuration.
+
+  The installer spawns /bin/bash, docker, and git via Process() — that is
+  allowed under Hardened Runtime without any entitlement because the system
+  tools it spawns are themselves signed by Apple or their vendor.
+
+  If we ever embed a scripting interpreter (Python/Ruby/Node) or a JIT,
+  we'll need to add exceptions here. For pure Swift + system-tool spawns,
+  the empty dict is correct.
+-->
+<plist version="1.0">
+<dict>
+</dict>
+</plist>

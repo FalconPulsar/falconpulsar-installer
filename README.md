@@ -210,6 +210,7 @@ falconpulsar-installer/
 ├── LICENSE                      ← GNU AGPL v3
 ├── SECURITY.md                  ← responsible disclosure
 ├── CONTRIBUTING.md              ← dev setup, testing, PR guidelines
+├── RELEASING.md                 ← cutting a release (maintainer-only)
 ├── CODE_OF_CONDUCT.md
 │
 ├── linux/                       ← Linux installer (bash)
@@ -324,6 +325,12 @@ This produces a GitHub Release with:
 The unversioned aliases back the stable redirects at
 `https://get.falconpulsar.com/<platform>` so end users always pull the
 current release without URL changes between versions.
+
+The macOS DMG is signed with a Developer ID Application certificate and
+notarized by Apple — double-clicking the download does not trigger a
+Gatekeeper warning. Maintainers cutting a release should read
+**[RELEASING.md](RELEASING.md)** for the secret setup and verification
+steps.
 
 ## Contributing
 
