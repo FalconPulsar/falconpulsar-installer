@@ -47,6 +47,19 @@ cd "$REPO_ROOT"
 VERSION="${FP_VERSION:-0.1.0}"
 INSTALLER_BUNDLE="dist/installer-bundle/FalconPulsar Installer.app"
 MB_BUNDLE="$INSTALLER_BUNDLE/Contents/Resources/FalconPulsar Menu Bar.app"
+
+# Entitlements: both plists are intentionally empty <dict>s — that means
+# "run under Hardened Runtime with zero exceptions", which is the most
+# restrictive (and safest) choice. Every capability our apps actually
+# use — spawning /bin/bash and docker via Process(), connecting to
+# 127.0.0.1 — is allowed under Hardened Runtime without any flag.
+#
+# IMPORTANT: the .plist files contain NO XML comments. codesign's
+# entitlements parser (AMFIUnserializeXML) is stricter than libxml and
+# chokes on non-ASCII characters (em-dashes, smart quotes) inside
+# comments, emitting "syntax error near line N" with a useless line
+# number. Keep those files minimal and ASCII-only. Put rationale here
+# instead, where only humans read it.
 INSTALLER_ENTITLEMENTS="$REPO_ROOT/macos/installer-app/Entitlements.plist"
 MB_ENTITLEMENTS="$REPO_ROOT/macos/menu-bar-app/Entitlements.plist"
 DMG_STAGING="dist/dmg-staging"

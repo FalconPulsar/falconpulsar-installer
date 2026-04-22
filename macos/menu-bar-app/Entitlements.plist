@@ -1,22 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!--
-  FalconPulsar Menu Bar.app — Hardened Runtime entitlements.
-
-  Same philosophy as the installer: empty dict = Hardened Runtime with no
-  exceptions.
-
-  The menu-bar app does three things:
-    1. Draws a status-bar icon and menu (AppKit, no entitlement needed)
-    2. Polls http://127.0.0.1:7433 to check REST API health
-       (Hardened Runtime does not restrict outbound network — only sandbox
-        does, and we are not sandboxing)
-    3. Spawns `docker compose ...` via Process() to start/stop the stack
-       (allowed for signed system binaries under Hardened Runtime)
-
-  No JIT, no dynamic library loading from untrusted paths, no camera/mic,
-  no Apple Events targeting other apps. Empty entitlements dict is correct.
--->
 <plist version="1.0">
 <dict>
 </dict>
