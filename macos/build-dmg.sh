@@ -72,12 +72,35 @@ log() { printf "[build-dmg] %s\n" "$*"; }
 warn() { printf "[build-dmg] WARN: %s\n" "$*" >&2; }
 die() { printf "[build-dmg] ERROR: %s\n" "$*" >&2; exit 1; }
 
+# Strip leading and trailing whitespace (including newlines) from a value.
+# Why this exists: pasting a 10-char Key ID into the GitHub secrets UI
+# often picks up a trailing \n from the source clipboard. The presence
+# check `[ -n "$VAR" ]` still passes ("ABCDEFGHIJ\n" is non-empty), but
+# `notarytool --key-id` rejects the whole string with
+#   "Error: App Store Connect API Key ID contains invalid characters: [\"\\n\"]"
+# We sanitize once here so that whole class of paste errors becomes
+# invisible. Internal whitespace (e.g. spaces in "Developer ID
+# Application: Jane Doe (ABCD1234)") is preserved.
+_strip_ws() {
+    local v="$1"
+    v="${v#"${v%%[![:space:]]*}"}"
+    v="${v%"${v##*[![:space:]]}"}"
+    printf '%s' "$v"
+}
+
 # ── Signing-mode validation ────────────────────────────────────────────────
 # When FP_SIGN=1, every secret we need must be present and usable. The
 # checks here run BEFORE compilation so we fail fast on a misconfigured
 # release rather than after 3 minutes of builds.
 FP_SIGN="${FP_SIGN:-0}"
 if [ "$FP_SIGN" = "1" ]; then
+    # Sanitize first — any of these can carry a stray newline from a
+    # GitHub-secret paste; we'd rather strip it than fail at notarytool.
+    FP_SIGN_IDENTITY="$(_strip_ws "${FP_SIGN_IDENTITY:-}")"
+    FP_NOTARY_KEY_ID="$(_strip_ws "${FP_NOTARY_KEY_ID:-}")"
+    FP_NOTARY_ISSUER_ID="$(_strip_ws "${FP_NOTARY_ISSUER_ID:-}")"
+    FP_NOTARY_KEY_P8_PATH="$(_strip_ws "${FP_NOTARY_KEY_P8_PATH:-}")"
+
     [ -n "${FP_SIGN_IDENTITY:-}" ]      || die "FP_SIGN=1 but FP_SIGN_IDENTITY is not set"
     [ -n "${FP_NOTARY_KEY_ID:-}" ]      || die "FP_SIGN=1 but FP_NOTARY_KEY_ID is not set"
     [ -n "${FP_NOTARY_ISSUER_ID:-}" ]   || die "FP_SIGN=1 but FP_NOTARY_ISSUER_ID is not set"
