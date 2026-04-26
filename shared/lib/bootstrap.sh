@@ -186,3 +186,85 @@ fp_bootstrap_gateway_token() {
 
     log_success "FP_API_KEY appended to ${env_file}"
 }
+
+# ── AI Gateway: wipe self-seeded providers + models ─────────────────────────
+# fp_wipe_gateway_seed_defaults [container_name]
+#
+# The AI Gateway image self-seeds 3 default providers (Anthropic, Grok,
+# Ollama) and 6 default models (Claude Opus 4.6, Claude Sonnet 4.5, Grok 4,
+# Llama 3.1 8B, Mistral 7B, Gemma 2 9B) into its SQLite on first boot.
+# This produces a misleading UX where the toolbar shows "Llama 3.1 8B" as
+# the active model and the Models page lists 6 entries flagged "Offline"
+# even on a clean install where the user has not configured any LLM
+# provider. They reasonably assume the installer hardcoded these — it
+# didn't (verified: zero model names anywhere in this repo's source).
+#
+# Until falconpulsar/ai-gateway gates seeding behind an env var (e.g.
+# FP_GATEWAY_SEED_DEFAULTS=0) or stops seeding entirely, this helper runs
+# AFTER the gateway becomes healthy and DELETEs the self-seeded rows so
+# the user starts with a truly empty AI configuration. They then add
+# their own providers via the Web UI's AI Configuration page.
+#
+# `knowledge_documents` is intentionally left alone — those 8 RAG entries
+# are domain knowledge about FalconPulsar itself and are useful at install
+# time. Only the LLM provider/model catalog gets wiped.
+#
+# Order of operations:
+#   1. Poll http://127.0.0.1:${FP_GATEWAY_PORT}/health until 200 OK
+#      (max 90 s). Without the wait, the gateway's seed INSERTs would
+#      run AFTER our DELETEs and undo them.
+#   2. docker exec into the container, DELETE FROM both tables.
+#   3. docker restart the container — the gateway loads provider/model
+#      state into memory at startup, so without a restart the API would
+#      keep serving the stale in-memory list.
+#   4. Re-poll /health so subsequent install steps see a healthy stack.
+#
+# Non-fatal: any failure logs a warning and returns 0. We never abort an
+# otherwise-successful install just because the cosmetic cleanup didn't
+# work.
+#
+# TODO(falconpulsar/ai-gateway): land the upstream fix (skip seeding by
+# default, or gate with an env var) and remove this whole function plus
+# its 5 call sites (linux + macOS install.sh, fp CLI ai enable, macOS
+# menu-bar EnableAI, Windows tray EnableAI).
+fp_wipe_gateway_seed_defaults() {
+    local container="${1:-falconpulsar-ai-gateway}"
+    local port="${FP_GATEWAY_PORT:-7436}"
+    local deadline
+
+    deadline=$(( $(date +%s) + 90 ))
+    log_info "waiting for AI Gateway to finish init before wiping seed defaults"
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        if curl -fsS -o /dev/null "http://127.0.0.1:${port}/health" 2>/dev/null; then
+            break
+        fi
+        sleep 2
+    done
+    if ! curl -fsS -o /dev/null "http://127.0.0.1:${port}/health" 2>/dev/null; then
+        log_warn "AI Gateway did not become healthy in 90s — leaving seed defaults in place"
+        return 0
+    fi
+
+    log_info "removing AI Gateway's self-seeded providers and models"
+    if ! docker exec "$container" \
+            sqlite3 /app/data/ai_config.db \
+            "DELETE FROM model_definitions; DELETE FROM provider_configs;" \
+            >/dev/null 2>&1; then
+        log_warn "could not wipe seed defaults (sqlite3 missing in image, or schema changed?) — install continues"
+        return 0
+    fi
+
+    log_info "restarting AI Gateway so in-memory state matches wiped DB"
+    docker restart "$container" >/dev/null 2>&1 || true
+
+    deadline=$(( $(date +%s) + 60 ))
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        if curl -fsS -o /dev/null "http://127.0.0.1:${port}/health" 2>/dev/null; then
+            log_success "AI Gateway clean: 0 providers, 0 models"
+            return 0
+        fi
+        sleep 2
+    done
+    log_warn "AI Gateway slow to come back after wipe — UI may show stale models for a moment"
+    return 0
+}

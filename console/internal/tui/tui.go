@@ -658,6 +658,12 @@ func (a *App) enableAIGateway() {
 				return
 			}
 			err := actions.Compose(ctx, nil, nil, "--profile", "ai", "up", "-d", "ai-gateway")
+			if err == nil {
+				// Wipe the gateway's self-seeded provider/model catalog
+				// so the user lands on a clean AI configuration. See
+				// actions.WipeGatewaySeedDefaults for the rationale.
+				_ = actions.WipeGatewaySeedDefaults(ctx, nil)
+			}
 			a.tv.QueueUpdateDraw(func() {
 				a.pages.RemovePage("modal")
 				a.sections = buildSections()

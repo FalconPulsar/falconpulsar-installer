@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -250,6 +251,92 @@ func SurgicalDisableAI(ctx context.Context, out io.Writer) error {
 	_ = rmi.Run()
 
 	write("[disable-ai] cleanup complete. Core and UI were not touched.\n")
+	return nil
+}
+
+// WipeGatewaySeedDefaults removes the AI Gateway image's self-seeded
+// provider + model rows so the user lands on a clean AI configuration.
+//
+// The gateway image (built from the separate falconpulsar/ai-gateway repo)
+// inserts 3 default providers (Anthropic, Grok, Ollama) and 6 default
+// models (Claude Opus 4.6 / Sonnet 4.5, Grok 4, Llama 3.1 8B, Mistral 7B,
+// Gemma 2 9B) into its SQLite on first boot. On a fresh install where no
+// LLM provider is configured, those entries are misleading: the toolbar
+// shows "Llama 3.1 8B" as the active model, the Models page lists 6
+// "Offline" entries, and users reasonably assume FalconPulsar shipped them.
+//
+// Until falconpulsar/ai-gateway gates seeding (or stops doing it), this
+// helper runs after every "enable AI" action — install-time, fp ai
+// enable, TUI Enable, tray Enable — and DELETEs the seeded rows.
+//
+// Mirrors fp_wipe_gateway_seed_defaults in shared/lib/bootstrap.sh; both
+// implementations must do exactly the same SQL so the post-install state
+// is identical regardless of which surface enabled AI.
+//
+// Non-fatal: any failure logs to `out` and returns nil. We never fail an
+// otherwise-successful enable just because the cosmetic cleanup didn't
+// take.
+//
+// TODO(falconpulsar/ai-gateway): land the upstream fix and remove this
+// function plus its call sites in cli.go and tui.go.
+func WipeGatewaySeedDefaults(ctx context.Context, out io.Writer) error {
+	write := func(s string) {
+		if out != nil {
+			_, _ = io.WriteString(out, s)
+		}
+	}
+
+	port := parseEnvFile()["FP_GATEWAY_PORT"]
+	if port == "" {
+		port = "7436"
+	}
+	healthURL := fmt.Sprintf("http://127.0.0.1:%s/health", port)
+	container := "falconpulsar-ai-gateway"
+
+	waitHealthy := func(maxSeconds int) bool {
+		deadline := time.Now().Add(time.Duration(maxSeconds) * time.Second)
+		client := &http.Client{Timeout: 3 * time.Second}
+		for time.Now().Before(deadline) {
+			req, _ := http.NewRequestWithContext(ctx, "GET", healthURL, nil)
+			if resp, err := client.Do(req); err == nil {
+				_ = resp.Body.Close()
+				if resp.StatusCode == 200 {
+					return true
+				}
+			}
+			select {
+			case <-ctx.Done():
+				return false
+			case <-time.After(2 * time.Second):
+			}
+		}
+		return false
+	}
+
+	write("[wipe-seed] waiting for AI Gateway to finish init…\n")
+	if !waitHealthy(90) {
+		write("[wipe-seed] WARN: gateway not healthy in 90s — leaving seed defaults in place\n")
+		return nil
+	}
+
+	write("[wipe-seed] removing self-seeded providers and models…\n")
+	cmd := exec.CommandContext(ctx, dockerPath(), "exec", container,
+		"sqlite3", "/app/data/ai_config.db",
+		"DELETE FROM model_definitions; DELETE FROM provider_configs;")
+	if err := cmd.Run(); err != nil {
+		write(fmt.Sprintf("[wipe-seed] WARN: docker exec sqlite3 failed (%v) — install continues\n", err))
+		return nil
+	}
+
+	write("[wipe-seed] restarting AI Gateway so in-memory state matches DB…\n")
+	restart := exec.CommandContext(ctx, dockerPath(), "restart", container)
+	_ = restart.Run()
+
+	if waitHealthy(60) {
+		write("[wipe-seed] AI Gateway clean: 0 providers, 0 models\n")
+	} else {
+		write("[wipe-seed] WARN: gateway slow to come back after wipe — UI may show stale models for a moment\n")
+	}
 	return nil
 }
 

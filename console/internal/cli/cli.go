@@ -306,6 +306,10 @@ func cmdAI() *cobra.Command {
 					"up", "-d", "ai-gateway"); err != nil {
 					return err
 				}
+				// Wipe the gateway's self-seeded provider/model catalog so
+				// the user lands on a clean AI configuration. See
+				// actions.WipeGatewaySeedDefaults for the rationale.
+				_ = actions.WipeGatewaySeedDefaults(ctx, os.Stderr)
 				fmt.Fprintln(os.Stderr, "")
 				fmt.Fprintln(os.Stderr, "AI Capabilities enabled.")
 				fmt.Fprintln(os.Stderr, "Close any open FalconPulsar Web UI sessions and sign in again to see the AI features, then configure LLM providers in Settings > AI Configuration.")

@@ -395,6 +395,10 @@ fi
 if [ "${FP_AI_GATEWAY_ENABLED}" = "true" ]; then
     log_info "starting ui and ai-gateway"
     ( cd "$FP_HOME" && docker compose --profile ai up -d )
+    # Wipe the gateway's self-seeded provider/model catalog so the user
+    # lands on a clean AI configuration page. See bootstrap.sh for the
+    # full rationale + the upstream fix this stops being necessary after.
+    fp_wipe_gateway_seed_defaults
 else
     log_info "starting ui (AI Gateway disabled)"
     ( cd "$FP_HOME" && docker compose up -d )

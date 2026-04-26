@@ -943,6 +943,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Target the ai-gateway service explicitly so core/ui are never touched.
         // BUILDKIT_PROGRESS=plain forces line-buffered output over our pipe.
+        //
+        // The trailing wipe block removes the AI gateway image's self-seeded
+        // provider/model catalog (3 providers + 6 models inserted on first
+        // boot from the falconpulsar/ai-gateway repo). Without this the user
+        // would land on a Models page showing 6 "Offline" entries they
+        // never configured. Mirrors fp_wipe_gateway_seed_defaults in
+        // shared/lib/bootstrap.sh and actions.WipeGatewaySeedDefaults in Go;
+        // all three implementations must do the same SQL so post-enable
+        // state is identical regardless of which surface enabled AI.
+        // TODO(falconpulsar/ai-gateway): land the upstream fix and remove.
         let command = """
         export BUILDKIT_PROGRESS=plain
         export DOCKER_CLI_HINTS=false
@@ -952,6 +962,34 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         docker compose --profile ai pull ai-gateway 2>&1
         echo '[enable-ai] starting ai-gateway container…'
         docker compose --profile ai up -d ai-gateway 2>&1
+
+        # ── Wipe self-seeded providers + models ─────────────────────────
+        echo '[wipe-seed] waiting for AI Gateway to finish init…'
+        deadline=$(( $(date +%s) + 90 ))
+        while [ "$(date +%s)" -lt "$deadline" ]; do
+            if curl -fsS -o /dev/null http://127.0.0.1:7436/health 2>/dev/null; then
+                break
+            fi
+            sleep 2
+        done
+        if curl -fsS -o /dev/null http://127.0.0.1:7436/health 2>/dev/null; then
+            echo '[wipe-seed] removing self-seeded providers and models…'
+            docker exec falconpulsar-ai-gateway sqlite3 /app/data/ai_config.db \
+                'DELETE FROM model_definitions; DELETE FROM provider_configs;' \
+                >/dev/null 2>&1 || echo '[wipe-seed] WARN: sqlite3 wipe failed — continuing'
+            echo '[wipe-seed] restarting AI Gateway so in-memory state matches DB…'
+            docker restart falconpulsar-ai-gateway >/dev/null 2>&1 || true
+            deadline=$(( $(date +%s) + 60 ))
+            while [ "$(date +%s)" -lt "$deadline" ]; do
+                if curl -fsS -o /dev/null http://127.0.0.1:7436/health 2>/dev/null; then
+                    echo '[wipe-seed] AI Gateway clean: 0 providers, 0 models'
+                    break
+                fi
+                sleep 2
+            done
+        else
+            echo '[wipe-seed] WARN: gateway not healthy in 90s — leaving seed defaults in place'
+        fi
         """
 
         runDockerActionPanel(

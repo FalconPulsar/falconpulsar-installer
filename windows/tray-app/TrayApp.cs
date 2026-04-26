@@ -1294,7 +1294,45 @@ namespace FalconPulsar.Tray
                 "echo '[enable-ai] pulling AI gateway image…'\n" +
                 "docker compose --profile ai pull ai-gateway 2>&1\n" +
                 "echo '[enable-ai] starting ai-gateway container…'\n" +
-                "docker compose --profile ai up -d ai-gateway 2>&1\n";
+                "docker compose --profile ai up -d ai-gateway 2>&1\n" +
+
+                // ── Wipe self-seeded providers + models ─────────────────
+                // The AI gateway image inserts 3 default providers + 6
+                // default models into its SQLite on first boot from the
+                // separate falconpulsar/ai-gateway repo. On a clean
+                // install this is misleading — the user sees 6 "Offline"
+                // models they never configured. DELETE them after the
+                // gateway has finished init so post-enable state is
+                // identical to the bash + Go + Swift implementations
+                // (shared/lib/bootstrap.sh: fp_wipe_gateway_seed_defaults,
+                // actions.WipeGatewaySeedDefaults, AppDelegate.swift).
+                // TODO(falconpulsar/ai-gateway): land the upstream fix
+                // (gate seeding behind an env var or stop seeding) and
+                // remove this block plus its 4 sibling implementations.
+                "echo '[wipe-seed] waiting for AI Gateway to finish init…'\n" +
+                "deadline=$(( $(date +%s) + 90 ))\n" +
+                "while [ \"$(date +%s)\" -lt \"$deadline\" ]; do\n" +
+                "    if curl -fsS -o /dev/null http://127.0.0.1:7436/health 2>/dev/null; then break; fi\n" +
+                "    sleep 2\n" +
+                "done\n" +
+                "if curl -fsS -o /dev/null http://127.0.0.1:7436/health 2>/dev/null; then\n" +
+                "    echo '[wipe-seed] removing self-seeded providers and models…'\n" +
+                "    docker exec falconpulsar-ai-gateway sqlite3 /app/data/ai_config.db \\\n" +
+                "        'DELETE FROM model_definitions; DELETE FROM provider_configs;' \\\n" +
+                "        >/dev/null 2>&1 || echo '[wipe-seed] WARN: sqlite3 wipe failed -- continuing'\n" +
+                "    echo '[wipe-seed] restarting AI Gateway so in-memory state matches DB…'\n" +
+                "    docker restart falconpulsar-ai-gateway >/dev/null 2>&1 || true\n" +
+                "    deadline=$(( $(date +%s) + 60 ))\n" +
+                "    while [ \"$(date +%s)\" -lt \"$deadline\" ]; do\n" +
+                "        if curl -fsS -o /dev/null http://127.0.0.1:7436/health 2>/dev/null; then\n" +
+                "            echo '[wipe-seed] AI Gateway clean: 0 providers, 0 models'\n" +
+                "            break\n" +
+                "        fi\n" +
+                "        sleep 2\n" +
+                "    done\n" +
+                "else\n" +
+                "    echo '[wipe-seed] WARN: gateway not healthy in 90s -- leaving seed defaults in place'\n" +
+                "fi\n";
 
             await RunWslStreamingActionAsync(
                 "Enabling AI Capabilities…",
