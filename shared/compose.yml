@@ -85,6 +85,11 @@ services:
       # forever and the entrypoint skips re-init because the config file
       # already exists.
       FP_ADMIN_PASS: ${FP_ADMIN_PASS:-}
+      # Front-door HTTPS declaration. Read by core's --init-auto and
+      # persisted to falconpulsar.toml; subsequent restarts read the
+      # value from the TOML so this env stays empty after first run.
+      # Set to "false" for HTTP-only deployments on trusted LANs.
+      FP_COOKIE_SECURE: ${FP_COOKIE_SECURE:-true}
     healthcheck:
       # Bash /dev/tcp port-open check. The core process binds the REST port
       # only after init-auto completes, so this is effectively a readiness

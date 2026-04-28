@@ -405,6 +405,7 @@ esac
 log_step "step 6/8 — stack files in ${FP_HOME}"
 
 prompt_ai_gateway
+prompt_transport_mode
 prompt_admin_credentials
 
 install -m 0644 -o "$FP_USER" -g "$FP_USER" \
@@ -472,6 +473,12 @@ FP_GATEWAY_PORT=${FP_GATEWAY_PORT}
 FP_UI_PORT=${FP_UI_PORT}
 FP_LOG_LEVEL=${FP_LOG_LEVEL}
 FP_AI_GATEWAY_ENABLED=${FP_AI_GATEWAY_ENABLED:-false}
+# Front-door HTTPS declaration. Read by core's --init-auto on first
+# start and persisted to falconpulsar.toml; the env var stays here
+# afterwards as a record of the operator's choice. Flip with care:
+# changing this value alone won't update an existing deployment;
+# edit falconpulsar.toml inside the data volume to take effect.
+FP_COOKIE_SECURE=${FP_COOKIE_SECURE:-true}
 EOF
 # .env holds FP_API_KEY (gateway service token). We want it readable by the
 # invoking human user too -- on native Linux the user runs `fp` from their

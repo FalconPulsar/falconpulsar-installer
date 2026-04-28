@@ -296,6 +296,7 @@ log_success "${FP_HOME} ready"
 log_step "step 4/6 — stack files"
 
 prompt_ai_gateway
+prompt_transport_mode
 prompt_admin_credentials
 
 cp "${REPO_ROOT}/shared/compose.yml" "${FP_HOME}/compose.yml"
@@ -342,6 +343,9 @@ FP_GATEWAY_PORT=${FP_GATEWAY_PORT}
 FP_UI_PORT=${FP_UI_PORT}
 FP_LOG_LEVEL=${FP_LOG_LEVEL}
 FP_AI_GATEWAY_ENABLED=${FP_AI_GATEWAY_ENABLED:-false}
+# Front-door HTTPS declaration — see the equivalent block in
+# linux/install.sh for the full rationale.
+FP_COOKIE_SECURE=${FP_COOKIE_SECURE:-true}
 EOF
 chmod 0600 "${FP_HOME}/.env"
 umask 022

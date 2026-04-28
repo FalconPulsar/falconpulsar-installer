@@ -253,6 +253,50 @@ prompt_password() {
 #                     on an unattended-but-not-FP_ASSUME_YES run, we offer to
 #                     generate a strong password and print it for the user
 #                     to copy down.
+# Ask the operator whether the deployment will run behind HTTPS (the
+# recommended posture) or HTTP-only (acceptable on trusted LANs).
+# Sets FP_COOKIE_SECURE to "true" or "false".
+#
+# This drives the Secure flag and __Host- prefix on session cookies.
+# Browsers refuse to send Secure cookies over plain HTTP, so a
+# mismatch between this choice and the actual deployment topology
+# silently breaks login. The default ("yes, HTTPS") matches the
+# secure-by-default posture; the operator must explicitly opt out.
+#
+# Honors FP_COOKIE_SECURE in the environment so wizards / non-
+# interactive scripts can pre-set without prompting. Honors
+# FP_ASSUME_YES=1 by defaulting to HTTPS.
+prompt_transport_mode() {
+    if [ -n "${FP_COOKIE_SECURE:-}" ]; then
+        export FP_COOKIE_SECURE
+        return 0
+    fi
+    if [ "${FP_ASSUME_YES:-0}" = "1" ]; then
+        FP_COOKIE_SECURE=true
+        export FP_COOKIE_SECURE
+        return 0
+    fi
+    printf '\n%sFront-door HTTPS%s\n' "${FP_C_BOLD}" "${FP_C_RESET}" >&2
+    printf 'How will operators connect to FalconPulsar?\n\n' >&2
+    printf '  %sHTTPS%s — recommended. Session cookies get the Secure flag and\n' \
+        "${FP_C_CYAN}" "${FP_C_RESET}" >&2
+    printf '          the __Host- prefix. Required for cloud / public deploys\n' >&2
+    printf '          and on-prem deploys with a corporate cert.\n\n' >&2
+    printf '  %sHTTP%s  — acceptable only for air-gapped LAN installs accessed\n' \
+        "${FP_C_YELLOW}" "${FP_C_RESET}" >&2
+    printf '          by IP address. Session cookies are NOT marked Secure;\n' >&2
+    printf '          anyone with packet capture on the LAN can steal them.\n' >&2
+    printf '          Use only on trusted networks.\n\n' >&2
+    if confirm "Will the deployment be reachable via HTTPS?" default-yes; then
+        FP_COOKIE_SECURE=true
+    else
+        FP_COOKIE_SECURE=false
+        log_warn "HTTP-only mode selected. Session cookies will NOT have the Secure flag."
+        log_warn "Sessions are vulnerable to LAN sniffing; only use on trusted networks."
+    fi
+    export FP_COOKIE_SECURE
+}
+
 # Ask whether the user wants the AI Gateway. Sets FP_AI_GATEWAY_ENABLED.
 prompt_ai_gateway() {
     if [ -n "${FP_AI_GATEWAY_ENABLED:-}" ]; then
