@@ -57,6 +57,13 @@ class InstallerState: ObservableObject {
     // AI Gateway opt-in (disabled by default — users opt in)
     @Published var aiGatewayEnabled = false
 
+    // Front-door HTTPS declaration (enabled by default — recommended).
+    // Drives the Secure flag and `__Host-` prefix on session cookies.
+    // Operators on HTTP-only trusted LANs uncheck explicitly. See
+    // linux/install.sh's `prompt_transport_mode` for the equivalent
+    // CLI prompt.
+    @Published var cookieSecure = true
+
     // Environment detection
     @Published var dockerFound = false
     @Published var dockerRunning = false

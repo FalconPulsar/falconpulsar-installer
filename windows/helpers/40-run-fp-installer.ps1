@@ -32,6 +32,9 @@ param(
     [string] $RegistryPass = '',
     [switch] $RegistrySkip,
     [string] $AIGateway = 'false',
+    # 'true' = HTTPS at front door (default, recommended).
+    # 'false' = HTTP-only deployment; cookies emit without Secure flag.
+    [string] $CookieSecure = 'true',
     [string] $InstallAction = ''
 )
 
@@ -219,7 +222,7 @@ if [ -f '$WslHome/compose.yml' ]; then
     echo '[ok] Stack upgraded and restarted'
 else
     echo '[info] No existing compose.yml found -- running full installer'
-    FP_INVOKING_USER='$WslUser' FP_INSTALL_ACTION=upgrade FP_AI_GATEWAY_ENABLED=$AIGateway \
+    FP_INVOKING_USER='$WslUser' FP_INSTALL_ACTION=upgrade FP_AI_GATEWAY_ENABLED=$AIGateway FP_COOKIE_SECURE=$CookieSecure \
         bash /opt/falconpulsar-installer/linux/install.sh --user '$WslUser' --mode docker --yes
 fi
 "@
@@ -513,6 +516,7 @@ printf '%s\n' \
   "export FP_REGISTRY_SKIP='$regSkipVal'" \
   "export FP_INSTALL_ACTION='$InstallAction'" \
   "export FP_AI_GATEWAY_ENABLED='$AIGateway'" \
+  "export FP_COOKIE_SECURE='$CookieSecure'" \
   "export FP_INVOKING_USER='$WslUser'" \
   > "`$ENVFILE"
 . "`$ENVFILE"

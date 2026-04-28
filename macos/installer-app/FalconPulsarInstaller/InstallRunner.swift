@@ -248,6 +248,10 @@ enum InstallRunner {
             "export FP_REGISTRY_PASS='\(sh(state.registryPass))'",
             state.registrySkip ? "export FP_REGISTRY_SKIP=1" : "",
             "export FP_AI_GATEWAY_ENABLED=\(state.aiGatewayEnabled ? "true" : "false")",
+            // Front-door HTTPS declaration. Drives the Secure flag and
+            // __Host- prefix on session cookies. The bash installer's
+            // `prompt_transport_mode` reads this and skips the prompt.
+            "export FP_COOKIE_SECURE=\(state.cookieSecure ? "true" : "false")",
             // Use the bundled fp binary instead of downloading from GitHub
             // releases. Path is the macOS-arm64 binary embedded by build-dmg.sh.
             FileManager.default.fileExists(atPath: bundledFp)

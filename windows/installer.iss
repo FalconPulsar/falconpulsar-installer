@@ -171,6 +171,15 @@ Name: "aigateway"; \
     GroupDescription: "AI Capabilities:"; \
     Flags: unchecked
 
+; Front-door HTTPS declaration. Drives the Secure flag and __Host- prefix
+; on session cookies. Checked by default (recommended for any deployment
+; reachable via HTTPS, including localhost on a TLS-fronted setup).
+; Uncheck ONLY for HTTP-only deployments on trusted LANs accessed by IP —
+; without Secure cookies, sessions are vulnerable to LAN sniffing.
+Name: "cookiesecure"; \
+    Description: "Use HTTPS at the front door (recommended). Uncheck only for HTTP-only LAN deployments — without HTTPS, session cookies are vulnerable to network sniffing."; \
+    GroupDescription: "Security:"
+
 [Run]
 ; Open the Web UI in the default browser at the end (postinstall checkbox).
 ; The actual install steps are run from the [Code] section below in
@@ -688,6 +697,7 @@ var
   RegistryPassArg: String;
   RegistrySkipArg: String;
   AIGatewayArg: String;
+  CookieSecureArg: String;
   Distro: String;
   DistroArg: String;
   DockerExePath: String;
@@ -715,6 +725,13 @@ begin
       AIGatewayArg := '-AIGateway "true"'
     else
       AIGatewayArg := '-AIGateway "false"';
+
+    // Front-door HTTPS checkbox. Drives the Secure flag + __Host-
+    // prefix on session cookies. Default checked — see [Tasks] above.
+    if WizardIsTaskSelected('cookiesecure') then
+      CookieSecureArg := '-CookieSecure "true"'
+    else
+      CookieSecureArg := '-CookieSecure "false"';
 
     if IsUpgrade and (InstallAction = 'upgrade') then
     begin
@@ -844,7 +861,8 @@ begin
         AdminUserArg + ' ' + AdminPassArg + ' ' +
         RegistryArg + ' ' + RegistryUserArg + ' ' +
         RegistryPassArg + ' ' + RegistrySkipArg + ' ' +
-        AIGatewayArg + ' -InstallAction "' + InstallAction + '"',
+        AIGatewayArg + ' ' + CookieSecureArg + ' ' +
+        '-InstallAction "' + InstallAction + '"',
         'Installing FalconPulsar inside WSL (this may take 5-10 minutes)...') then begin UpdateStep(4, 'fail'); Abort; end;
     UpdateStep(4, 'done');
     LogInfo('Step 5/7: PASSED');

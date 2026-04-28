@@ -499,6 +499,18 @@ struct CredentialsPage: View {
             }
             .toggleStyle(.checkbox)
 
+            Toggle(isOn: $state.cookieSecure) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Use HTTPS at the front door (recommended)")
+                        .font(.callout.bold())
+                    Text("Session cookies will be marked Secure and use the __Host- prefix — required for any deployment reachable via HTTPS. Uncheck only for HTTP-only LAN deployments accessed by IP. Without HTTPS, session cookies are vulnerable to network sniffing.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .toggleStyle(.checkbox)
+
             Spacer()
         }
         .padding(30)
