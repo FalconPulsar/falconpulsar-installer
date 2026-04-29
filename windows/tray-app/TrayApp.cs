@@ -191,6 +191,17 @@ namespace FalconPulsar.Tray
             menu.Items.Add(_startItem);
             menu.Items.Add(_stopItem);
             menu.Items.Add(_restartItem);
+
+            // "Check for updates..." \u2014 between the stack-control items and
+            // the Tools/logs section, matching the macOS menu order. Shells
+            // out to `fp update --check --json` (the binary lives in the
+            // WSL distro's $HOME/falconpulsar/bin); apply path opens a
+            // Windows Terminal window running `fp update --apply` so the
+            // operator can watch progress.
+            var checkUpdates = new ToolStripMenuItem("Check for Updates...", null,
+                async (s, e) => await CheckForUpdatesAsync());
+            checkUpdates.Image = CreateGlyphIcon("\uE896", Color.FromArgb(70, 70, 70));  // Download
+            menu.Items.Add(checkUpdates);
             menu.Items.Add(new ToolStripSeparator());
 
             // Tools
@@ -485,6 +496,222 @@ namespace FalconPulsar.Tray
             {
                 return false;
             }
+        }
+
+        /// <summary>
+        /// "Check for Updates..." menu handler. Shells out to
+        /// `fp update --check --json` inside WSL (the same fp binary the
+        /// installer placed at ~/falconpulsar/bin/fp), parses the JSON,
+        /// and either tells the operator everything is up to date,
+        /// prompts them to apply detected updates, or surfaces a
+        /// registry-connectivity error.
+        ///
+        /// Apply path opens a Windows Terminal window running
+        /// `fp update --apply` inside WSL so the operator can see
+        /// streaming progress (image pulls, healthcheck waits). A silent
+        /// background apply is wrong UX for an update flow — operators
+        /// want to see what's happening, especially in industrial
+        /// settings where unattended restarts can disrupt processes.
+        /// </summary>
+        private async Task CheckForUpdatesAsync()
+        {
+            string json;
+            try
+            {
+                var psi = new ProcessStartInfo
+                {
+                    FileName = "wsl.exe",
+                    // Path inside WSL: $HOME/falconpulsar/bin/fp. We resolve
+                    // $HOME inside the WSL distro because the user that owns
+                    // the install may differ from the Windows username.
+                    Arguments = $"-d {_distro} -- bash -lc \"$HOME/falconpulsar/bin/fp update --check --json 2>/dev/null\"",
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    CreateNoWindow = true
+                };
+                using var proc = Process.Start(psi)!;
+                json = await proc.StandardOutput.ReadToEndAsync();
+                await proc.WaitForExitAsync();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(
+                    $"Failed to run fp update --check: {ex.Message}",
+                    "Check for Updates",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                MessageBox.Show(
+                    "fp CLI not found inside WSL, or fp update returned no output.\n\n" +
+                    "Re-run the installer to install the CLI, then try again.",
+                    "Check for Updates",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            // Parse the JSON. We avoid pulling in System.Text.Json to keep
+            // the tray app dependency-free; the JSON shape is small enough
+            // that a minimal hand-rolled extractor is acceptable. If this
+            // grows we can switch.
+            UpdateCheckSummary summary;
+            try
+            {
+                summary = ParseUpdateCheckJson(json);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(
+                    $"Couldn't parse update status: {ex.Message}\n\n" +
+                    "Run `fp update --check` from a terminal for raw output.",
+                    "Check for Updates",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            // Build the per-component summary line for the dialog body.
+            var lines = new List<string>
+            {
+                $"Registry: {summary.Registry}   Tag: {summary.Tag}",
+                ""
+            };
+            foreach (var c in summary.Components)
+            {
+                if (!string.IsNullOrEmpty(c.ErrorKind))
+                    lines.Add($"  ⚠  {c.Name}: {c.ErrorKind}");
+                else if (c.UpdateAvailable)
+                    lines.Add($"  ↑  {c.Name}: update available");
+                else if (string.IsNullOrEmpty(c.LocalDigest))
+                    lines.Add($"  –  {c.Name}: container not running");
+                else
+                    lines.Add($"  ✓  {c.Name}: up to date");
+            }
+            string body = string.Join("\n", lines);
+
+            if (summary.AnyError)
+            {
+                var res = MessageBox.Show(
+                    body + "\n\nRegistry probe failed (often: expired credentials).\n" +
+                           "The installer can re-authenticate. Run it now?",
+                    "Registry probe failed",
+                    MessageBoxButtons.OKCancel, MessageBoxIcon.Warning);
+                if (res == DialogResult.OK)
+                    OpenApplyTerminal();
+                return;
+            }
+
+            if (!summary.Any)
+            {
+                MessageBox.Show(body, "All components are up to date",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            // Updates available. Prompt to apply. (v1: same prompt regardless
+            // of FP_UPDATE_MODE because auto-mode in v1 only fires when the
+            // tray app is open, and showing a confirmation with a 30s
+            // countdown isn't worth the extra UI complexity for this commit.
+            // The user explicitly opens this menu — that's a manual click.)
+            var applyRes = MessageBox.Show(
+                body + "\n\nApply updates now?",
+                "Update available",
+                MessageBoxButtons.YesNo, MessageBoxIcon.Information);
+            if (applyRes == DialogResult.Yes)
+                OpenApplyTerminal();
+        }
+
+        /// <summary>
+        /// Open Windows Terminal (or fall back to wt.exe via cmd) running
+        /// `fp update --apply` inside WSL. The terminal window stays open so
+        /// the operator can read output and any healthcheck failures.
+        /// </summary>
+        private void OpenApplyTerminal()
+        {
+            // wt.exe is the modern Windows Terminal launcher; if it's not
+            // installed, fall back to cmd.exe. Either way the WSL
+            // command launches `fp update --apply` and waits.
+            var wtArgs = $"-d {_distro} -- bash -lc \"$HOME/falconpulsar/bin/fp update --apply; echo; echo 'Done. Press Enter to close.'; read\"";
+            try
+            {
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = "wt.exe",
+                    Arguments = $"wsl.exe {wtArgs}",
+                    UseShellExecute = true
+                });
+            }
+            catch
+            {
+                // wt.exe not available — fall back to direct wsl.exe.
+                // It'll open the default console, which is fine.
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = "wsl.exe",
+                    Arguments = wtArgs,
+                    UseShellExecute = true
+                });
+            }
+        }
+
+        /// <summary>
+        /// Minimal hand-rolled JSON extractor for the fp update --check
+        /// output. Avoids System.Text.Json dependency to keep tray app
+        /// build deps minimal. The schema is small and fixed; if it grows
+        /// we should switch to a real JSON library.
+        /// </summary>
+        private static UpdateCheckSummary ParseUpdateCheckJson(string json)
+        {
+            // System.Text.Json is part of the .NET BCL — no extra
+            // package needed, no third-party deps to manage.
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            var summary = new UpdateCheckSummary
+            {
+                Registry = root.TryGetProperty("registry", out var r) ? r.GetString() ?? "" : "",
+                Tag = root.TryGetProperty("tag", out var t) ? t.GetString() ?? "" : "",
+                Any = root.TryGetProperty("any_update_available", out var a) && a.GetBoolean(),
+                AnyError = root.TryGetProperty("any_probe_failed", out var e) && e.GetBoolean(),
+                Components = new List<ComponentSummary>()
+            };
+            if (root.TryGetProperty("components", out var arr) && arr.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var c in arr.EnumerateArray())
+                {
+                    summary.Components.Add(new ComponentSummary
+                    {
+                        Name = c.TryGetProperty("name", out var n) ? n.GetString() ?? "" : "",
+                        ImageRef = c.TryGetProperty("image_ref", out var ir) ? ir.GetString() ?? "" : "",
+                        LocalDigest = c.TryGetProperty("local_digest", out var ld) ? ld.GetString() ?? "" : "",
+                        RemoteDigest = c.TryGetProperty("remote_digest", out var rd) ? rd.GetString() ?? "" : "",
+                        UpdateAvailable = c.TryGetProperty("update_available", out var ua) && ua.GetBoolean(),
+                        ErrorKind = c.TryGetProperty("error_kind", out var ek) ? ek.GetString() ?? "" : "",
+                        Error = c.TryGetProperty("error", out var er) ? er.GetString() ?? "" : ""
+                    });
+                }
+            }
+            return summary;
+        }
+
+        private class UpdateCheckSummary
+        {
+            public string Registry { get; set; } = "";
+            public string Tag { get; set; } = "";
+            public bool Any { get; set; }
+            public bool AnyError { get; set; }
+            public List<ComponentSummary> Components { get; set; } = new();
+        }
+
+        private class ComponentSummary
+        {
+            public string Name { get; set; } = "";
+            public string ImageRef { get; set; } = "";
+            public string LocalDigest { get; set; } = "";
+            public string RemoteDigest { get; set; } = "";
+            public bool UpdateAvailable { get; set; }
+            public string ErrorKind { get; set; } = "";
+            public string Error { get; set; } = "";
         }
 
         private async Task RunComposeCommand(string command)

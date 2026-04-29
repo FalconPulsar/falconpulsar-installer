@@ -46,6 +46,7 @@ func Root(runTUI func() error) *cobra.Command {
 		cmdOpen(),
 		cmdConfig(),
 		cmdAI(),
+		cmdUpdate(),
 		cmdAbout(),
 		cmdDocs(),
 		cmdRequestFeature(),
@@ -345,6 +346,128 @@ func cmdAI() *cobra.Command {
 		},
 	)
 	return c
+}
+
+// cmdUpdate exposes the "Check for updates" / "Apply updates" workflow
+// to scripts and tray apps. The tray apps shell out to `fp update --check
+// --json` for a status snapshot and `fp update --apply` to perform the
+// actual upgrade. CLI users can do the same without a tray.
+//
+// `update` (no flags) defaults to `--check` (read-only, no side effects).
+// Adding `--apply` performs the upgrade in place via install.sh's
+// fast-path (or an inline pull+recreate if the bundled installer isn't
+// found beside `fp`).
+//
+// The `update-mode` subcommand reads/writes FP_UPDATE_MODE in .env so
+// the operator can flip between "manual" (default — never auto-apply,
+// just notify) and "auto" (tray applies on detection with a 30s
+// cancellable countdown). Tray apps reflect this setting in their
+// settings UI; the CLI command exists so headless / scripted setups
+// can configure it too.
+func cmdUpdate() *cobra.Command {
+	var asJSON bool
+	var apply bool
+
+	c := &cobra.Command{
+		Use:   "update",
+		Short: "Check for component updates (or apply with --apply)",
+		Long: "Check whether any FalconPulsar component image has a newer\n" +
+			"version on the configured registry (FP_REGISTRY). When run with\n" +
+			"--apply, performs the upgrade in place via install.sh's fast-path.\n" +
+			"\n" +
+			"Source of truth for 'is there an update?' is the same Docker\n" +
+			"registry the operator already pulls from. No GitHub or external\n" +
+			"endpoints are queried — air-gapped and private-registry deploys\n" +
+			"work the same as public Docker Hub.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if apply {
+				return actions.ApplyUpdates(cmd.Context(), os.Stdout, os.Stderr)
+			}
+			res := actions.CheckUpdates(cmd.Context())
+			if asJSON {
+				enc := json.NewEncoder(os.Stdout)
+				enc.SetIndent("", "  ")
+				return enc.Encode(res)
+			}
+			fmt.Printf("Registry: %s   Tag: %s\n\n", res.Registry, res.Tag)
+			for _, comp := range res.Components {
+				switch {
+				case comp.ErrorKind != "":
+					fmt.Printf("  %s  %-18s registry error (%s)\n",
+						colorText("?", colorYellow), comp.Name, comp.ErrorKind)
+					if comp.Error != "" {
+						fmt.Printf("       %s\n", truncate(comp.Error, 120))
+					}
+				case comp.UpdateAvailable:
+					fmt.Printf("  %s  %-18s update available\n",
+						colorText("↑", colorGreen), comp.Name)
+					fmt.Printf("       local:  %s\n", shortDigest(comp.LocalDigest))
+					fmt.Printf("       remote: %s\n", shortDigest(comp.RemoteDigest))
+				case comp.LocalDigest == "":
+					fmt.Printf("  %s  %-18s container not running\n",
+						colorText("–", colorYellow), comp.Name)
+				default:
+					fmt.Printf("  %s  %-18s up to date\n",
+						colorText("✓", colorGreen), comp.Name)
+				}
+			}
+			fmt.Println()
+			switch {
+			case res.AnyError:
+				fmt.Println("One or more registry probes failed. Check connectivity / credentials.")
+				os.Exit(2)
+			case res.Any:
+				fmt.Println("Run `fp update --apply` to install the update.")
+			default:
+				fmt.Println("All components are up to date.")
+			}
+			return nil
+		},
+	}
+	c.Flags().BoolVar(&asJSON, "json", false, "Emit machine-readable JSON (used by tray apps)")
+	c.Flags().BoolVar(&apply, "apply", false, "Pull updated images and recreate containers")
+
+	c.AddCommand(cmdUpdateMode())
+	return c
+}
+
+// cmdUpdateMode: `fp update mode [manual|auto]` — read or set FP_UPDATE_MODE.
+func cmdUpdateMode() *cobra.Command {
+	return &cobra.Command{
+		Use:   "mode [manual|auto]",
+		Short: "Read or set the update mode (manual is default; auto applies on detection while the tray is open)",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 0 {
+				fmt.Println(actions.UpdateMode())
+				return nil
+			}
+			if err := actions.SetUpdateMode(args[0]); err != nil {
+				return err
+			}
+			fmt.Printf("update mode set to: %s\n", actions.UpdateMode())
+			return nil
+		},
+	}
+}
+
+// truncate returns s capped at n characters, with an ellipsis when shortened.
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n-1] + "…"
+}
+
+// shortDigest renders "sha256:abcd1234…" for human-readable output.
+func shortDigest(d string) string {
+	if d == "" {
+		return "(none)"
+	}
+	if len(d) > 19 {
+		return d[:19] + "…"
+	}
+	return d
 }
 
 func cmdAbout() *cobra.Command {

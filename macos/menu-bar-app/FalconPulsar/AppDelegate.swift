@@ -99,6 +99,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         restart.target = self
         restart.attributedTitle = inlineIconTitle("Restart Stack", symbol: "arrow.clockwise")
         menu.addItem(restart)
+
+        // "Check for updates…" — added between stack-control items and the
+        // logs/folder section so it lives next to the rest of the
+        // stack-management actions. Shells out to `fp update --check
+        // --json`; on detected updates pops a confirm dialog and runs
+        // `fp update --apply`. The whole flow inherits install.sh's
+        // upgrade fast-path (registry probe + retry + healthcheck).
+        let checkUpdates = NSMenuItem(title: "Check for Updates…", action: #selector(checkForUpdates), keyEquivalent: "")
+        checkUpdates.target = self
+        checkUpdates.attributedTitle = inlineIconTitle("Check for Updates…", symbol: "arrow.down.circle")
+        menu.addItem(checkUpdates)
         menu.addItem(.separator())
 
         let logs = NSMenuItem(title: "View Logs", action: #selector(viewLogs), keyEquivalent: "l")
@@ -484,6 +495,152 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             sleep(3)
             self?.pollHealth()
         }
+    }
+
+    /// "Check for updates…" — shells out to `fp update --check --json`,
+    /// parses the result, and either tells the operator everything is
+    /// up to date, prompts them to apply detected updates, or surfaces
+    /// a registry-connectivity error.
+    ///
+    /// Apply path opens a Terminal window running `fp update --apply` so
+    /// the operator can watch streaming progress (image pulls, healthcheck
+    /// waits). A silent background apply is the wrong UX for an update
+    /// flow — operators want to see what's happening, especially in
+    /// industrial settings where unattended restarts can disrupt
+    /// processes.
+    @objc func checkForUpdates() {
+        let fpBin = "\(homeDir)/bin/fp"
+        guard FileManager.default.fileExists(atPath: fpBin) else {
+            showSimpleAlert(
+                title: "fp CLI not found",
+                message: "Expected \(fpBin). Re-run the installer to install the CLI, then try again."
+            )
+            return
+        }
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
+            let json = self.shell("\"\(fpBin)\" update --check --json 2>/dev/null")
+            DispatchQueue.main.async {
+                self.handleUpdateCheckJSON(json, fpBin: fpBin)
+            }
+        }
+    }
+
+    private func handleUpdateCheckJSON(_ json: String, fpBin: String) {
+        guard let data = json.data(using: .utf8),
+              let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            showSimpleAlert(
+                title: "Couldn't read update status",
+                message: "fp update --check did not return parseable JSON. Run it from a terminal for details."
+            )
+            return
+        }
+
+        let registry = parsed["registry"] as? String ?? "(unknown)"
+        let tag = parsed["tag"] as? String ?? "(unknown)"
+        let anyUpdate = parsed["any_update_available"] as? Bool ?? false
+        let anyError = parsed["any_probe_failed"] as? Bool ?? false
+        let components = parsed["components"] as? [[String: Any]] ?? []
+
+        // Build a per-component summary line for the alert body.
+        var lines: [String] = ["Registry: \(registry)   Tag: \(tag)", ""]
+        for comp in components {
+            let name = (comp["name"] as? String) ?? "?"
+            let errorKind = comp["error_kind"] as? String ?? ""
+            let updateAvail = comp["update_available"] as? Bool ?? false
+            let local = comp["local_digest"] as? String ?? ""
+            switch true {
+            case !errorKind.isEmpty:
+                lines.append("  ⚠  \(name): \(errorKind)")
+            case updateAvail:
+                lines.append("  ↑  \(name): update available")
+            case local.isEmpty:
+                lines.append("  –  \(name): container not running")
+            default:
+                lines.append("  ✓  \(name): up to date")
+            }
+        }
+
+        if anyError {
+            // Surface the categorized error to the operator. Most common
+            // case in private-registry deployments: expired credentials.
+            // The fp_registry_ensure_access flow inside install.sh's
+            // upgrade fast-path will re-prompt for them when --apply runs.
+            let alert = NSAlert()
+            alert.messageText = "Registry probe failed"
+            alert.informativeText = lines.joined(separator: "\n")
+                + "\n\nTry running the installer again — it can re-authenticate with the registry."
+            alert.addButton(withTitle: "Open Installer")
+            alert.addButton(withTitle: "Cancel")
+            if alert.runModal() == .alertFirstButtonReturn {
+                runApplyInTerminal(fpBin: fpBin)
+            }
+            return
+        }
+
+        if !anyUpdate {
+            let alert = NSAlert()
+            alert.messageText = "All components are up to date"
+            alert.informativeText = lines.joined(separator: "\n")
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
+            return
+        }
+
+        // Updates available. The "auto" mode launches apply directly;
+        // "manual" mode requires explicit confirmation. v1 limitation:
+        // auto only fires while the tray app is open (no background
+        // daemon). The 30s countdown lives in the same Terminal window
+        // the apply opens.
+        let mode = self.readUpdateMode()
+        let alert = NSAlert()
+        alert.messageText = "Update available"
+        alert.informativeText = lines.joined(separator: "\n")
+            + "\n\nUpdate mode: \(mode)."
+        alert.addButton(withTitle: "Apply Now")
+        alert.addButton(withTitle: "Later")
+        if alert.runModal() == .alertFirstButtonReturn {
+            runApplyInTerminal(fpBin: fpBin)
+        }
+    }
+
+    /// Reads FP_UPDATE_MODE out of .env via `fp update mode` (no flags).
+    /// Falls back to "manual" on any failure — the safe default.
+    private func readUpdateMode() -> String {
+        let fpBin = "\(homeDir)/bin/fp"
+        let raw = shell("\"\(fpBin)\" update mode 2>/dev/null")
+        let v = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return (v == "auto") ? "auto" : "manual"
+    }
+
+    /// Opens Terminal.app running `fp update --apply` so the operator
+    /// can see streaming progress (image pulls, healthcheck status).
+    /// Same .command-script trick used by viewLogs().
+    private func runApplyInTerminal(fpBin: String) {
+        let scriptPath = NSTemporaryDirectory() + "falconpulsar-update.command"
+        let body = """
+        #!/bin/bash
+        cd "\(homeDir)" || exit 1
+        echo "Running: fp update --apply"
+        echo
+        \"\(fpBin)\" update --apply
+        echo
+        echo "Done. You may close this window."
+        """
+        try? body.write(toFile: scriptPath, atomically: true, encoding: .utf8)
+        try? FileManager.default.setAttributes([.posixPermissions: 0o755],
+                                               ofItemAtPath: scriptPath)
+        NSWorkspace.shared.open(URL(fileURLWithPath: scriptPath))
+    }
+
+    /// Lightweight NSAlert wrapper used by checkForUpdates error paths.
+    private func showSimpleAlert(title: String, message: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
 
     @objc func viewLogs() {

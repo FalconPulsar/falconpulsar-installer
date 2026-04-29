@@ -346,6 +346,10 @@ FP_AI_GATEWAY_ENABLED=${FP_AI_GATEWAY_ENABLED:-false}
 # Front-door HTTPS declaration — see the equivalent block in
 # linux/install.sh for the full rationale.
 FP_COOKIE_SECURE=${FP_COOKIE_SECURE:-true}
+# Update mode for the tray apps — see the equivalent block in
+# linux/install.sh for the full rationale. Default "manual"; the
+# tray app's settings UI or `fp update mode` flips it.
+FP_UPDATE_MODE=${FP_UPDATE_MODE:-manual}
 EOF
 chmod 0600 "${FP_HOME}/.env"
 umask 022

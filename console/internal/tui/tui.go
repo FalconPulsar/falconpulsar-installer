@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/falconpulsar/falconpulsar-installer/console/internal/actions"
@@ -44,6 +45,7 @@ func buildSections() []menuSection {
 				a.status = actions.Poll(context.Background())
 				a.refreshServices()
 			}},
+			{label: "Check for updates…", action: func(a *App) { a.checkForUpdates() }},
 		}},
 		{"Logs", []menuItem{
 			{label: "View all logs", accel: "F5", action: func(a *App) { a.showLogsPickerExec("") }},
@@ -871,6 +873,142 @@ func (a *App) showHelp() {
 		return ev
 	})
 	a.pushModal("Keyboard Shortcuts", tv, 64, 24)
+}
+
+// checkForUpdates probes the configured registry (FP_REGISTRY) for newer
+// component image digests. The probe is the same one used by the
+// `fp update --check` CLI; this function is its TUI affordance.
+//
+// Modal lifecycle:
+//   1. Show "Checking…" placeholder while the goroutine runs.
+//   2. Replace with results: ✓/↑/?/– per component, plus a footer
+//      action depending on what came back.
+//   3. If updates available + the operator's mode is "auto", apply
+//      after a 30-second cancellable countdown (see applyUpdates).
+//      In "manual" mode, the operator clicks "Apply now" or dismisses.
+func (a *App) checkForUpdates() {
+	a.showMessage("Check for updates", "Checking registry…", false)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		res := actions.CheckUpdates(ctx)
+		a.tv.QueueUpdateDraw(func() { a.renderUpdateCheckModal(res) })
+	}()
+}
+
+// renderUpdateCheckModal builds the result modal from a CheckUpdates
+// snapshot. Three flavors:
+//   - any probe error: show details + a "Retry" button
+//   - any update available: show per-component diff + "Apply now"
+//   - all up to date: show one line + "Close"
+func (a *App) renderUpdateCheckModal(res actions.UpdateCheckResult) {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Registry: [::b]%s[-:-:-]   Tag: [::b]%s[-:-:-]\n\n", res.Registry, res.Tag)
+	for _, comp := range res.Components {
+		switch {
+		case comp.ErrorKind != "":
+			fmt.Fprintf(&b, "  [#F59E0B]?[-]  %-18s registry error ([#F59E0B]%s[-])\n",
+				comp.Name, comp.ErrorKind)
+			if comp.Error != "" {
+				msg := comp.Error
+				if len(msg) > 110 {
+					msg = msg[:109] + "…"
+				}
+				fmt.Fprintf(&b, "       [#6B7280]%s[-]\n", msg)
+			}
+		case comp.UpdateAvailable:
+			fmt.Fprintf(&b, "  [#10B981]↑[-]  %-18s update available\n", comp.Name)
+			fmt.Fprintf(&b, "       local:  %s\n", shortDigestForTUI(comp.LocalDigest))
+			fmt.Fprintf(&b, "       remote: %s\n", shortDigestForTUI(comp.RemoteDigest))
+		case comp.LocalDigest == "":
+			fmt.Fprintf(&b, "  [#F59E0B]–[-]  %-18s container not running\n", comp.Name)
+		default:
+			fmt.Fprintf(&b, "  [#10B981]✓[-]  %-18s up to date\n", comp.Name)
+		}
+	}
+	fmt.Fprintln(&b)
+	switch {
+	case res.AnyError:
+		fmt.Fprintln(&b, "[#F59E0B]One or more registry probes failed.[-]")
+		fmt.Fprintln(&b, "Common causes: expired credentials, registry unreachable, or wrong FP_REGISTRY.")
+		fmt.Fprintln(&b)
+		fmt.Fprintln(&b, "[#6B7280]Press [::b]r[-:-:-] to retry, [::b]Esc[-:-:-] to close.[-]")
+	case res.Any:
+		mode := actions.UpdateMode()
+		if mode == "auto" {
+			fmt.Fprintln(&b, "[#10B981]Auto-mode enabled — applying in 30s.[-]")
+			fmt.Fprintln(&b, "[#6B7280]Press [::b]a[-:-:-] to apply now, [::b]Esc[-:-:-] to cancel.[-]")
+		} else {
+			fmt.Fprintln(&b, "Update mode: [::b]manual[-:-:-] (no automatic apply).")
+			fmt.Fprintln(&b, "[#6B7280]Press [::b]a[-:-:-] to apply now, [::b]Esc[-:-:-] to close.[-]")
+		}
+	default:
+		fmt.Fprintln(&b, "[#10B981]All components are up to date.[-]")
+		fmt.Fprintln(&b, "[#6B7280]Press [::b]Esc[-:-:-] to close.[-]")
+	}
+
+	tv := tview.NewTextView().SetDynamicColors(true).SetWrap(false)
+	tv.SetBackgroundColor(theme.Panel)
+	tv.SetText(b.String())
+	tv.SetInputCapture(func(ev *tcell.EventKey) *tcell.EventKey {
+		switch {
+		case ev.Key() == tcell.KeyEscape:
+			a.pages.RemovePage("modal")
+			return nil
+		case ev.Rune() == 'a' || ev.Rune() == 'A':
+			if res.Any && !res.AnyError {
+				a.applyUpdates()
+				return nil
+			}
+		case ev.Rune() == 'r' || ev.Rune() == 'R':
+			if res.AnyError {
+				a.checkForUpdates()
+				return nil
+			}
+		}
+		return ev
+	})
+	a.pushModal("Check for updates", tv, 76, 18)
+
+	// Auto-apply countdown — only fires if mode=auto, updates available,
+	// no probe errors, and the modal is still on top after 30s. Operator
+	// can press Esc to cancel during the countdown; that removes the
+	// modal which is what the goroutine checks.
+	if res.Any && !res.AnyError && actions.UpdateMode() == "auto" {
+		go func() {
+			time.Sleep(30 * time.Second)
+			a.tv.QueueUpdateDraw(func() {
+				if a.pages.HasPage("modal") {
+					a.applyUpdates()
+				}
+			})
+		}()
+	}
+}
+
+// applyUpdates streams `fp update --apply` output into a viewer. The
+// underlying call delegates to install.sh's upgrade fast-path so we
+// inherit registry-auth re-probe + backoff retry + healthcheck wait.
+func (a *App) applyUpdates() {
+	a.tv.Suspend(func() {
+		_ = actions.ApplyUpdates(context.Background(), os.Stdout, os.Stderr)
+		fmt.Println("\nPress Enter to return to the console…")
+		_, _ = fmt.Scanln()
+	})
+	// Refresh status when we come back so the new container states show up.
+	a.status = actions.Poll(context.Background())
+	a.refreshServices()
+}
+
+// shortDigestForTUI is a TUI-formatted version of the CLI's shortDigest.
+func shortDigestForTUI(d string) string {
+	if d == "" {
+		return "[#6B7280](none)[-]"
+	}
+	if len(d) > 19 {
+		return "[#6B7280]" + d[:19] + "…[-]"
+	}
+	return "[#6B7280]" + d + "[-]"
 }
 
 func (a *App) showAbout() {

@@ -479,6 +479,17 @@ FP_AI_GATEWAY_ENABLED=${FP_AI_GATEWAY_ENABLED:-false}
 # changing this value alone won't update an existing deployment;
 # edit falconpulsar.toml inside the data volume to take effect.
 FP_COOKIE_SECURE=${FP_COOKIE_SECURE:-true}
+# Update mode for the tray apps' "Check for updates" feature.
+#   manual — default. Tray notifies but never applies automatically;
+#            operator clicks "Apply now" when ready. Required for
+#            industrial deployments where unattended restarts are
+#            unsafe (process running mid-cycle, etc.).
+#   auto   — when the tray app is open and detects an update, it
+#            applies after a 30-second cancellable countdown. v1
+#            limitation: no background daemon, so updates only fire
+#            while a tray app is actually running.
+# Operators flip this via the tray's settings UI or `fp update mode`.
+FP_UPDATE_MODE=${FP_UPDATE_MODE:-manual}
 EOF
 # .env holds FP_API_KEY (gateway service token). We want it readable by the
 # invoking human user too -- on native Linux the user runs `fp` from their
