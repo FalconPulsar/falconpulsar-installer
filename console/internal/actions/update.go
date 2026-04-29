@@ -151,53 +151,78 @@ func CheckUpdates(ctx context.Context) UpdateCheckResult {
 	return out
 }
 
-// localManifestDigest returns the manifest digest of the image the
-// running container is using. We need the *manifest* digest
-// (comparable to `docker manifest inspect` output), not the config
-// digest. RepoDigests lives on the image object, not the container —
-// so this is a two-step lookup:
+// localManifestDigest returns the manifest digest of the locally-cached
+// image that the operator's stack would use. We need the *manifest*
+// (a.k.a. index) digest — comparable to what `docker buildx imagetools
+// inspect` returns for the remote ref. RepoDigests lives on the image
+// object, not the container.
 //
-//  1. `docker inspect <container> --format '{{.Image}}'` → image SHA
-//     (the config digest, of the form `sha256:abc...`).
-//  2. `docker inspect --type=image <image-SHA> --format '...{{.RepoDigests}}'`
-//     → list of `<repo>@sha256:<manifest-digest>` strings, one per
-//     registry the image was pulled from.
+// Two lookup paths, tried in order:
+//
+//  1. **Container running** → use the container's actual image to
+//     account for "container is running an older image even though
+//     :latest has moved". We do `docker inspect <container>
+//     --format '{{.Image}}'` to get the image SHA, then
+//     `docker inspect --type=image <sha>` to get RepoDigests.
+//
+//  2. **Container stopped (or never started)** → fall back to looking
+//     up the image by the resolved ref directly:
+//     `docker inspect --type=image <expectedRef>`. This catches the
+//     "operator stopped the stack, image still cached locally,
+//     update is available" case. Without this, the check silently
+//     reports "container not running" and misses the update.
 //
 // We then filter by the expected repo prefix so we don't pick a digest
 // from an unrelated registry if the same image happens to have been
 // pulled from multiple sources.
 //
-// Returns an empty string + nil error when:
-//   - the container isn't running (no local image to compare)
-//   - the image was built locally and has no RepoDigest entries
-//
-// Both cases are valid "no local digest available" outcomes that the
-// caller renders as "container not running" / "image not pulled."
+// Returns an empty string + nil error only when neither path yielded a
+// digest matching the expected repo — that's the "image was built
+// locally, never pulled, so we can't compare against a remote" case.
+// The caller renders that as "image not pulled" rather than as a
+// confident "up to date."
 func localManifestDigest(ctx context.Context, containerName, expectedRef string) (string, error) {
-	if !containerRunning(ctx, containerName) {
-		return "", nil
+	expectedRepo := strings.SplitN(expectedRef, ":", 2)[0]
+
+	// Path 1: running container's actual image.
+	if containerRunning(ctx, containerName) {
+		cmd := exec.CommandContext(ctx, dockerPath(), "inspect", containerName,
+			"--format", "{{.Image}}")
+		out, err := cmd.Output()
+		if err == nil {
+			imageSHA := strings.TrimSpace(string(out))
+			if imageSHA != "" {
+				if d := repoDigestFor(ctx, imageSHA, expectedRepo); d != "" {
+					return d, nil
+				}
+			}
+		}
 	}
-	// Step 1: container → image SHA.
-	cmd := exec.CommandContext(ctx, dockerPath(), "inspect", containerName,
-		"--format", "{{.Image}}")
+
+	// Path 2: locally-cached image at the resolved ref. Used when the
+	// stack is stopped, or when path 1 didn't yield a usable digest
+	// (e.g. the running container's image is from a different repo
+	// than FP_REGISTRY would resolve to).
+	if d := repoDigestFor(ctx, expectedRef, expectedRepo); d != "" {
+		return d, nil
+	}
+
+	// No matching RepoDigest anywhere. Image hasn't been pulled, or
+	// was built locally with no registry tag. Treat as "no local
+	// digest known."
+	return "", nil
+}
+
+// repoDigestFor inspects a Docker image (by SHA or ref) and returns
+// the first RepoDigest whose repo matches `expectedRepo`. Returns "" on
+// any failure or no match. Used by localManifestDigest's two lookup paths.
+func repoDigestFor(ctx context.Context, imageRefOrSHA, expectedRepo string) string {
+	cmd := exec.CommandContext(ctx, dockerPath(), "inspect", "--type=image", imageRefOrSHA,
+		"--format", "{{range .RepoDigests}}{{.}}\n{{end}}")
 	out, err := cmd.Output()
 	if err != nil {
-		return "", err
+		return ""
 	}
-	imageSHA := strings.TrimSpace(string(out))
-	if imageSHA == "" {
-		return "", nil
-	}
-
-	// Step 2: image SHA → RepoDigests.
-	cmd = exec.CommandContext(ctx, dockerPath(), "inspect", "--type=image", imageSHA,
-		"--format", "{{range .RepoDigests}}{{.}}\n{{end}}")
-	out, err = cmd.Output()
-	if err != nil {
-		return "", err
-	}
-
-	expectedRepo := strings.SplitN(expectedRef, ":", 2)[0]
 	scanner := bufio.NewScanner(strings.NewReader(string(out)))
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -210,13 +235,10 @@ func localManifestDigest(ctx context.Context, containerName, expectedRef string)
 			continue
 		}
 		if parts[0] == expectedRepo {
-			return parts[1], nil // "sha256:..."
+			return parts[1] // "sha256:..."
 		}
 	}
-	// No matching RepoDigest for the expected repo. Image was either
-	// built locally or pulled from a different registry than the one
-	// in FP_REGISTRY — treat as "unknown local, can't compare."
-	return "", nil
+	return ""
 }
 
 // remoteManifestDigest returns the digest of the image-or-manifest-list

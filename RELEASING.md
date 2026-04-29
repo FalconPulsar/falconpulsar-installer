@@ -134,7 +134,24 @@ build automatically.
 
 ## 3. Cutting a release
 
-1. Update version references if needed (README badges, install URLs).
+1. Bump the version. The single source of truth is the `VERSION` file at
+   the repo root; every other site (Go const, Swift menu titles, C# tray
+   header, `installer.iss` `#define`, manifest `falconpulsar_version`
+   keys) is rewritten by `scripts/sync-version.sh`. To bump:
+
+       echo 0.2.0 > VERSION
+       scripts/sync-version.sh
+       git add VERSION console macos windows
+       git commit -m "Release v0.2.0"
+
+   `scripts/sync-version.sh --check` is also wired up for CI — it exits
+   non-zero if any site has drifted from `VERSION`, so a stale hardcoded
+   string can never sneak into a release.
+
+   Other version references that are *not* code (README badges, install
+   URLs in docs) still need a manual sweep — those tend to be marketing
+   copy that doesn't follow the same template.
+
 2. Verify the build works locally with an ad-hoc signature:
 
        ./macos/build-dmg.sh

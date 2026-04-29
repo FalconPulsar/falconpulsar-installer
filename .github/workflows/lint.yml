@@ -54,6 +54,7 @@ jobs:
             linux/bootstrap.sh \
             macos/install.sh \
             macos/uninstall.sh \
+            scripts/sync-version.sh \
             shared/lib/common.sh \
             shared/lib/checks.sh \
             shared/lib/prompts.sh \
@@ -80,3 +81,17 @@ jobs:
           FP_UID=1000 \
           FP_GID=1000 \
           docker compose config >/dev/null
+
+  version-sync:
+    name: version sites match VERSION
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Run sync-version.sh in check mode
+        # The VERSION file at the repo root is the single source of truth.
+        # scripts/sync-version.sh propagates it into every hardcoded site
+        # (Go const, Swift menu titles, C# tray header, installer.iss, etc).
+        # --check exits non-zero if any site has drifted, so a forgotten
+        # version bump can never reach main.
+        run: scripts/sync-version.sh --check
