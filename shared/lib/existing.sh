@@ -197,10 +197,32 @@ fp_apply_existing_action() {
 # Upgrade fast-path: when the user chose "upgrade" AND the existing compose.yml
 # is intact, skip the full install and just pull+recreate. Returns 0 if it
 # completed the upgrade (caller should exit success); 1 if not applicable.
+#
+# Re-verifies registry access before pulling so expired credentials surface
+# as a clean re-auth prompt rather than as a generic pull failure several
+# retries later. Without this step, an upgrade against a private registry
+# whose token rotated since the original install would fail with a noisy
+# "manifest unknown" / "unauthorized" error from `docker compose pull`,
+# and the operator would have no obvious path to fix it. By calling
+# `fp_registry_ensure_access` first the operator gets the same auth UX
+# they had at install time.
 fp_try_upgrade_fastpath() {
     local home="$1"
     if [ "${FP_INSTALL_ACTION:-}" != "upgrade" ]; then return 1; fi
     if [ ! -f "${home}/compose.yml" ]; then return 1; fi
+
+    # Re-probe the registry. The function is sourced from registry_auth.sh
+    # by the install.sh entry points (linux/install.sh + macos/install.sh).
+    # In the rare case it isn't available (caller invoked us directly with
+    # a stripped environment), fall through to the pull and let it surface
+    # whatever the underlying docker error is.
+    if declare -f fp_registry_ensure_access >/dev/null 2>&1; then
+        if ! fp_registry_ensure_access; then
+            log_error "registry access could not be established; aborting upgrade"
+            return 1
+        fi
+    fi
+
     log_step "Upgrade in place: pulling latest images"
     if declare -f fp_compose_pull_with_retry >/dev/null 2>&1; then
         fp_compose_pull_with_retry "$home" || return 1
