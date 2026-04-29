@@ -488,7 +488,7 @@ FP_COOKIE_SECURE=${FP_COOKIE_SECURE:-true}
 #            applies after a 30-second cancellable countdown. v1
 #            limitation: no background daemon, so updates only fire
 #            while a tray app is actually running.
-# Operators flip this via the tray's settings UI or `fp update mode`.
+# Operators flip this via the tray's settings UI or 'fp update mode'.
 FP_UPDATE_MODE=${FP_UPDATE_MODE:-manual}
 EOF
 # .env holds FP_API_KEY (gateway service token). We want it readable by the
