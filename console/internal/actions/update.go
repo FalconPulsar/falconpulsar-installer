@@ -30,12 +30,10 @@ package actions
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
-	"runtime"
 	"strings"
 )
 
@@ -154,26 +152,51 @@ func CheckUpdates(ctx context.Context) UpdateCheckResult {
 }
 
 // localManifestDigest returns the manifest digest of the image the
-// running container is using. We use the container's RepoDigests — that's
-// the *manifest* digest (comparable to `docker manifest inspect` output),
-// not the config digest from `.Image`.
+// running container is using. We need the *manifest* digest
+// (comparable to `docker manifest inspect` output), not the config
+// digest. RepoDigests lives on the image object, not the container —
+// so this is a two-step lookup:
 //
-// Returns an empty string + nil error when the container isn't running
-// (the caller treats this as "no local — only check remote").
+//  1. `docker inspect <container> --format '{{.Image}}'` → image SHA
+//     (the config digest, of the form `sha256:abc...`).
+//  2. `docker inspect --type=image <image-SHA> --format '...{{.RepoDigests}}'`
+//     → list of `<repo>@sha256:<manifest-digest>` strings, one per
+//     registry the image was pulled from.
+//
+// We then filter by the expected repo prefix so we don't pick a digest
+// from an unrelated registry if the same image happens to have been
+// pulled from multiple sources.
+//
+// Returns an empty string + nil error when:
+//   - the container isn't running (no local image to compare)
+//   - the image was built locally and has no RepoDigest entries
+//
+// Both cases are valid "no local digest available" outcomes that the
+// caller renders as "container not running" / "image not pulled."
 func localManifestDigest(ctx context.Context, containerName, expectedRef string) (string, error) {
 	if !containerRunning(ctx, containerName) {
 		return "", nil
 	}
+	// Step 1: container → image SHA.
 	cmd := exec.CommandContext(ctx, dockerPath(), "inspect", containerName,
-		"--format", "{{range .RepoDigests}}{{.}}\n{{end}}")
+		"--format", "{{.Image}}")
 	out, err := cmd.Output()
 	if err != nil {
 		return "", err
 	}
-	// RepoDigests is a list of "<repo>@sha256:<digest>" strings (one per
-	// registry the image was pulled from). Pick the one whose repo matches
-	// our expected registry/repo so we don't get confused if the image
-	// was pulled from multiple registries.
+	imageSHA := strings.TrimSpace(string(out))
+	if imageSHA == "" {
+		return "", nil
+	}
+
+	// Step 2: image SHA → RepoDigests.
+	cmd = exec.CommandContext(ctx, dockerPath(), "inspect", "--type=image", imageSHA,
+		"--format", "{{range .RepoDigests}}{{.}}\n{{end}}")
+	out, err = cmd.Output()
+	if err != nil {
+		return "", err
+	}
+
 	expectedRepo := strings.SplitN(expectedRef, ":", 2)[0]
 	scanner := bufio.NewScanner(strings.NewReader(string(out)))
 	for scanner.Scan() {
@@ -190,14 +213,28 @@ func localManifestDigest(ctx context.Context, containerName, expectedRef string)
 			return parts[1], nil // "sha256:..."
 		}
 	}
-	// No matching RepoDigest. Image may have been built locally (no
-	// registry pull) — treat as "unknown local, can't compare."
+	// No matching RepoDigest for the expected repo. Image was either
+	// built locally or pulled from a different registry than the one
+	// in FP_REGISTRY — treat as "unknown local, can't compare."
 	return "", nil
 }
 
-// remoteManifestDigest returns the manifest digest of the image at the
-// given ref. For multi-arch refs we resolve to the host's architecture
-// (linux/amd64 vs linux/arm64) and return that platform's digest.
+// remoteManifestDigest returns the digest of the image-or-manifest-list
+// at the given ref. We compare this against the local RepoDigest, which
+// is also the manifest-list digest (Docker stores the index digest, not
+// per-arch sub-manifest digests, in RepoDigests when an image is pulled
+// from a multi-arch reference).
+//
+// We use `docker buildx imagetools inspect --format '{{.Manifest.Digest}}'`
+// because:
+//   - It returns the manifest-list digest directly, which matches what
+//     local RepoDigests stores (apples-to-apples comparison).
+//   - `docker manifest inspect --verbose` instead returns per-arch
+//     sub-manifest entries — useful for picking a platform but doesn't
+//     match the local digest format, leading to false "update available"
+//     reports on multi-arch images.
+//   - It works with the operator's existing Docker auth state
+//     (~/.docker/config.json), no need to reimplement registry HTTP.
 //
 // On failure returns ("", kind, raw-error). `kind` is one of:
 //   - "auth"        — 401/403 from registry
@@ -205,64 +242,21 @@ func localManifestDigest(ctx context.Context, containerName, expectedRef string)
 //   - "not_found"   — 404, image or tag missing
 //   - "tls"         — certificate / TLS handshake failure
 //   - "other"       — anything else
-//
-// We invoke `docker manifest inspect` rather than re-implementing
-// registry HTTP because the operator already has Docker configured
-// with their registry credentials (`~/.docker/config.json` after
-// `docker login` during install). Reinventing the auth flow in Go
-// would mean another credential surface to keep in sync.
 func remoteManifestDigest(ctx context.Context, ref string) (digest, kind, raw string) {
-	cmd := exec.CommandContext(ctx, dockerPath(), "manifest", "inspect", "--verbose", ref)
+	cmd := exec.CommandContext(ctx, dockerPath(), "buildx", "imagetools", "inspect",
+		"--format", "{{.Manifest.Digest}}", ref)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", classifyRegistryError(string(output)), strings.TrimSpace(string(output))
 	}
-
-	// `manifest inspect --verbose` returns either a single object (single-
-	// arch image) or an array of {Descriptor: {digest, platform}} entries
-	// (manifest list / multi-arch). We need the digest matching our host
-	// platform.
-	var anyJSON any
-	if err := json.Unmarshal(output, &anyJSON); err != nil {
-		return "", "other", strings.TrimSpace(string(output))
+	// imagetools prints either a bare digest line (success) or a multi-line
+	// error blob (failure already handled above). Trim and return.
+	d := strings.TrimSpace(string(output))
+	if !strings.HasPrefix(d, "sha256:") {
+		return "", "other",
+			fmt.Sprintf("unexpected output from imagetools inspect: %q", d)
 	}
-
-	hostOS := runtime.GOOS // typically "linux"; on macOS/Windows tray apps the daemon is still linux
-	hostArch := runtime.GOARCH
-
-	switch v := anyJSON.(type) {
-	case []any:
-		// Manifest list: pick the one matching our host platform.
-		for _, entry := range v {
-			m, ok := entry.(map[string]any)
-			if !ok {
-				continue
-			}
-			desc, _ := m["Descriptor"].(map[string]any)
-			plat, _ := desc["platform"].(map[string]any)
-			os, _ := plat["os"].(string)
-			arch, _ := plat["architecture"].(string)
-			if os == hostOS && arch == hostArch {
-				if d, ok := desc["digest"].(string); ok {
-					return d, "", ""
-				}
-			}
-		}
-		// No exact match — fall through to "no platform found". Could
-		// happen if the operator's host is e.g. linux/arm/v7 and the
-		// image only ships amd64+arm64.
-		return "", "not_found",
-			fmt.Sprintf("no manifest entry for %s/%s in %s", hostOS, hostArch, ref)
-	case map[string]any:
-		// Single-arch image: digest at the top-level descriptor.
-		if desc, ok := v["Descriptor"].(map[string]any); ok {
-			if d, ok := desc["digest"].(string); ok {
-				return d, "", ""
-			}
-		}
-		return "", "other", "no .Descriptor.digest in manifest output"
-	}
-	return "", "other", "unexpected manifest JSON shape"
+	return d, "", ""
 }
 
 // classifyRegistryError parses docker's stderr to bucket the failure
