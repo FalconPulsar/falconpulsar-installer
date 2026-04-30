@@ -89,6 +89,14 @@ namespace FalconPulsar.Tray
             _ = PollHealth();
         }
 
+        // WSL distro names are documented as alphanumerics + dot/underscore/hyphen.
+        // We interpolate _distro into `wsl.exe -d {_distro} ...` arguments and into
+        // a UNC path, so any character outside this set is a defense-in-depth red
+        // flag — even though the source files (Program Files config, %TEMP%
+        // sentinel) are only writable by privileged installs / the same user.
+        private static readonly System.Text.RegularExpressions.Regex _distroNameRe =
+            new(@"^[A-Za-z0-9_.-]+$");
+
         private string ReadDistroName()
         {
             // Try config file first (written by installer)
@@ -98,7 +106,7 @@ namespace FalconPulsar.Tray
             if (File.Exists(configPath))
             {
                 var distro = File.ReadAllText(configPath).Trim();
-                if (!string.IsNullOrEmpty(distro)) return distro;
+                if (IsValidDistroName(distro)) return distro;
             }
 
             // Try sentinel file
@@ -106,11 +114,17 @@ namespace FalconPulsar.Tray
             if (File.Exists(sentinel))
             {
                 var distro = File.ReadAllText(sentinel).Trim();
-                if (!string.IsNullOrEmpty(distro)) return distro;
+                if (IsValidDistroName(distro)) return distro;
             }
 
             return "Ubuntu-24.04";
         }
+
+        // Reject anything that could break out of `wsl.exe -d <name>` argument
+        // parsing (spaces, quotes, semicolons, ampersands, etc.). The fallback
+        // "Ubuntu-24.04" is used when validation fails so the tray still works.
+        private static bool IsValidDistroName(string distro) =>
+            !string.IsNullOrEmpty(distro) && _distroNameRe.IsMatch(distro);
 
         private static string ReadWslHome(string distro)
         {

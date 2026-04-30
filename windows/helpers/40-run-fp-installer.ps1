@@ -222,7 +222,7 @@ if [ -f '$WslHome/compose.yml' ]; then
     echo '[ok] Stack upgraded and restarted'
 else
     echo '[info] No existing compose.yml found -- running full installer'
-    FP_INVOKING_USER='$WslUser' FP_INSTALL_ACTION=upgrade FP_AI_GATEWAY_ENABLED=$AIGateway FP_COOKIE_SECURE=$CookieSecure \
+    FP_INVOKING_USER='$WslUser' FP_INSTALL_ACTION=upgrade FP_AI_GATEWAY_ENABLED='$AIGateway' FP_COOKIE_SECURE='$CookieSecure' \
         bash /opt/falconpulsar-installer/linux/install.sh --user '$WslUser' --mode docker --yes
 fi
 "@

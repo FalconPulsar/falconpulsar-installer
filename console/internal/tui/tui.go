@@ -551,19 +551,35 @@ func (a *App) runUninstall(purge bool) {
 		return
 	}
 
-	// Copy the script to /tmp BEFORE running it — when the script deletes
-	// its parent directory, bash won't lose the file it's reading from.
-	// Also copy auth.sh alongside so the standalone uninstaller can still
-	// require admin credentials.
-	tmp := fmt.Sprintf("/tmp/fp-uninstall-%d.sh", os.Getpid())
+	// Copy uninstall.sh + auth.sh into an unguessable temp dir BEFORE
+	// running, for two reasons:
+	//
+	//   1. When uninstall.sh deletes ${FP_HOME} (its own parent dir), the
+	//      script needs to live somewhere else so bash doesn't lose the
+	//      file mid-execution.
+	//   2. Earlier versions used /tmp/fp-uninstall-<pid>.sh and
+	//      /tmp/auth.sh — predictable paths a same-user attacker could
+	//      pre-create as symlinks before our writes. MkdirTemp gives an
+	//      unguessable name (random suffix), eliminating the TOCTOU
+	//      symlink race.
+	//
+	// uninstall.sh sources auth.sh as ${SCRIPT_DIR}/auth.sh, so both files
+	// must live in the same directory.
+	stageDir, err := os.MkdirTemp("", "fp-uninstall-")
+	if err != nil {
+		a.showMessage("Uninstaller setup failed",
+			"Could not create temp directory: "+err.Error(),
+			true)
+		return
+	}
+	tmp := filepath.Join(stageDir, "uninstall.sh")
 	if data, err := os.ReadFile(script); err == nil {
 		_ = os.WriteFile(tmp, data, 0700)
 	}
 	authSrc := filepath.Join(home, "auth.sh")
-	authTmp := filepath.Join("/tmp", "auth.sh")
+	authTmp := filepath.Join(stageDir, "auth.sh")
 	if data, err := os.ReadFile(authSrc); err == nil {
 		_ = os.WriteFile(authTmp, data, 0600)
-		defer os.Remove(authTmp)
 	}
 
 	flag := "--keep"
@@ -589,7 +605,7 @@ func (a *App) runUninstall(purge bool) {
 		cmd := exec.Command("bash", runPath, flag, "--yes", "--force")
 		cmd.Dir = "/" // cwd outside $FP_HOME
 		out, err := cmd.CombinedOutput()
-		_ = os.Remove(tmp) // best-effort cleanup
+		_ = os.RemoveAll(stageDir) // best-effort cleanup of the staging dir
 		a.tv.QueueUpdateDraw(func() {
 			a.pages.RemovePage("modal")
 			if err != nil {
