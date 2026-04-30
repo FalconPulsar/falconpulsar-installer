@@ -102,10 +102,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // "Check for updates…" — added between stack-control items and the
         // logs/folder section so it lives next to the rest of the
-        // stack-management actions. Shells out to `fp update --check
-        // --json`; on detected updates pops a confirm dialog and runs
-        // `fp update --apply`. The whole flow inherits install.sh's
-        // upgrade fast-path (registry probe + retry + healthcheck).
+        // stack-management actions. Shells out to `fp update --json`
+        // (check is the default mode); on detected updates pops a confirm
+        // dialog and runs `fp update --apply`. The whole flow inherits
+        // install.sh's upgrade fast-path (registry probe + retry +
+        // healthcheck).
         let checkUpdates = NSMenuItem(title: "Check for Updates…", action: #selector(checkForUpdates), keyEquivalent: "")
         checkUpdates.target = self
         checkUpdates.attributedTitle = inlineIconTitle("Check for Updates…", symbol: "arrow.down.circle")
@@ -497,10 +498,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// "Check for updates…" — shells out to `fp update --check --json`,
-    /// parses the result, and either tells the operator everything is
-    /// up to date, prompts them to apply detected updates, or surfaces
-    /// a registry-connectivity error.
+    /// "Check for updates…" — shells out to `fp update --json`
+    /// (check is the default mode), parses the result, and either tells
+    /// the operator everything is up to date, prompts them to apply
+    /// detected updates, or surfaces a registry-connectivity error.
     ///
     /// Apply path opens a Terminal window running `fp update --apply` so
     /// the operator can watch streaming progress (image pulls, healthcheck
@@ -520,7 +521,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
-            let json = self.shell("\"\(fpBin)\" update --check --json 2>/dev/null")
+            // `fp update --json` (no `--check` — that's the default mode of
+            // `fp update`; the binary only knows `--apply` and `--json`).
+            let json = self.shell("\"\(fpBin)\" update --json 2>/dev/null")
             DispatchQueue.main.async {
                 self.handleUpdateCheckJSON(json, fpBin: fpBin)
             }
@@ -532,7 +535,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
               let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             showSimpleAlert(
                 title: "Couldn't read update status",
-                message: "fp update --check did not return parseable JSON. Run it from a terminal for details."
+                message: "fp update --json did not return parseable JSON. Run it from a terminal for details."
             )
             return
         }

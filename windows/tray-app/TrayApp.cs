@@ -194,10 +194,10 @@ namespace FalconPulsar.Tray
 
             // "Check for updates..." \u2014 between the stack-control items and
             // the Tools/logs section, matching the macOS menu order. Shells
-            // out to `fp update --check --json` (the binary lives in the
-            // WSL distro's $HOME/falconpulsar/bin); apply path opens a
-            // Windows Terminal window running `fp update --apply` so the
-            // operator can watch progress.
+            // out to `fp update --json` (check is the default mode; the
+            // binary lives in the WSL distro's $HOME/falconpulsar/bin);
+            // apply path opens a Windows Terminal window running `fp update
+            // --apply` so the operator can watch progress.
             var checkUpdates = new ToolStripMenuItem("Check for Updates...", null,
                 async (s, e) => await CheckForUpdatesAsync());
             checkUpdates.Image = CreateGlyphIcon("\uE896", Color.FromArgb(70, 70, 70));  // Download
@@ -500,9 +500,9 @@ namespace FalconPulsar.Tray
 
         /// <summary>
         /// "Check for Updates..." menu handler. Shells out to
-        /// `fp update --check --json` inside WSL (the same fp binary the
-        /// installer placed at ~/falconpulsar/bin/fp), parses the JSON,
-        /// and either tells the operator everything is up to date,
+        /// `fp update --json` inside WSL (check is the default mode; the
+        /// same fp binary the installer placed at ~/falconpulsar/bin/fp),
+        /// parses the JSON, and either tells the operator everything is up to date,
         /// prompts them to apply detected updates, or surfaces a
         /// registry-connectivity error.
         ///
@@ -524,7 +524,10 @@ namespace FalconPulsar.Tray
                     // Path inside WSL: $HOME/falconpulsar/bin/fp. We resolve
                     // $HOME inside the WSL distro because the user that owns
                     // the install may differ from the Windows username.
-                    Arguments = $"-d {_distro} -- bash -lc \"$HOME/falconpulsar/bin/fp update --check --json 2>/dev/null\"",
+                    // `fp update --json` (no `--check` flag — check is the
+                    // default mode of `fp update`; the binary only knows
+                    // `--apply` and `--json`).
+                    Arguments = $"-d {_distro} -- bash -lc \"$HOME/falconpulsar/bin/fp update --json 2>/dev/null\"",
                     UseShellExecute = false,
                     RedirectStandardOutput = true,
                     CreateNoWindow = true
@@ -536,7 +539,7 @@ namespace FalconPulsar.Tray
             catch (Exception ex)
             {
                 MessageBox.Show(
-                    $"Failed to run fp update --check: {ex.Message}",
+                    $"Failed to run fp update: {ex.Message}",
                     "Check for Updates",
                     MessageBoxButtons.OK, MessageBoxIcon.Error);
                 return;
@@ -565,7 +568,7 @@ namespace FalconPulsar.Tray
             {
                 MessageBox.Show(
                     $"Couldn't parse update status: {ex.Message}\n\n" +
-                    "Run `fp update --check` from a terminal for raw output.",
+                    "Run `fp update --json` from a terminal for raw output.",
                     "Check for Updates",
                     MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
@@ -656,7 +659,7 @@ namespace FalconPulsar.Tray
         }
 
         /// <summary>
-        /// Minimal hand-rolled JSON extractor for the fp update --check
+        /// Minimal hand-rolled JSON extractor for the fp update --json
         /// output. Avoids System.Text.Json dependency to keep tray app
         /// build deps minimal. The schema is small and fixed; if it grows
         /// we should switch to a real JSON library.

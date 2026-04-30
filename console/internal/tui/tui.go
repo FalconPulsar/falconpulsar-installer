@@ -877,7 +877,8 @@ func (a *App) showHelp() {
 
 // checkForUpdates probes the configured registry (FP_REGISTRY) for newer
 // component image digests. The probe is the same one used by the
-// `fp update --check` CLI; this function is its TUI affordance.
+// `fp update` CLI (check is the default mode); this function is its
+// TUI affordance.
 //
 // Modal lifecycle:
 //   1. Show "Checking…" placeholder while the goroutine runs.
