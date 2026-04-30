@@ -155,7 +155,7 @@ namespace FalconPulsar.Tray
             var menu = new ContextMenuStrip();
 
             // Header
-            var header = new ToolStripMenuItem("FalconPulsar v0.1.0")
+            var header = new ToolStripMenuItem("FalconPulsar v0.1.3")
             { Enabled = false };
             header.Font = new Font(header.Font, FontStyle.Bold);
             menu.Items.Add(header);

@@ -30,7 +30,7 @@
 ; =============================================================================
 
 #define MyAppName        "FalconPulsar"
-#define MyAppVersion     "0.1.0"
+#define MyAppVersion     "0.1.3"
 #define MyAppPublisher   "FalconPulsar Contributors"
 #define MyAppURL         "https://github.com/FalconPulsar/falconpulsar-installer"
 #define MyAppExeName     "FalconPulsar-Setup.exe"

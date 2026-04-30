@@ -16,7 +16,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const Version = "0.1.0"
+const Version = "0.1.3"
 
 // Root returns the top-level `fp` command (with all subcommands registered).
 // If invoked with no subcommand or explicit `tui`, the caller should launch

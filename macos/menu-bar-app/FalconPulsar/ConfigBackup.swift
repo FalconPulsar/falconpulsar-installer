@@ -297,7 +297,7 @@ enum ConfigBackup {
         let df = ISO8601DateFormatter()
         let manifest: [String: Any] = [
             "format_version": 1,
-            "falconpulsar_version": "0.1.0",
+            "falconpulsar_version": "0.1.3",
             "exported_at": df.string(from: Date()),
             "source_host": hostName,
             "source_platform": "macOS"

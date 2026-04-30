@@ -65,10 +65,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func buildMenu() {
         let menu = NSMenu()
 
-        let header = NSMenuItem(title: "FalconPulsar v0.1.0", action: nil, keyEquivalent: "")
+        let header = NSMenuItem(title: "FalconPulsar v0.1.3", action: nil, keyEquivalent: "")
         header.isEnabled = false
         header.attributedTitle = NSAttributedString(
-            string: "FalconPulsar v0.1.0",
+            string: "FalconPulsar v0.1.3",
             attributes: [.font: NSFont.boldSystemFont(ofSize: 13)]
         )
         menu.addItem(header)

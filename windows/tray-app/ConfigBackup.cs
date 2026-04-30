@@ -246,7 +246,7 @@ namespace FalconPulsar.Tray
                 var manifest = new
                 {
                     format_version = 1,
-                    falconpulsar_version = "0.1.0",
+                    falconpulsar_version = "0.1.3",
                     exported_at = DateTime.UtcNow.ToString("o"),
                     source_host = Environment.MachineName,
                     source_platform = "Windows"
