@@ -186,7 +186,7 @@ func localManifestDigest(ctx context.Context, containerName, expectedRef string)
 
 	// Path 1: running container's actual image.
 	if containerRunning(ctx, containerName) {
-		cmd := exec.CommandContext(ctx, dockerPath(), "inspect", containerName,
+		cmd := dockerCmd(ctx, "inspect", containerName,
 			"--format", "{{.Image}}")
 		out, err := cmd.Output()
 		if err == nil {
@@ -217,7 +217,7 @@ func localManifestDigest(ctx context.Context, containerName, expectedRef string)
 // the first RepoDigest whose repo matches `expectedRepo`. Returns "" on
 // any failure or no match. Used by localManifestDigest's two lookup paths.
 func repoDigestFor(ctx context.Context, imageRefOrSHA, expectedRepo string) string {
-	cmd := exec.CommandContext(ctx, dockerPath(), "inspect", "--type=image", imageRefOrSHA,
+	cmd := dockerCmd(ctx, "inspect", "--type=image", imageRefOrSHA,
 		"--format", "{{range .RepoDigests}}{{.}}\n{{end}}")
 	out, err := cmd.Output()
 	if err != nil {
@@ -265,7 +265,7 @@ func repoDigestFor(ctx context.Context, imageRefOrSHA, expectedRepo string) stri
 //   - "tls"         — certificate / TLS handshake failure
 //   - "other"       — anything else
 func remoteManifestDigest(ctx context.Context, ref string) (digest, kind, raw string) {
-	cmd := exec.CommandContext(ctx, dockerPath(), "buildx", "imagetools", "inspect",
+	cmd := dockerCmd(ctx, "buildx", "imagetools", "inspect",
 		"--format", "{{.Manifest.Digest}}", ref)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -330,7 +330,12 @@ func ApplyUpdates(ctx context.Context, stdout, stderr io.Writer) error {
 	// detection itself when given FP_INSTALL_ACTION=upgrade.
 	if installer := findBundledInstaller(); installer != "" {
 		cmd := exec.CommandContext(ctx, "bash", installer)
-		cmd.Env = append(os.Environ(),
+		// Use dockerEnv() so install.sh's `docker compose pull` resolves
+		// docker-credential-desktop even when /usr/local/bin's symlink is
+		// stale (a common Docker Desktop upgrade artifact). Without this
+		// the apply path fails with "executable file not found in $PATH"
+		// at the pull step.
+		cmd.Env = append(dockerEnv(),
 			"FP_INSTALL_ACTION=upgrade",
 			"FP_ASSUME_YES=1",
 			"FP_HOME="+HomeDir(),

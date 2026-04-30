@@ -78,6 +78,47 @@ func dockerPath() string {
 	return "docker"
 }
 
+// dockerEnv returns os.Environ() with PATH augmented to find Docker
+// Desktop's bundled credential helpers on macOS, working around a common
+// trip-hazard: Docker Desktop's installer drops a symlink in
+// /usr/local/bin/docker-credential-desktop that frequently goes stale
+// across upgrades (e.g., points to /Volumes/Docker/... after Docker.app
+// has been moved to /Applications). When the symlink is dangling,
+// every docker call that needs registry credentials —
+// `buildx imagetools inspect`, `compose pull`, `pull` — fails with
+// "executable file not found in $PATH". We pre-pend Docker.app's bundled
+// bin dir to PATH so helpers resolve to the canonical binary regardless
+// of symlink state.
+//
+// On non-darwin hosts, or when /Applications/Docker.app isn't present,
+// returns os.Environ() unchanged. Use this anywhere we spawn a docker
+// process or a process that itself spawns docker (e.g. install.sh).
+func dockerEnv() []string {
+	env := os.Environ()
+	if runtime.GOOS != "darwin" {
+		return env
+	}
+	const dockerBin = "/Applications/Docker.app/Contents/Resources/bin"
+	if _, err := os.Stat(dockerBin); err != nil {
+		return env
+	}
+	for i, kv := range env {
+		if strings.HasPrefix(kv, "PATH=") {
+			env[i] = "PATH=" + dockerBin + ":" + strings.TrimPrefix(kv, "PATH=")
+			return env
+		}
+	}
+	return append(env, "PATH="+dockerBin)
+}
+
+// dockerCmd returns an exec.Cmd configured to run the docker CLI with
+// the augmented PATH from dockerEnv(). See dockerEnv for rationale.
+func dockerCmd(ctx context.Context, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, dockerPath(), args...)
+	cmd.Env = dockerEnv()
+	return cmd
+}
+
 // HasGatewayToken checks if FP_API_KEY is already present in .env (meaning
 // the gateway token was bootstrapped previously — no need to re-auth).
 func HasGatewayToken() bool {
@@ -361,6 +402,7 @@ func Compose(ctx context.Context, stdout, stderr io.Writer, args ...string) erro
 	base = append(base, args...)
 	cmd := exec.CommandContext(ctx, dockerPath(), base...)
 	cmd.Dir = HomeDir()
+	cmd.Env = dockerEnv()
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	if stdout != nil && stderr != nil {
