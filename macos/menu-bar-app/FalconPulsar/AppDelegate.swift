@@ -474,27 +474,33 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func startStack() {
         updateIcon(.partiallyRunning)
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            _ = self?.shell("cd \(self?.homeDir ?? "~/falconpulsar") && docker compose up -d 2>&1")
+            guard let self = self else { return }
+            let (bin, argv) = self.dockerInvocation(["compose", "up", "-d"])
+            _ = self.runArgs(bin, argv, cwd: self.homeDir)
             sleep(3)
-            self?.pollHealth()
+            self.pollHealth()
         }
     }
 
     @objc func stopStack() {
         updateIcon(.partiallyRunning)
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            _ = self?.shell("cd \(self?.homeDir ?? "~/falconpulsar") && docker compose down 2>&1")
+            guard let self = self else { return }
+            let (bin, argv) = self.dockerInvocation(["compose", "down"])
+            _ = self.runArgs(bin, argv, cwd: self.homeDir)
             sleep(2)
-            self?.pollHealth()
+            self.pollHealth()
         }
     }
 
     @objc func restartStack() {
         updateIcon(.partiallyRunning)
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            _ = self?.shell("cd \(self?.homeDir ?? "~/falconpulsar") && docker compose restart 2>&1")
+            guard let self = self else { return }
+            let (bin, argv) = self.dockerInvocation(["compose", "restart"])
+            _ = self.runArgs(bin, argv, cwd: self.homeDir)
             sleep(3)
-            self?.pollHealth()
+            self.pollHealth()
         }
     }
 
@@ -523,7 +529,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self = self else { return }
             // `fp update --json` (no `--check` — that's the default mode of
             // `fp update`; the binary only knows `--apply` and `--json`).
-            let json = self.shell("\"\(fpBin)\" update --json 2>/dev/null")
+            let json = self.runArgs(fpBin, ["update", "--json"])
             DispatchQueue.main.async {
                 self.handleUpdateCheckJSON(json, fpBin: fpBin)
             }
@@ -612,7 +618,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// Falls back to "manual" on any failure — the safe default.
     private func readUpdateMode() -> String {
         let fpBin = "\(homeDir)/bin/fp"
-        let raw = shell("\"\(fpBin)\" update mode 2>/dev/null")
+        let raw = runArgs(fpBin, ["update", "mode"])
         let v = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         return (v == "auto") ? "auto" : "manual"
     }
@@ -705,7 +711,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let fm = FileManager.default
 
         if fm.fileExists(atPath: plistPath) {
-            shell("launchctl unload '\(plistPath)' 2>/dev/null")
+            runArgs("/bin/launchctl", ["unload", plistPath])
             try? fm.removeItem(atPath: plistPath)
         } else {
             // Resolve the installed app path (/Applications takes precedence)
@@ -1548,7 +1554,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func getContainerVersion(_ name: String) -> String {
-        let output = shell("docker inspect --format '{{.Config.Image}}' \(name) 2>/dev/null")
+        let (bin, argv) = dockerInvocation(["inspect", "--format", "{{.Config.Image}}", name])
+        let output = runArgs(bin, argv)
         let image = output.trimmingCharacters(in: .whitespacesAndNewlines)
         if image.isEmpty { return "n/a" }
         if let tag = image.split(separator: ":").last {
@@ -1650,37 +1657,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 // script should not try to prompt for credentials again via
                 // /dev/tty (which isn't attached in a GUI-launched shell and
                 // would just fail + exit without cleanup).
-                self?.shell("bash '\(scriptPath)' \(purgeFlag) --yes --force 2>&1")
+                _ = self?.runArgs("/bin/bash", [scriptPath, purgeFlag, "--yes", "--force"])
             } else {
-                // Inline uninstall if script not found. On purge, use
-                // `compose down --volumes` and prune any orphan volumes +
-                // images so NOTHING is left behind.
-                let composeDown = purge
-                    ? "cd ~/falconpulsar 2>/dev/null && docker compose --profile ai down --remove-orphans --volumes 2>/dev/null || true"
-                    : "cd ~/falconpulsar 2>/dev/null && docker compose --profile ai down --remove-orphans 2>/dev/null || true"
-                let removeImages = """
-                    IMAGES="$(cd ~/falconpulsar 2>/dev/null && docker compose config --images 2>/dev/null | sort -u)"
-                    if [ -n "$IMAGES" ]; then echo "$IMAGES" | xargs docker rmi -f 2>/dev/null || true; fi
-                    docker images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | grep -E '^falconpulsar/' | xargs -r docker rmi -f 2>/dev/null || true
-                    """
-                let pruneVolumes = purge
-                    ? "docker volume ls --format '{{.Name}}' 2>/dev/null | grep -E '^falconpulsar' | xargs -r docker volume rm -f 2>/dev/null || true"
-                    : ""
-                let removeHome = purge
-                    ? "rm -rf ~/falconpulsar"
-                    : "rm -f ~/falconpulsar/compose.yml ~/falconpulsar/.env"
-                self?.shell("""
-                    \(composeDown)
-                    \(removeImages)
-                    \(pruneVolumes)
-                    \(removeHome)
-                    rm -rf /Applications/FalconPulsar\\ Menu\\ Bar.app 2>/dev/null || true
-                    rm -rf ~/Applications/FalconPulsar\\ Menu\\ Bar.app 2>/dev/null || true
-                    launchctl bootout gui/$(id -u)/com.falconpulsar.menubar 2>/dev/null || true
-                    launchctl unload ~/Library/LaunchAgents/com.falconpulsar.menubar.plist 2>/dev/null || true
-                    rm -f ~/Library/LaunchAgents/com.falconpulsar.menubar.plist 2>/dev/null || true
-                    /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -u /Applications/FalconPulsar\\ Menu\\ Bar.app 2>/dev/null || true
-                    """)
+                self?.inlineUninstall(purge: purge)
             }
 
             DispatchQueue.main.async {
@@ -1701,6 +1680,68 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 NSApp.terminate(nil)
             }
         }
+    }
+
+    /// Inline uninstall fallback when no uninstall.sh is found. Each step is
+    /// best-effort: failures don't abort the chain because we're tearing down
+    /// anyway. The two pipe/xargs-heavy steps (image cleanup, volume prune)
+    /// stay on `shell()` because they genuinely need a shell — they don't
+    /// interpolate any Swift-derived path.
+    private func inlineUninstall(purge: Bool) {
+        let fm = FileManager.default
+        let home = NSHomeDirectory()
+        let stackDir = "\(home)/falconpulsar"
+
+        // 1. compose down (plus --volumes on purge).
+        var downArgs = ["compose", "--profile", "ai", "down", "--remove-orphans"]
+        if purge { downArgs.append("--volumes") }
+        let (dockerBin, dockerDownArgv) = dockerInvocation(downArgs)
+        if fm.fileExists(atPath: stackDir) {
+            _ = runArgs(dockerBin, dockerDownArgv, cwd: stackDir)
+        }
+
+        // 2. Remove project images + any falconpulsar/* images. Pipes/xargs
+        // make this string-shaped; no Swift-interpolated paths involved.
+        _ = shell("""
+            IMAGES="$(cd ~/falconpulsar 2>/dev/null && docker compose config --images 2>/dev/null | sort -u)"
+            if [ -n "$IMAGES" ]; then echo "$IMAGES" | xargs docker rmi -f 2>/dev/null || true; fi
+            docker images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | grep -E '^falconpulsar/' | xargs -r docker rmi -f 2>/dev/null || true
+            """)
+
+        // 3. Volume prune (purge only). Same rationale: pipes/xargs.
+        if purge {
+            _ = shell("docker volume ls --format '{{.Name}}' 2>/dev/null | grep -E '^falconpulsar' | xargs -r docker volume rm -f 2>/dev/null || true")
+        }
+
+        // 4. Remove ~/falconpulsar (purge: whole tree; keep: only compose.yml + .env).
+        if purge {
+            try? fm.removeItem(atPath: stackDir)
+        } else {
+            try? fm.removeItem(atPath: "\(stackDir)/compose.yml")
+            try? fm.removeItem(atPath: "\(stackDir)/.env")
+        }
+
+        // 5. Remove the menu bar app from both Applications locations.
+        let appPaths = [
+            "/Applications/FalconPulsar Menu Bar.app",
+            "\(home)/Applications/FalconPulsar Menu Bar.app",
+        ]
+        for path in appPaths {
+            try? fm.removeItem(atPath: path)
+        }
+
+        // 6. Tear down the LaunchAgent.
+        let uid = String(getuid())
+        _ = runArgs("/bin/launchctl", ["bootout", "gui/\(uid)/com.falconpulsar.menubar"])
+        let plistPath = "\(home)/Library/LaunchAgents/com.falconpulsar.menubar.plist"
+        _ = runArgs("/bin/launchctl", ["unload", plistPath])
+        try? fm.removeItem(atPath: plistPath)
+
+        // 7. Drop the Launch Services registration so Finder forgets the app.
+        _ = runArgs(
+            "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister",
+            ["-u", "/Applications/FalconPulsar Menu Bar.app"]
+        )
     }
 
     @objc func quitApp() {
@@ -1732,6 +1773,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Shell
 
+    /// Legacy helper that runs a command string via `/bin/bash -c`. Subject to
+    /// shell parsing/quoting on every interpolated value, so prefer `runArgs`
+    /// for any new call site that touches a path, filename, or container name.
+    /// Kept for genuinely string-shaped commands that need pipes/redirection
+    /// (e.g. `xargs docker rmi`).
     @discardableResult
     private func shell(_ command: String) -> String {
         let process = Process()
@@ -1745,5 +1791,67 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         process.waitUntilExit()
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         return String(data: data, encoding: .utf8) ?? ""
+    }
+
+    /// Argv-form runner: launches `launchPath` with `args` directly, with no
+    /// shell interpreter in the middle, so paths/filenames containing spaces
+    /// or shell metacharacters are passed through verbatim. Returns combined
+    /// stdout+stderr as a String for parity with `shell()`.
+    @discardableResult
+    private func runArgs(_ launchPath: String, _ args: [String], cwd: String? = nil) -> String {
+        let process = Process()
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = pipe
+        process.executableURL = URL(fileURLWithPath: launchPath)
+        process.arguments = args
+        if let cwd = cwd {
+            process.currentDirectoryURL = URL(fileURLWithPath: cwd)
+        }
+        // Mirror the PATH augmentation shell() does so docker-credential-*
+        // helpers resolve correctly when launchPath itself spawns docker
+        // (e.g. install.sh, uninstall.sh, fp).
+        var env = ProcessInfo.processInfo.environment
+        let dockerBin = "/Applications/Docker.app/Contents/Resources/bin"
+        let extra = "\(dockerBin):/usr/local/bin:/opt/homebrew/bin"
+        env["PATH"] = extra + ":" + (env["PATH"] ?? "/usr/bin:/bin")
+        process.environment = env
+        do {
+            try process.run()
+        } catch {
+            return "runArgs failed to launch \(launchPath): \(error)"
+        }
+        process.waitUntilExit()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        return String(data: data, encoding: .utf8) ?? ""
+    }
+
+    /// Resolve the docker CLI binary, mirroring the resolution order used
+    /// by the Go side (console/internal/actions/actions.go: dockerPath()).
+    /// Falls back to a bare "docker" lookup via /usr/bin/env if none of the
+    /// canonical paths exist.
+    private func dockerPath() -> String {
+        let candidates = [
+            "/usr/local/bin/docker",
+            "/opt/homebrew/bin/docker",
+            "/Applications/Docker.app/Contents/Resources/bin/docker",
+            "/usr/bin/docker",
+        ]
+        for p in candidates {
+            if FileManager.default.isExecutableFile(atPath: p) {
+                return p
+            }
+        }
+        return "/usr/bin/env"   // runArgs("/usr/bin/env", ["docker", ...])
+    }
+
+    /// Builds (binary, argv) for invoking docker. When dockerPath() falls
+    /// back to /usr/bin/env, prepends "docker" to argv so PATH lookup wins.
+    private func dockerInvocation(_ args: [String]) -> (String, [String]) {
+        let bin = dockerPath()
+        if bin == "/usr/bin/env" {
+            return (bin, ["docker"] + args)
+        }
+        return (bin, args)
     }
 }
