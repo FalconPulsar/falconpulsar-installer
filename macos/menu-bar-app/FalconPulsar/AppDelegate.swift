@@ -1447,7 +1447,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         verBg.layer?.cornerRadius = 13
         view.addSubview(verBg)
 
-        let verLabel = NSTextField(labelWithString: "Version  0.1.0")
+        // Pull our own version from Info.plist (CFBundleShortVersionString).
+        // build-dmg.sh writes it from FP_VERSION at build time, so a CI build
+        // off tag v0.1.4-alpha.1 lands here as "0.1.4-alpha.1". Falls back to
+        // "dev" only when running an unbundled debug build.
+        let appVersion = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "dev"
+        let verLabel = NSTextField(labelWithString: "Installer  v\(appVersion)")
         verLabel.frame = NSRect(x: 0, y: h - 260, width: w, height: 26)
         verLabel.alignment = .center
         verLabel.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .medium)
@@ -1455,15 +1460,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         view.addSubview(verLabel)
 
         // ── Component grid with checkmarks ──
-        let coreVer = getContainerVersion("falconpulsar-core")
-        let uiVer = getContainerVersion("falconpulsar-ui")
-        let gwVer = getContainerVersion("falconpulsar-ai-gateway")
+        // Each component shows its real version (from OCI labels) plus a
+        // build-identifier suffix (short revision SHA) so support requests
+        // pin the exact build. Compose row reads the engine version from
+        // `docker compose version --short` instead of the static "v2".
+        let coreInfo = getContainerInfo("falconpulsar-core")
+        let uiInfo = getContainerInfo("falconpulsar-ui")
+        let gwInfo = getContainerInfo("falconpulsar-ai-gateway")
+        let composeVer = getComposeVersion()
 
         let components: [(String, String, Bool)] = [
-            ("Core Engine", coreVer, coreRunning),
-            ("Compose", "v2", true),
-            ("Web UI", uiVer, uiRunning),
-            ("AI Capabilities", gwVer, gatewayRunning)
+            ("Core Engine", coreInfo.displayString, coreRunning),
+            ("Compose", composeVer, true),
+            ("Web UI", uiInfo.displayString, uiRunning),
+            ("AI Capabilities", gwInfo.displayString, gatewayRunning)
         ]
 
         let gridY = h - 310
@@ -1488,9 +1498,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             nameLabel.textColor = NSColor(white: 0.65, alpha: 1)
             view.addSubview(nameLabel)
 
+            // ver may be "0.3.7 (a03db27)" or just "a03db27" (digest fallback).
+            // The grid is 230px wide per column and the name takes ~110px;
+            // 110px for ver fits up to roughly 17 monospace chars — enough
+            // for "a.b.c-rc.1 (1234567)" without truncation.
             let verText = NSTextField(labelWithString: ver)
-            verText.frame = NSRect(x: cx + 130, y: cy, width: 90, height: 18)
-            verText.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+            verText.frame = NSRect(x: cx + 130, y: cy, width: 110, height: 18)
+            verText.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
             verText.textColor = NSColor(white: 0.85, alpha: 1)
             view.addSubview(verText)
         }
@@ -1553,15 +1567,85 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func getContainerVersion(_ name: String) -> String {
-        let (bin, argv) = dockerInvocation(["inspect", "--format", "{{.Config.Image}}", name])
-        let output = runArgs(bin, argv)
-        let image = output.trimmingCharacters(in: .whitespacesAndNewlines)
-        if image.isEmpty { return "n/a" }
-        if let tag = image.split(separator: ":").last {
-            return String(tag)
+    /// Per-container metadata read from OCI image labels via `docker inspect`.
+    /// `version` and `revision` come from the Open Container Initiative
+    /// standard labels (`org.opencontainers.image.version`, `.revision`,
+    /// `.created`). When the version label is missing or carries a non-semver
+    /// placeholder like `"main"` or `"master"` (a real bug we've seen on the
+    /// upstream image builds), we fall back to a 7-char prefix of the image
+    /// digest — always available, cryptographically meaningful, unambiguous.
+    /// `displayString` formats them for the About panel as
+    ///   "0.3.7 (a03db27)"   when both label and revision are present
+    ///   "0.3.7"              when only the label resolved
+    ///   "a03db27"            when we fell back to the digest
+    ///   "n/a"                when the container isn't running at all
+    private struct ContainerInfo {
+        let version: String
+        let revision: String
+
+        var displayString: String {
+            if version == "n/a" { return "n/a" }
+            if revision.isEmpty { return version }
+            // Don't print the rev twice if version IS the digest fallback
+            if version == revision { return version }
+            return "\(version) (\(revision))"
         }
-        return "latest"
+    }
+
+    private func getContainerInfo(_ name: String) -> ContainerInfo {
+        // One inspect call returning all 4 fields tab-separated. Note the
+        // escaped braces in the Go template — `index` looks up the labels
+        // by name, returning empty string for missing keys (which we
+        // expect on older or upstream-mislabelled images).
+        let format = "{{ index .Config.Labels \"org.opencontainers.image.version\" }}\t" +
+                     "{{ index .Config.Labels \"org.opencontainers.image.revision\" }}\t" +
+                     "{{ index .Config.Labels \"org.opencontainers.image.created\" }}\t" +
+                     "{{ .Image }}"
+        let (bin, argv) = dockerInvocation(["inspect", "--format", format, name])
+        // Trim ONLY trailing newlines, NOT all whitespace. Containers
+        // without any OCI labels emit "\t\t\t<imageId>" --
+        // .whitespacesAndNewlines would strip the leading tabs,
+        // collapsing 4 fields into 1 and putting the image digest where
+        // labelVer is supposed to be. Subtle bug, took a live test to
+        // surface it.
+        let output = runArgs(bin, argv).trimmingCharacters(in: CharacterSet(charactersIn: "\n\r"))
+        if output.isEmpty {
+            return ContainerInfo(version: "n/a", revision: "")
+        }
+
+        let parts = output.components(separatedBy: "\t")
+        let labelVer = parts.indices.contains(0) ? parts[0] : ""
+        let labelRev = parts.indices.contains(1) ? parts[1] : ""
+        let imageId  = parts.indices.contains(3) ? parts[3] : ""
+
+        // Branch-name placeholders that some image builds set instead of
+        // a real semver. Treat them as missing so we fall back to digest.
+        let placeholderVersions: Set<String> = ["", "main", "master", "develop", "latest", "HEAD"]
+
+        let version: String
+        if placeholderVersions.contains(labelVer) {
+            // Strip "sha256:" prefix and take first 7 chars.
+            let id = imageId.hasPrefix("sha256:") ? String(imageId.dropFirst(7)) : imageId
+            version = id.isEmpty ? "n/a" : String(id.prefix(7))
+        } else {
+            version = labelVer
+        }
+
+        // Revision label is a full git SHA (40 chars). Truncate to 7 for
+        // display, matching the convention of every other VCS surface.
+        let revision = labelRev.isEmpty ? "" : String(labelRev.prefix(7))
+        return ContainerInfo(version: version, revision: revision)
+    }
+
+    /// Docker Compose engine version (the v2 plugin shipped by Docker
+    /// Desktop). Was previously hardcoded as "v2"; reading it gives us the
+    /// real engine version (e.g. "v2.21.0") which is what users actually
+    /// need to share with support when composing-related issues come up.
+    private func getComposeVersion() -> String {
+        let (bin, argv) = dockerInvocation(["compose", "version", "--short"])
+        let output = runArgs(bin, argv).trimmingCharacters(in: .whitespacesAndNewlines)
+        if output.isEmpty { return "v2" }
+        return output.hasPrefix("v") ? output : "v\(output)"
     }
 
     @objc func uninstallFalconPulsar() {

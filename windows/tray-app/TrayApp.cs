@@ -986,9 +986,17 @@ namespace FalconPulsar.Tray
                 e.Graphics.FillRectangle(brush, 0, 0, 150, 26);
             };
             panel.Controls.Add(verPanel);
+            // Read our own version from the assembly. Set at build time by
+            // <Version> in FalconPulsarTray.csproj, and overridable from CI
+            // via `dotnet publish -p:Version=$VER`. Falls back to "dev" on
+            // unbundled debug builds where AssemblyVersion is not set.
+            var asmVersion = System.Reflection.Assembly
+                .GetExecutingAssembly()
+                .GetName()
+                .Version?.ToString(3) ?? "dev";
             verPanel.Controls.Add(new Label
             {
-                Text = "Version  0.1.0",
+                Text = $"Installer  v{asmVersion}",
                 Font = new Font("Consolas", 10),
                 ForeColor = Color.FromArgb(200, 200, 200),
                 BackColor = Color.Transparent,
@@ -997,10 +1005,19 @@ namespace FalconPulsar.Tray
                 TextAlign = ContentAlignment.MiddleCenter
             });
 
-            // Component grid with checkmarks
+            // Component grid with checkmarks. Each component shows its real
+            // version (from OCI labels via docker inspect) plus a 7-char
+            // build-identifier suffix so support requests pin the exact
+            // build. Compose row reads the real engine version from
+            // `docker compose version --short` instead of the static "v2".
+            var coreInfo = GetContainerInfo("falconpulsar-core");
+            var uiInfo   = GetContainerInfo("falconpulsar-ui");
+            var gwInfo   = GetContainerInfo("falconpulsar-ai-gateway");
+            var composeVer = GetComposeVersion();
+
             string[] names = { "Core Engine", "Compose", "Web UI", "AI Capabilities" };
-            string[] vers = { "latest", "v2", "latest", "latest" };
-            bool[] oks = { _coreRunning, true, _uiRunning, _gatewayRunning };
+            string[] vers  = { coreInfo.DisplayString, composeVer, uiInfo.DisplayString, gwInfo.DisplayString };
+            bool[] oks     = { _coreRunning, true, _uiRunning, _gatewayRunning };
 
             int gridY = 260;
             for (int i = 0; i < 4; i++)
@@ -1032,14 +1049,17 @@ namespace FalconPulsar.Tray
                     Location = new Point(cx + 22, cy)
                 });
 
+                // vers[i] may be "0.3.7 (a03db27)" or just "a03db27" (digest
+                // fallback). 100px at Consolas 9pt fits ~17 chars cleanly,
+                // enough for "a.b.c-rc.1 (1234567)" without truncation.
                 panel.Controls.Add(new Label
                 {
                     Text = vers[i],
-                    Font = new Font("Consolas", 10),
+                    Font = new Font("Consolas", 9),
                     ForeColor = Color.FromArgb(220, 220, 220),
                     BackColor = Color.Transparent,
                     AutoSize = false,
-                    Size = new Size(80, 20),
+                    Size = new Size(100, 20),
                     Location = new Point(cx + 135, cy)
                 });
             }
@@ -1235,6 +1255,93 @@ namespace FalconPulsar.Tray
         }
 
         // ── WSL helpers (the real stack state lives inside WSL)
+
+        // ── Per-container OCI metadata (About panel) ────────────────────
+        // Reads org.opencontainers.image.{version,revision,created} labels
+        // from a running container. Mirrors AppDelegate.swift's
+        // getContainerInfo on macOS so the About panel content is identical
+        // across platforms. When the version label is missing or carries a
+        // non-semver placeholder ("main", "master", "develop", "latest"),
+        // falls back to a 7-char prefix of the image digest -- always
+        // available, cryptographically meaningful, unambiguous.
+        private struct ContainerInfo
+        {
+            public string Version;   // "0.3.7" or "a03db27" (digest fallback)
+            public string Revision;  // "0d8f4a2" (short SHA) or empty
+
+            public string DisplayString
+            {
+                get
+                {
+                    if (Version == "n/a") return "n/a";
+                    if (string.IsNullOrEmpty(Revision)) return Version;
+                    if (Version == Revision) return Version;  // digest fallback
+                    return $"{Version} ({Revision})";
+                }
+            }
+        }
+
+        private ContainerInfo GetContainerInfo(string containerName)
+        {
+            // Single inspect call returning all 4 fields tab-separated.
+            // The 'index' template function returns "" for missing keys, so
+            // older or upstream-mislabelled images don't error -- they just
+            // route into the digest-fallback branch below.
+            const string fmt = "{{ index .Config.Labels \"org.opencontainers.image.version\" }}\\t" +
+                               "{{ index .Config.Labels \"org.opencontainers.image.revision\" }}\\t" +
+                               "{{ index .Config.Labels \"org.opencontainers.image.created\" }}\\t" +
+                               "{{ .Image }}";
+            var script = $"docker inspect --format '{fmt}' {containerName} 2>/dev/null";
+            var (rc, output) = RunWslBashCaptureAsync(script).GetAwaiter().GetResult();
+            // Trim ONLY trailing newlines, NOT all whitespace. Containers
+            // without any OCI labels emit "\t\t\t<imageId>" -- string.Trim()
+            // would strip the leading tabs, collapsing 4 fields into 1 and
+            // putting the image digest where labelVer is supposed to be.
+            // Subtle bug, took a live test to surface it.
+            output = (output ?? string.Empty).TrimEnd('\n', '\r');
+            if (rc != 0 || string.IsNullOrEmpty(output))
+            {
+                return new ContainerInfo { Version = "n/a", Revision = string.Empty };
+            }
+
+            var parts = output.Split('\t');
+            var labelVer = parts.Length > 0 ? parts[0] : string.Empty;
+            var labelRev = parts.Length > 1 ? parts[1] : string.Empty;
+            var imageId  = parts.Length > 3 ? parts[3] : string.Empty;
+
+            // Branch-name placeholders some image builds set instead of
+            // a real semver. Treat them as missing -> fall back to digest.
+            var placeholders = new HashSet<string> { "", "main", "master", "develop", "latest", "HEAD" };
+
+            string version;
+            if (placeholders.Contains(labelVer))
+            {
+                var id = imageId.StartsWith("sha256:") ? imageId.Substring(7) : imageId;
+                version = string.IsNullOrEmpty(id) ? "n/a" : id.Substring(0, Math.Min(7, id.Length));
+            }
+            else
+            {
+                version = labelVer;
+            }
+
+            // Revision label is a full git SHA (40 chars). Truncate to 7
+            // for display, matching every other VCS surface.
+            var revision = string.IsNullOrEmpty(labelRev) ? string.Empty
+                : labelRev.Substring(0, Math.Min(7, labelRev.Length));
+
+            return new ContainerInfo { Version = version, Revision = revision };
+        }
+
+        // Real Docker Compose engine version (e.g. "v2.21.0"), replacing
+        // the previously hardcoded "v2" in the About grid. What users
+        // actually need to share for compose-related support requests.
+        private string GetComposeVersion()
+        {
+            var (rc, output) = RunWslBashCaptureAsync("docker compose version --short 2>/dev/null").GetAwaiter().GetResult();
+            output = (output ?? string.Empty).Trim();
+            if (rc != 0 || string.IsNullOrEmpty(output)) return "v2";
+            return output.StartsWith("v") ? output : "v" + output;
+        }
 
         private async Task<(int exitCode, string stdout)> RunWslBashCaptureAsync(string script)
         {

@@ -229,6 +229,137 @@ func parseEnvFile() map[string]string {
 	return result
 }
 
+// ContainerInfo is per-container metadata read from OCI image labels via
+// `docker inspect`. Used by `fp about` (and mirrored by the macOS menu-bar
+// and Windows tray About panels) to show real per-component versions
+// instead of meaningless "latest" image tags.
+//
+// Version comes from org.opencontainers.image.version. When that label is
+// missing or carries a non-semver placeholder ("main", "master", "develop",
+// "latest", "HEAD") -- a common bug on upstream image builds where the
+// label is set to the source branch instead of the release tag -- we fall
+// back to a 7-char prefix of the image digest. Always available,
+// cryptographically meaningful, unambiguous.
+//
+// Revision is the first 7 chars of org.opencontainers.image.revision (the
+// upstream git SHA). Empty if the label is missing.
+type ContainerInfo struct {
+	Version  string // "0.3.7" or "a03db27" (digest fallback)
+	Revision string // "0d8f4a2" (short SHA) or empty
+}
+
+// DisplayString formats the info for human consumption:
+//
+//	"0.3.7 (a03db27)" - both label and revision present
+//	"0.3.7"           - only label resolved
+//	"a03db27"         - digest fallback (no useful version label)
+//	"n/a"             - container not running / not found
+func (c ContainerInfo) DisplayString() string {
+	if c.Version == "n/a" {
+		return "n/a"
+	}
+	if c.Revision == "" {
+		return c.Version
+	}
+	if c.Version == c.Revision {
+		// Don't print the rev twice when version IS the digest fallback.
+		return c.Version
+	}
+	return fmt.Sprintf("%s (%s)", c.Version, c.Revision)
+}
+
+// GetContainerInfo runs `docker inspect` against a container name and
+// returns the parsed OCI metadata. See ContainerInfo for the fallback
+// semantics. Returns Version="n/a" when the container isn't running.
+func GetContainerInfo(ctx context.Context, name string) ContainerInfo {
+	// One inspect call returns all 4 fields tab-separated. The 'index'
+	// template function returns "" for missing keys, so older or
+	// upstream-mislabelled images don't error -- they just route into
+	// the digest-fallback branch.
+	const fmtTpl = `{{ index .Config.Labels "org.opencontainers.image.version" }}` + "\t" +
+		`{{ index .Config.Labels "org.opencontainers.image.revision" }}` + "\t" +
+		`{{ index .Config.Labels "org.opencontainers.image.created" }}` + "\t" +
+		`{{ .Image }}`
+
+	cmd := dockerCmd(ctx, "inspect", "--format", fmtTpl, name)
+	out, err := cmd.Output()
+	if err != nil {
+		return ContainerInfo{Version: "n/a"}
+	}
+	// Trim ONLY trailing newlines, NOT all whitespace. Containers without
+	// any OCI labels emit "\t\t\t<imageId>" — strings.TrimSpace would
+	// strip those leading tabs, collapsing 4 fields into 1 and putting
+	// the image digest where labelVer is supposed to be. Subtle.
+	output := strings.TrimRight(string(out), "\n\r")
+	if output == "" {
+		return ContainerInfo{Version: "n/a"}
+	}
+
+	parts := strings.Split(output, "\t")
+	get := func(i int) string {
+		if i < len(parts) {
+			return parts[i]
+		}
+		return ""
+	}
+	labelVer := get(0)
+	labelRev := get(1)
+	imageId := get(3)
+
+	placeholders := map[string]bool{
+		"":        true,
+		"main":    true,
+		"master":  true,
+		"develop": true,
+		"latest":  true,
+		"HEAD":    true,
+	}
+
+	var version string
+	if placeholders[labelVer] {
+		id := strings.TrimPrefix(imageId, "sha256:")
+		if id == "" {
+			version = "n/a"
+		} else {
+			n := 7
+			if len(id) < n {
+				n = len(id)
+			}
+			version = id[:n]
+		}
+	} else {
+		version = labelVer
+	}
+
+	revision := ""
+	if labelRev != "" {
+		n := 7
+		if len(labelRev) < n {
+			n = len(labelRev)
+		}
+		revision = labelRev[:n]
+	}
+
+	return ContainerInfo{Version: version, Revision: revision}
+}
+
+// GetComposeVersion returns the Docker Compose plugin version (e.g.
+// "v2.21.0"). Falls back to "v2" if the lookup fails.
+func GetComposeVersion(ctx context.Context) string {
+	out, err := dockerCmd(ctx, "compose", "version", "--short").Output()
+	if err != nil {
+		return "v2"
+	}
+	v := strings.TrimSpace(string(out))
+	if v == "" {
+		return "v2"
+	}
+	if strings.HasPrefix(v, "v") {
+		return v
+	}
+	return "v" + v
+}
+
 // SurgicalDisableAI removes only the AI gateway service + its host bind-mount
 // data dir, gateway.yaml, image, and FP_API_KEY from .env. NEVER runs
 // `compose down -v` because that would stop core + ui too.

@@ -5,6 +5,14 @@
     <UseWindowsForms>true</UseWindowsForms>
     <AssemblyName>FalconPulsarTray</AssemblyName>
     <RootNamespace>FalconPulsar.Tray</RootNamespace>
+    <!--
+      Version: default for local dev builds; overridden by CI via
+        dotnet publish ... -p:Version=$(echo $GITHUB_REF_NAME | sed 's/^v//')
+      so a tag push of v0.1.4-alpha.1 ships the tray with assembly
+      version 0.1.4 (semver pre-release suffixes are stripped because
+      .NET's System.Version doesn't accept them; the full tag name is
+      preserved on the GitHub Release page itself).
+    -->
     <Version>0.1.0</Version>
     <Company>FalconPulsar Contributors</Company>
     <Product>FalconPulsar</Product>

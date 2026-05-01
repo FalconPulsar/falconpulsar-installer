@@ -126,10 +126,22 @@ jobs:
       - name: Build tray app
         shell: powershell
         run: |
+          # Strip the leading "v" and any -alpha/-beta/-rc suffix. .NET's
+          # System.Version only accepts numeric major.minor.build[.revision],
+          # so v0.1.4-alpha.1 → 0.1.4 here. The full tag (with suffix) is
+          # still what the GitHub Release page is named, so users see the
+          # alpha designation in the right places; the assembly carries
+          # the closest representable numeric version, which is what the
+          # tray's About dialog reads via Assembly.GetName().Version.
+          $rawTag = "${env:GITHUB_REF_NAME}"
+          $trayVersion = $rawTag -replace '^v', '' -replace '-(alpha|beta|rc).*$', ''
+          if ([string]::IsNullOrEmpty($trayVersion)) { $trayVersion = '0.1.0' }
+          Write-Host "Building tray with Version=$trayVersion (from tag $rawTag)"
           dotnet publish windows/tray-app/FalconPulsarTray.csproj `
             -c Release -r win-x64 --self-contained `
             -p:PublishSingleFile=true `
             -p:EnableCompressionInSingleFile=true `
+            -p:Version=$trayVersion `
             -o windows/tray-app/publish
 
       - name: Install Inno Setup 6

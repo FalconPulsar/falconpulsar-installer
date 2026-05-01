@@ -475,8 +475,27 @@ func cmdAbout() *cobra.Command {
 		Use:   "about",
 		Short: "About FalconPulsar",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := context.Background()
+
 			fmt.Println(`FalconPulsar`)
-			fmt.Printf("Version:  %s\n", Version)
+			fmt.Printf("Installer:        v%s\n", Version)
+			fmt.Println()
+
+			// Per-component versions read from each container's OCI labels.
+			// When a container is stopped (or the version label hasn't been
+			// updated upstream) GetContainerInfo gracefully falls back --
+			// see the function's docstring for the resolution order.
+			fmt.Println("Components:")
+			fmt.Printf("  Core Engine     %s\n", actions.GetContainerInfo(ctx, "falconpulsar-core").DisplayString())
+			fmt.Printf("  Web UI          %s\n", actions.GetContainerInfo(ctx, "falconpulsar-ui").DisplayString())
+			if actions.AIGatewayEnabled() {
+				fmt.Printf("  AI Capabilities %s\n", actions.GetContainerInfo(ctx, "falconpulsar-ai-gateway").DisplayString())
+			} else {
+				fmt.Printf("  AI Capabilities %s\n", colorText("(disabled)", colorYellow))
+			}
+			fmt.Printf("  Compose         %s\n", actions.GetComposeVersion(ctx))
+			fmt.Println()
+
 			fmt.Println("Website:  https://falconpulsar.com")
 			fmt.Println("Docs:     https://falconpulsar.com/docs")
 			fmt.Println("Roadmap:  https://falconpulsar.com/roadmap")
