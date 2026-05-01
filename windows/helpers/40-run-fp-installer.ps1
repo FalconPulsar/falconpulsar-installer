@@ -249,44 +249,138 @@ if ($hasLegacyInstall) {
 # causing port-conflict failures on supposedly-fresh installs.
 if ($InstallAction -eq 'fresh') {
     Write-Info 'Fresh install -- wiping any prior FalconPulsar state inside WSL'
-    # Wipe BOTH the new per-user location AND the legacy service-user path.
-    # A legacy-service-user directory survives because the `falconpulsar`
-    # system user owns it -- remove the user + their home as part of the
-    # cleanup so port 7436 etc. aren't held by a zombie container.
+
+    # ── Step 1: wait for the Docker daemon to actually be reachable ───────
+    # 30-launch-docker-desktop.ps1 launches Docker Desktop earlier in the
+    # chain, but Docker Desktop's tray icon turning green != the daemon
+    # accepting connections. On a cold install we routinely see 10-30s
+    # between "icon green" and "docker info succeeds". If we run cleanup
+    # before the daemon is up, every `docker rm/rmi/volume rm` returns
+    # "Cannot connect to the Docker daemon" and the leftover state
+    # survives -- the symptom users hit as "Fresh didn't actually clean."
+    Write-Info 'Waiting for Docker Desktop daemon to be reachable inside WSL...'
+    $waitScript = @"
+deadline=`$(( `$(date +%s) + 60 ))
+while [ "`$(date +%s)" -lt "`$deadline" ]; do
+    if docker info >/dev/null 2>&1; then
+        echo '[ok] docker daemon is responsive'
+        exit 0
+    fi
+    sleep 2
+done
+echo '[warn] docker daemon did not respond within 60s -- cleanup will likely no-op'
+exit 1
+"@
+    $waitRc = Invoke-WslBash -Distro $Distro -Script $waitScript -User root
+    if ($waitRc -ne 0) {
+        Write-Warning 'Docker daemon not reachable -- proceeding with cleanup anyway, but it may not remove existing state'
+    }
+
+    # ── Step 2: actual cleanup, with explicit counts logged ──────────────
+    # Differences from the previous silent version:
+    #   • compose-first: try `docker compose down --volumes --remove-orphans`
+    #     before manual rm, so containers are torn down with their network
+    #     and named volumes in coordinated fashion.
+    #   • Each step counts what was removed and echoes the count, so the
+    #     install log records `Removed N containers` instead of nothing.
+    #   • set +e is only kept around the last legacy-cleanup section
+    #     where some commands legitimately fail (e.g. userdel of a user
+    #     that doesn't exist); active sections use explicit error handling.
+    #   • Added: prune the falconpulsar Compose project network even if
+    #     `docker network rm falconpulsar` doesn't match (Compose v2
+    #     sometimes names the network `<project>_default`).
     $cleanScript = @"
 set +e
-# Stop + remove every falconpulsar-* container (frees their ports).
-if command -v docker >/dev/null 2>&1; then
-    docker ps -a --filter 'name=falconpulsar-' -q 2>/dev/null | xargs -r docker rm -f 2>/dev/null
-    docker images --filter reference='*falconpulsar*' -q 2>/dev/null | xargs -r docker rmi -f 2>/dev/null
-    docker volume ls --format '{{.Name}}' 2>/dev/null | grep -E '^falconpulsar' | xargs -r docker volume rm -f 2>/dev/null
-    docker network rm falconpulsar 2>/dev/null
+removed_containers=0
+removed_images=0
+removed_volumes=0
+removed_networks=0
+
+# 2a. Prefer coordinated compose-down if a compose.yml still exists.
+if [ -f '$WslHome/compose.yml' ]; then
+    echo '[clean] running compose down --volumes --remove-orphans on existing stack'
+    cd '$WslHome' && \
+        sudo -u '$WslUser' -H sg docker -c \
+            'docker compose --profile ai down --volumes --remove-orphans' 2>&1 | sed 's/^/[clean]   /'
 fi
-# Wipe the new per-user stack dir
-rm -rf '$WslHome'
-# Wipe legacy service-user install if present
-rm -rf /home/falconpulsar/compose.yml /home/falconpulsar/.env \
-       /home/falconpulsar/gateway.yaml /home/falconpulsar/bin \
-       /home/falconpulsar/.docker /home/falconpulsar/ai-gateway-data \
-       /home/falconpulsar/data /home/falconpulsar 2>/dev/null
+if [ -f /home/falconpulsar/compose.yml ]; then
+    echo '[clean] running compose down --volumes on legacy service-user stack'
+    cd /home/falconpulsar && \
+        sudo -u falconpulsar -H sg docker -c \
+            'docker compose --profile ai down --volumes --remove-orphans' 2>&1 | sed 's/^/[clean]   /'
+fi
+
+# 2b. Belt-and-braces: remove any falconpulsar-* container compose missed.
+if command -v docker >/dev/null 2>&1; then
+    container_ids=`$(docker ps -a --filter 'name=falconpulsar-' -q 2>/dev/null)
+    if [ -n "`$container_ids" ]; then
+        removed_containers=`$(echo "`$container_ids" | wc -l | tr -d ' ')
+        echo "[clean] removing `$removed_containers stray container(s)"
+        echo "`$container_ids" | xargs -r docker rm -f 2>&1 | sed 's/^/[clean]   /'
+    fi
+
+    image_ids=`$(docker images --filter reference='*falconpulsar*' -q 2>/dev/null | sort -u)
+    if [ -n "`$image_ids" ]; then
+        removed_images=`$(echo "`$image_ids" | wc -l | tr -d ' ')
+        echo "[clean] removing `$removed_images falconpulsar image(s)"
+        echo "`$image_ids" | xargs -r docker rmi -f 2>&1 | sed 's/^/[clean]   /'
+    fi
+
+    volume_names=`$(docker volume ls --format '{{.Name}}' 2>/dev/null | grep -E '^falconpulsar')
+    if [ -n "`$volume_names" ]; then
+        removed_volumes=`$(echo "`$volume_names" | wc -l | tr -d ' ')
+        echo "[clean] removing `$removed_volumes falconpulsar volume(s)"
+        echo "`$volume_names" | xargs -r docker volume rm -f 2>&1 | sed 's/^/[clean]   /'
+    fi
+
+    # Compose v2 names the project network <project>_default; older
+    # versions used the bare project name. Try both.
+    for net in falconpulsar falconpulsar_default; do
+        if docker network inspect "`$net" >/dev/null 2>&1; then
+            echo "[clean] removing network `$net"
+            docker network rm "`$net" 2>&1 | sed 's/^/[clean]   /'
+            removed_networks=`$(( removed_networks + 1 ))
+        fi
+    done
+fi
+
+# 2c. Filesystem cleanup -- per-user stack dir + legacy service-user paths.
+# NOTE: Windows-side artefacts (%LOCALAPPDATA%\falconpulsar, fp.exe in
+# WindowsApps, %USERPROFILE%\falconpulsar, the Start Menu folder, the
+# HKCU Run key) are intentionally NOT touched here. This script runs in
+# ssPostInstall -- AFTER Inno Setup's [Files] section has just deposited
+# fp.exe -- so wiping those would leave a working PATH entry pointing
+# at a missing executable. Windows-side cleanup belongs in uninstall.ps1.
+if [ -d '$WslHome' ]; then
+    echo '[clean] removing per-user stack dir: $WslHome'
+    rm -rf '$WslHome'
+fi
+if [ -e /home/falconpulsar ]; then
+    echo '[clean] removing legacy service-user paths under /home/falconpulsar'
+    rm -rf /home/falconpulsar/compose.yml /home/falconpulsar/.env \
+           /home/falconpulsar/gateway.yaml /home/falconpulsar/bin \
+           /home/falconpulsar/.docker /home/falconpulsar/ai-gateway-data \
+           /home/falconpulsar/data /home/falconpulsar 2>/dev/null
+fi
 if id falconpulsar >/dev/null 2>&1; then
+    echo '[clean] removing legacy `falconpulsar` system user'
     loginctl disable-linger falconpulsar 2>/dev/null
     userdel --force falconpulsar 2>/dev/null || true
 fi
 rm -f /etc/profile.d/falconpulsar.sh 2>/dev/null
+
+# 2d. Final summary -- explicit, so the install log answers "did it actually
+# remove anything?" without the user having to read every line.
+echo "[clean] ──────────────────────────────────────────────────"
+echo "[clean] Fresh-install cleanup summary:"
+echo "[clean]   containers removed: `$removed_containers"
+echo "[clean]   images removed:     `$removed_images"
+echo "[clean]   volumes removed:    `$removed_volumes"
+echo "[clean]   networks removed:   `$removed_networks"
+echo "[clean] ──────────────────────────────────────────────────"
 echo '[ok] WSL state wiped -- ready for fresh install'
 "@
     $null = Invoke-WslBash -Distro $Distro -Script $cleanScript -User root
-
-    # NOTE: We deliberately do NOT delete the Windows-side files here
-    # (%LOCALAPPDATA%\falconpulsar, %LOCALAPPDATA%\Microsoft\WindowsApps\fp.exe,
-    # %USERPROFILE%\falconpulsar, the Start Menu folder, the HKCU Run key).
-    # This script runs in ssPostInstall -- AFTER Inno Setup's [Files]
-    # section has just deposited fp.exe at those locations. Wiping them
-    # here means every "fresh" install ends with a working PATH entry
-    # but no fp.exe on disk (verified empirically). Cleanup of those
-    # paths belongs in the UNINSTALL flow, where uninstall.ps1 -Purge
-    # already handles them.
 }
 
 # For 'reinstall' -- lighter cleanup: stop the stack + remove stack files,

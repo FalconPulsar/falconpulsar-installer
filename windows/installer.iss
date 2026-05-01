@@ -174,11 +174,26 @@ Name: "aigateway"; \
 ; Front-door HTTPS declaration. Drives the Secure flag and __Host- prefix
 ; on session cookies. Checked by default (recommended for any deployment
 ; reachable via HTTPS, including localhost on a TLS-fronted setup).
-; Uncheck ONLY for HTTP-only deployments on trusted LANs accessed by IP —
+; Uncheck ONLY for HTTP-only deployments on trusted LANs accessed by IP --
 ; without Secure cookies, sessions are vulnerable to LAN sniffing.
+;
+; Flags: checkedonce
+;   Inno Setup persists task selections across re-runs of the installer
+;   under the app's uninstall registry key. Without `checkedonce`, an
+;   upgrade install would pre-fill this checkbox from the previous
+;   install's recorded state -- meaning if a user (or an older build)
+;   once recorded "unchecked", every subsequent upgrade reopens with
+;   the box unchecked, defeating the safe-default. `checkedonce` says:
+;   "honor the default on every install where no prior state exists,
+;   but a user who explicitly unchecked stays in that state on re-
+;   install." Combined with the WizardSelectTasks('cookiesecure') call
+;   in NextButtonClick (see Issue 2 fix in [Code] when InstallAction
+;   becomes 'fresh'), every first-install AND every Fresh wipe lands
+;   with HTTPS enabled.
 Name: "cookiesecure"; \
     Description: "Use HTTPS at the front door (recommended). Uncheck only for HTTP-only LAN deployments — without HTTPS, session cookies are vulnerable to network sniffing."; \
-    GroupDescription: "Security:"
+    GroupDescription: "Security:"; \
+    Flags: checkedonce
 
 [Run]
 ; Open the Web UI in the default browser at the end (postinstall checkbox).
@@ -2085,6 +2100,13 @@ begin
         Exit;
       end;
       InstallAction := 'fresh';
+      // Fresh install = clean slate. Force-recheck the cookiesecure
+      // task so a user who unchecked it on a prior install doesn't
+      // silently inherit "HTTP-only" into their fresh install. The
+      // `checkedonce` flag in [Tasks] would otherwise leave the box
+      // unchecked here. WizardSelectTasks programmatically re-checks
+      // it (and only it; other tasks are unaffected by this call).
+      WizardSelectTasks('cookiesecure');
     end
     else if ExistingReinstallRadio.Checked then
       InstallAction := 'reinstall'

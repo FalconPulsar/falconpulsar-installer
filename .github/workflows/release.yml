@@ -345,7 +345,25 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # Detect prerelease tags by suffix. Standard semver pre-release
+          # identifiers are -alpha[.N], -beta[.N], -rc[.N]. When matched:
+          #   --prerelease  → orange "Pre-release" badge on the release page
+          #   --latest=false → don't move the /releases/latest pointer here,
+          #                    so a prior stable release stays canonical
+          # Stable tags (plain vN.N.N) get the normal release path.
+          PRERELEASE_FLAGS=""
+          PRERELEASE_TITLE_PREFIX=""
+          PRERELEASE_NOTES=""
+          case "$GITHUB_REF_NAME" in
+            *-alpha*|*-beta*|*-rc*)
+              PRERELEASE_FLAGS="--prerelease --latest=false"
+              PRERELEASE_TITLE_PREFIX="[Pre-release] "
+              PRERELEASE_NOTES=$'\n> ⚠️  **Pre-release.** Bugs expected. Do not deploy to production. The `/releases/latest` link is unaffected by this tag.\n'
+              ;;
+          esac
+
           NOTES=$(cat <<EOF
+          ${PRERELEASE_NOTES}
           See REQUIREMENTS.md for supported platforms.
 
           - **Linux / macOS:** \`curl -fsSL <url> | bash\`
@@ -368,8 +386,10 @@ jobs:
           for reporting instructions.
           EOF
           )
+          # shellcheck disable=SC2086  # PRERELEASE_FLAGS is intentionally word-split
           gh release create "${GITHUB_REF_NAME}" \
-            --title "FalconPulsar Installer ${GITHUB_REF_NAME}" \
+            --title "${PRERELEASE_TITLE_PREFIX}FalconPulsar Installer ${GITHUB_REF_NAME}" \
             --notes "$NOTES" \
             --repo "${GITHUB_REPOSITORY}" \
+            $PRERELEASE_FLAGS \
             dist/*
