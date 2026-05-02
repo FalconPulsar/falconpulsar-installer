@@ -1019,14 +1019,32 @@ namespace FalconPulsar.Tray
             string[] vers  = { coreInfo.DisplayString, composeVer, uiInfo.DisplayString, gwInfo.DisplayString };
             bool[] oks     = { _coreRunning, true, _uiRunning, _gatewayRunning };
 
+            // 2x2 grid of 2-line cells. Each cell:
+            //
+            //   \u2713  Core Engine                   \u2190 top line: check + name (label)
+            //      0.1.0-alpha.1 (58b896f)       \u2190 bottom line: version (data)
+            //
+            // Previous layout put name and version on the same line, which
+            // worked when versions were short ("latest", "v2") but truncated
+            // and overflowed the next column the moment we started rendering
+            // real semvers + revision SHAs. Two-line cells give the version
+            // string the entire column width to render in.
+            //
+            // colW = 240, name + version both indent to cx+22 (under the
+            // check), each gets 200px width \u2014 leaves an 18px safety gap to
+            // the next column's check icon. Same shape as the macOS About
+            // panel for cross-platform consistency.
             int gridY = 260;
+            const int rowH = 48;     // was 30 (single-line); 48 fits 2 stacked Labels with breathing room
+            const int lineGap = 22;  // vertical distance between the two lines within a cell
             for (int i = 0; i < 4; i++)
             {
                 int col = i % 2;
                 int row = i / 2;
                 int cx = 45 + col * 240;
-                int cy = gridY + row * 30;
+                int cy = gridY + row * rowH;
 
+                // \u2500\u2500 Top line: check + name \u2500\u2500
                 panel.Controls.Add(new Label
                 {
                     Text = oks[i] ? "\u2713" : "\u2717",
@@ -1038,20 +1056,24 @@ namespace FalconPulsar.Tray
                     Location = new Point(cx, cy)
                 });
 
+                // No trailing colon \u2014 the version below stands on its own
+                // line, so the "Name: <inline value>" punctuation no
+                // longer makes sense.
                 panel.Controls.Add(new Label
                 {
-                    Text = $"{names[i]}:",
+                    Text = names[i],
                     Font = new Font("Segoe UI", 10),
                     ForeColor = Color.FromArgb(170, 170, 170),
                     BackColor = Color.Transparent,
                     AutoSize = false,
-                    Size = new Size(110, 20),
+                    Size = new Size(200, 20),
                     Location = new Point(cx + 22, cy)
                 });
 
-                // vers[i] may be "0.3.7 (a03db27)" or just "a03db27" (digest
-                // fallback). 100px at Consolas 9pt fits ~17 chars cleanly,
-                // enough for "a.b.c-rc.1 (1234567)" without truncation.
+                // \u2500\u2500 Bottom line: version (indented under name) \u2500\u2500
+                // 200px width fits "a.b.c-rc.10 (1234567)" (~22 chars) at
+                // Consolas 9pt with a comfortable buffer to the next
+                // column \u2014 no truncation, no overflow.
                 panel.Controls.Add(new Label
                 {
                     Text = vers[i],
@@ -1059,8 +1081,8 @@ namespace FalconPulsar.Tray
                     ForeColor = Color.FromArgb(220, 220, 220),
                     BackColor = Color.Transparent,
                     AutoSize = false,
-                    Size = new Size(100, 20),
-                    Location = new Point(cx + 135, cy)
+                    Size = new Size(200, 20),
+                    Location = new Point(cx + 22, cy + lineGap)
                 });
             }
 

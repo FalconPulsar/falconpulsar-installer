@@ -1476,41 +1476,64 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             ("AI Capabilities", gwInfo.displayString, gatewayRunning)
         ]
 
+        // 2x2 grid of 2-line cells. Each cell:
+        //
+        //   ✓  Core Engine                     ← top line: check + name (label)
+        //      0.1.0-alpha.1 (58b896f)         ← bottom line: version (data)
+        //
+        // Previous layout put name and version on the same line, which
+        // worked when versions were short ("latest", "v2") but truncated
+        // and overflowed the next column the moment we started rendering
+        // real semvers + revision SHAs. Two-line cells give the version
+        // string the entire column width to render in.
+        //
+        // colW = 230 column width, indent = 22 (under the name, not the
+        // check), version field width = 200 (leaves an 8-pixel safety
+        // gap to the next column's check icon).
         let gridY = h - 310
         let colW: CGFloat = 230
         let leftX: CGFloat = 45
+        let rowH: CGFloat = 48          // was 32 (single-line); 48 gives room for 2 stacked labels + breathing space
+        let lineGap: CGFloat = 22       // vertical distance between the two lines within a cell
 
         for (i, (name, ver, ok)) in components.enumerated() {
             let col = CGFloat(i % 2)
             let row = CGFloat(i / 2)
             let cx = leftX + col * colW
-            let cy = gridY - row * 32
+            let cy = gridY - row * rowH    // bottom-line baseline; top line sits at cy + lineGap
 
+            // ── Top line: check + name ──
             let check = NSTextField(labelWithString: ok ? "✓" : "✗")
-            check.frame = NSRect(x: cx, y: cy, width: 20, height: 18)
+            check.frame = NSRect(x: cx, y: cy + lineGap, width: 20, height: 18)
             check.font = NSFont.systemFont(ofSize: 14, weight: .bold)
             check.textColor = ok ? NSColor.systemGreen : NSColor.systemRed
             view.addSubview(check)
 
-            let nameLabel = NSTextField(labelWithString: name + ":")
-            nameLabel.frame = NSRect(x: cx + 22, y: cy, width: 110, height: 18)
+            // No trailing colon — the version below stands on its own line, so the
+            // "Name: <inline value>" punctuation no longer makes sense.
+            let nameLabel = NSTextField(labelWithString: name)
+            nameLabel.frame = NSRect(x: cx + 22, y: cy + lineGap, width: 200, height: 18)
             nameLabel.font = NSFont.systemFont(ofSize: 12)
             nameLabel.textColor = NSColor(white: 0.65, alpha: 1)
             view.addSubview(nameLabel)
 
-            // ver may be "0.3.7 (a03db27)" or just "a03db27" (digest fallback).
-            // The grid is 230px wide per column and the name takes ~110px;
-            // 110px for ver fits up to roughly 17 monospace chars — enough
-            // for "a.b.c-rc.1 (1234567)" without truncation.
+            // ── Bottom line: version (indented under name) ──
+            // 200px width fits "a.b.c-rc.10 (1234567)" (~22 chars) at SF Mono 11pt
+            // with a comfortable 8px buffer to the next column — no truncation,
+            // no overflow.
             let verText = NSTextField(labelWithString: ver)
-            verText.frame = NSRect(x: cx + 130, y: cy, width: 110, height: 18)
+            verText.frame = NSRect(x: cx + 22, y: cy, width: 200, height: 18)
             verText.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
-            verText.textColor = NSColor(white: 0.85, alpha: 1)
+            verText.textColor = NSColor(white: 0.9, alpha: 1)
             view.addSubview(verText)
         }
 
         // ── Links ──
-        let linksY = gridY - 85
+        // Position relative to the grid bottom rather than gridY directly,
+        // so that bumping rowH (cell height) automatically pushes the
+        // links down without us having to remember to update this constant
+        // too. Bottom of last row = gridY - rowH; links sit ~37px below.
+        let linksY = (gridY - rowH) - 37
         let linkData: [(String, String)] = [
             ("Documentation", "https://falconpulsar.com/docs"),
             ("Release Notes", "https://github.com/FalconPulsar/falconpulsar-installer/releases"),
