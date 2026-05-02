@@ -214,9 +214,15 @@ log "compiling menu-bar-app"
        -framework AppKit -framework UserNotifications -O )
 
 log "compiling fp console CLI (for embed in installer)"
+# Inject the release version into the fp binary at link time. Without
+# this -X flag, `fp about` and the TUI's About modal report whatever
+# string was hardcoded in cli.go (the "dev" default), which lags
+# behind the installer release version. Mirrors how Info.plist gets
+# its CFBundleShortVersionString from $VERSION just below.
 ( cd console && mkdir -p dist \
   && GOOS=darwin GOARCH=arm64 CGO_ENABLED=0 \
-     go build -ldflags="-s -w" -o dist/fp-macos-arm64 ./cmd/fp )
+     go build -ldflags="-s -w -X github.com/falconpulsar/falconpulsar-installer/console/internal/cli.Version=${VERSION}" \
+        -o dist/fp-macos-arm64 ./cmd/fp )
 # Apple Silicon Macs are all arm64; no x86_64 embed needed for Mx builds.
 
 # ── Step 2: Build icns files ───────────────────────────────────────────────

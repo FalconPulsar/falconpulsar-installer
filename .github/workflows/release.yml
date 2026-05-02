@@ -113,6 +113,12 @@ jobs:
         # installer.iss [Files] at line 158 requires this binary; the
         # Windows installer copies it into WSL alongside the bash
         # installer and the Windows fp.exe wrapper execs it.
+        #
+        # ldflags -X injects the release version into cli.Version at
+        # link time so `fp --version`, `fp about`, and the TUI About
+        # modal show the actual release tag instead of the literal
+        # "dev" default in cli.go. Strip the leading "v" so the
+        # in-binary string matches the bare semver convention.
         shell: bash
         env:
           GOOS: linux
@@ -120,7 +126,10 @@ jobs:
           CGO_ENABLED: '0'
         run: |
           cd console
-          go build -ldflags="-s -w" -o dist/fp-linux-amd64 ./cmd/fp
+          FP_VER="${GITHUB_REF_NAME#v}"
+          echo "Building fp with cli.Version=$FP_VER (from tag $GITHUB_REF_NAME)"
+          go build -ldflags="-s -w -X github.com/falconpulsar/falconpulsar-installer/console/internal/cli.Version=${FP_VER}" \
+            -o dist/fp-linux-amd64 ./cmd/fp
           ls -lh dist/fp-linux-amd64
 
       - name: Build tray app

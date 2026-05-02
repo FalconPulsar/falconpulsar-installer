@@ -16,7 +16,19 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const Version = "0.1.3"
+// Version is the human-visible release version of the fp binary,
+// displayed by `fp --version`, `fp about`, and the TUI's About modal.
+//
+// Declared as a `var` (not `const`) so that build pipelines can inject
+// the actual git tag at link time:
+//
+//   go build -ldflags="-X github.com/falconpulsar/falconpulsar-installer/console/internal/cli.Version=0.1.4-alpha.5" ...
+//
+// The literal "dev" default is correct for unstamped local builds
+// (eg. `go run ./cmd/fp`) -- in that context the binary genuinely is
+// not a release. CI overrides this on every tag push so the published
+// binaries report their real release version.
+var Version = "dev"
 
 // Root returns the top-level `fp` command (with all subcommands registered).
 // If invoked with no subcommand or explicit `tui`, the caller should launch
@@ -478,7 +490,9 @@ func cmdAbout() *cobra.Command {
 			ctx := context.Background()
 
 			fmt.Println(`FalconPulsar`)
+			fmt.Println()
 			fmt.Printf("Installer:        v%s\n", Version)
+			fmt.Printf("Stack dir:        %s\n", actions.HomeDir())
 			fmt.Println()
 
 			// Per-component versions read from each container's OCI labels.
@@ -496,9 +510,18 @@ func cmdAbout() *cobra.Command {
 			fmt.Printf("  Compose         %s\n", actions.GetComposeVersion(ctx))
 			fmt.Println()
 
-			fmt.Println("Website:  https://falconpulsar.com")
-			fmt.Println("Docs:     https://falconpulsar.com/docs")
-			fmt.Println("Roadmap:  https://falconpulsar.com/roadmap")
+			// Local endpoints -- duplicated in the TUI About modal and
+			// useful here for shell pipelines (e.g. piping to grep to
+			// extract a port number for a script).
+			fmt.Println("Endpoints:")
+			fmt.Println("  Web UI          http://localhost:8080")
+			fmt.Println("  REST API        http://localhost:7433")
+			fmt.Println("  AI Gateway      http://localhost:7436")
+			fmt.Println()
+
+			fmt.Println("Website:          https://falconpulsar.com")
+			fmt.Println("Docs:             https://falconpulsar.com/docs")
+			fmt.Println("Roadmap:          https://falconpulsar.com/roadmap")
 			fmt.Println("(c) 2026 FalconPulsar Contributors — GNU AGPL v3")
 			return nil
 		},

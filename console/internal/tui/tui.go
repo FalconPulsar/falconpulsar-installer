@@ -1029,21 +1029,47 @@ func shortDigestForTUI(d string) string {
 }
 
 func (a *App) showAbout() {
-	tv := tview.NewTextView().SetDynamicColors(true).SetWrap(true)
+	// Per-component metadata pulled from each container's OCI labels
+	// via docker inspect. Same data the `fp about` CLI command shows
+	// and the same data the macOS menu-bar / Windows tray About panels
+	// show -- one canonical About story across every surface.
+	ctx := context.Background()
+	coreInfo := actions.GetContainerInfo(ctx, "falconpulsar-core")
+	uiInfo := actions.GetContainerInfo(ctx, "falconpulsar-ui")
+	gwInfo := actions.GetContainerInfo(ctx, "falconpulsar-ai-gateway")
+	composeVer := actions.GetComposeVersion(ctx)
+
+	aiLine := gwInfo.DisplayString()
+	if !actions.AIGatewayEnabled() {
+		aiLine = "[#A78400](disabled)[-]"
+	}
+
+	tv := tview.NewTextView().SetDynamicColors(true).SetWrap(false)
 	tv.SetBackgroundColor(theme.Panel)
 	tv.SetText(fmt.Sprintf(
 		"[::b]FalconPulsar[-:-:-]\n\n"+
-			"Version:     %s\n"+
-			"Stack dir:   %s\n"+
-			"Web UI:      http://localhost:8080\n"+
-			"REST API:    http://localhost:7433\n"+
-			"AI Capabilities: http://localhost:7436\n\n"+
-			"Website:     https://falconpulsar.com\n"+
-			"Docs:        https://falconpulsar.com/docs\n"+
-			"Roadmap:     https://falconpulsar.com/roadmap\n\n"+
+			"Installer:        v%s\n"+
+			"Stack dir:        %s\n\n"+
+			"[::b]Components:[-:-:-]\n"+
+			"  Core Engine     %s\n"+
+			"  Web UI          %s\n"+
+			"  AI Capabilities %s\n"+
+			"  Compose         %s\n\n"+
+			"[::b]Endpoints:[-:-:-]\n"+
+			"  Web UI          http://localhost:8080\n"+
+			"  REST API        http://localhost:7433\n"+
+			"  AI Gateway      http://localhost:7436\n\n"+
+			"Website:          https://falconpulsar.com\n"+
+			"Docs:             https://falconpulsar.com/docs\n"+
+			"Roadmap:          https://falconpulsar.com/roadmap\n\n"+
 			"(c) 2026 FalconPulsar Contributors — GNU AGPL v3\n\n"+
 			"[#6B7280]Press Esc or Enter to close.[-]",
-		cli.Version, actions.HomeDir()))
+		cli.Version,
+		actions.HomeDir(),
+		coreInfo.DisplayString(),
+		uiInfo.DisplayString(),
+		aiLine,
+		composeVer))
 	tv.SetInputCapture(func(ev *tcell.EventKey) *tcell.EventKey {
 		if ev.Key() == tcell.KeyEscape || ev.Key() == tcell.KeyEnter {
 			a.pages.RemovePage("modal")
@@ -1051,5 +1077,9 @@ func (a *App) showAbout() {
 		}
 		return ev
 	})
-	a.pushModal("About FalconPulsar", tv, 60, 14)
+	// Box was 60x14 for the old layout. New layout is taller (Components
+	// + Endpoints sections) and slightly wider (longer URLs and the
+	// "AI Capabilities  X.Y.Z (sha)" line want ~50 cols of content +
+	// chrome). 70x24 fits comfortably.
+	a.pushModal("About FalconPulsar", tv, 70, 24)
 }

@@ -53,6 +53,11 @@ jobs:
           cache-dependency-path: console/go.sum
 
       - name: Build
+        # On tag pushes, inject the release version into cli.Version
+        # via ldflags -X so `fp about` reports the real tag. On non-tag
+        # pushes (PR / branch validation builds) the cli.go default
+        # ("dev") is appropriate -- those binaries are CI validation,
+        # not distribution.
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
@@ -60,7 +65,13 @@ jobs:
         run: |
           cd console
           mkdir -p dist
-          go build -ldflags="-s -w" -o dist/fp-${{ matrix.suffix }}${{ matrix.ext }} ./cmd/fp
+          LDFLAGS="-s -w"
+          if [[ "${GITHUB_REF}" =~ ^refs/tags/v ]]; then
+            FP_VER="${GITHUB_REF_NAME#v}"
+            LDFLAGS="$LDFLAGS -X github.com/falconpulsar/falconpulsar-installer/console/internal/cli.Version=${FP_VER}"
+            echo "Building fp with cli.Version=$FP_VER (from tag $GITHUB_REF_NAME)"
+          fi
+          go build -ldflags="$LDFLAGS" -o dist/fp-${{ matrix.suffix }}${{ matrix.ext }} ./cmd/fp
           ls -lh dist/
 
       - name: Upload artifact

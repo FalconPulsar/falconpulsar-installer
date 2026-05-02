@@ -88,6 +88,11 @@ jobs:
           ls -lh ../../console/dist/fp-windows-amd64.exe
 
       - name: Build Linux fp (staged into WSL at install time)
+        # On tag pushes, inject the release version into cli.Version
+        # via ldflags -X so the binary's `fp about` reports the real
+        # tag. On non-tag pushes (PR / branch validation builds) the
+        # cli.go default ("dev") is the right thing -- those binaries
+        # are CI validation, not distribution.
         shell: bash
         env:
           GOOS: linux
@@ -95,7 +100,13 @@ jobs:
           CGO_ENABLED: '0'
         run: |
           cd console
-          go build -ldflags="-s -w" -o dist/fp-linux-amd64 ./cmd/fp
+          LDFLAGS="-s -w"
+          if [[ "${GITHUB_REF}" =~ ^refs/tags/v ]]; then
+            FP_VER="${GITHUB_REF_NAME#v}"
+            LDFLAGS="$LDFLAGS -X github.com/falconpulsar/falconpulsar-installer/console/internal/cli.Version=${FP_VER}"
+            echo "Building fp with cli.Version=$FP_VER (from tag $GITHUB_REF_NAME)"
+          fi
+          go build -ldflags="$LDFLAGS" -o dist/fp-linux-amd64 ./cmd/fp
           ls -lh dist/fp-linux-amd64
 
       - name: Build tray app
