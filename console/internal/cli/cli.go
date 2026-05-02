@@ -24,11 +24,13 @@ import (
 //
 //   go build -ldflags="-X github.com/falconpulsar/falconpulsar-installer/console/internal/cli.Version=0.1.4-alpha.5" ...
 //
-// The literal "dev" default is correct for unstamped local builds
-// (eg. `go run ./cmd/fp`) -- in that context the binary genuinely is
-// not a release. CI overrides this on every tag push so the published
-// binaries report their real release version.
-var Version = "dev"
+// The literal default is kept in sync with the repo-root VERSION file
+// by scripts/sync-version.sh (CI lint enforces no drift). CI release
+// builds override this via ldflags so the published binary reports
+// the actual git tag; unstamped local builds (`go run ./cmd/fp`) fall
+// back to whatever this literal currently says — slightly stale but
+// not misleading.
+var Version = "0.1.3"
 
 // Root returns the top-level `fp` command (with all subcommands registered).
 // If invoked with no subcommand or explicit `tui`, the caller should launch

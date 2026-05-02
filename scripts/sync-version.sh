@@ -44,8 +44,12 @@ fi
 # target ${VERSION}. Patterns intentionally surround the version with enough
 # context that they only match the intended hardcoded site.
 SITES=(
-  # Go: const Version = "X.Y.Z"
-  "console/internal/cli/cli.go|(const Version = \")[^\"]+(\")|\\1${VERSION}\\2"
+  # Go: var Version = "X.Y.Z"   (was `const` until we added build-time
+  # ldflags injection -- Go's `-ldflags -X` can override a `var` but
+  # not a `const`, so the keyword had to change. The [a-z]+ character
+  # class matches either keyword without using grouped alternation
+  # (which BSD sed -E rejects with "parentheses not balanced").
+  "console/internal/cli/cli.go|([a-z]+ Version = \")[^\"]+(\")|\\1${VERSION}\\2"
 
   # Go: "falconpulsar_version": "X.Y.Z",
   "console/internal/configbackup/backup.go|(\"falconpulsar_version\": +\")[^\"]+(\")|\\1${VERSION}\\2"

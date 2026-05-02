@@ -38,10 +38,10 @@
 ;
 ; CI passes:    ISCC.exe /DMyAppVersion="0.1.4-alpha.3" windows\installer.iss
 ; Local builds: ISCC.exe with no override -> uses the literal default
-;               below (currently "dev"), which is the right thing for
-;               developer-machine builds where there's no git tag.
+;               below, which scripts/sync-version.sh keeps in sync with
+;               the repo-root VERSION file (CI lint enforces no drift).
 #ifndef MyAppVersion
-  #define MyAppVersion "dev"
+  #define MyAppVersion "0.1.3"
 #endif
 #define MyAppPublisher   "FalconPulsar Contributors"
 #define MyAppURL         "https://github.com/FalconPulsar/falconpulsar-installer"
