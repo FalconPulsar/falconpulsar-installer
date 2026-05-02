@@ -157,7 +157,21 @@ jobs:
       - name: Compile installer.iss
         shell: powershell
         run: |
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "windows\installer.iss"
+          # Inject the git tag (sans leading "v") into installer.iss as
+          # MyAppVersion. This is the noble fix for the long-standing
+          # "FalconPulsar-Setup-0.1.3.exe filename even on v0.1.4-alpha.3
+          # release" bug -- previously the version was hardcoded in
+          # installer.iss line 33 and never updated automatically.
+          # Unlike the .NET tray's <Version>, Inno Setup accepts the full
+          # semver pre-release suffix (-alpha.N, -beta.N, -rc.N), so we
+          # don't need to strip it.
+          $rawTag = "${env:GITHUB_REF_NAME}"
+          $issVersion = $rawTag -replace '^v', ''
+          if ([string]::IsNullOrEmpty($issVersion)) { $issVersion = 'dev' }
+          Write-Host "Compiling installer.iss with MyAppVersion=$issVersion (from tag $rawTag)"
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" `
+              "/DMyAppVersion=$issVersion" `
+              "windows\installer.iss"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Upload .exe

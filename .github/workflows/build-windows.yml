@@ -144,9 +144,21 @@ jobs:
         shell: powershell
         run: |
           $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
-          # Pin the version to whatever is in installer.iss; we don't
-          # override it from CI for v0.1.
-          & $iscc "windows\installer.iss"
+          # On tag pushes, inject MyAppVersion from the git tag so the
+          # output filename, AppVersion, and About-dialog version line up
+          # with the release. On non-tag pushes (PR / branch validation
+          # builds) the installer.iss default ("dev") is appropriate --
+          # those binaries are CI validation, not distribution.
+          $defines = @()
+          if ("${env:GITHUB_REF}" -match '^refs/tags/v') {
+              $rawTag = "${env:GITHUB_REF_NAME}"
+              $issVersion = $rawTag -replace '^v', ''
+              if (-not [string]::IsNullOrEmpty($issVersion)) {
+                  $defines += "/DMyAppVersion=$issVersion"
+                  Write-Host "Compiling installer.iss with MyAppVersion=$issVersion (from tag $rawTag)"
+              }
+          }
+          & $iscc @defines "windows\installer.iss"
           if ($LASTEXITCODE -ne 0) {
             Write-Error "ISCC failed with exit code $LASTEXITCODE"
             exit $LASTEXITCODE

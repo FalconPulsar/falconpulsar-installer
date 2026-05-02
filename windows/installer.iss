@@ -30,7 +30,19 @@
 ; =============================================================================
 
 #define MyAppName        "FalconPulsar"
-#define MyAppVersion     "0.1.3"
+; MyAppVersion: overridable from the CI command line so that release
+; builds stamp the actual git tag into the OutputBaseFilename, the
+; AppVersion shown in Programs and Features, the UninstallDisplayName,
+; the welcome screen, the install log, and the About dialog -- every
+; place {#MyAppVersion} appears in this file.
+;
+; CI passes:    ISCC.exe /DMyAppVersion="0.1.4-alpha.3" windows\installer.iss
+; Local builds: ISCC.exe with no override -> uses the literal default
+;               below (currently "dev"), which is the right thing for
+;               developer-machine builds where there's no git tag.
+#ifndef MyAppVersion
+  #define MyAppVersion "dev"
+#endif
 #define MyAppPublisher   "FalconPulsar Contributors"
 #define MyAppURL         "https://github.com/FalconPulsar/falconpulsar-installer"
 #define MyAppExeName     "FalconPulsar-Setup.exe"
