@@ -1124,10 +1124,29 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         export DOCKER_CLI_HINTS=false
         export PATH='/Applications/Docker.app/Contents/Resources/bin:/usr/local/bin:/opt/homebrew/bin':"$PATH"
         cd '\(homeDir)' || exit 1
+        # Snapshot current image IDs for all services BEFORE the pull. After
+        # `up -d` we remove any captured ID that's now untagged (= displaced
+        # by the pull). Stops orphaned <none> images accumulating on
+        # disable/re-enable cycles or whenever the AI gateway image gets a
+        # new version. Mirrors fp_try_upgrade_fastpath in
+        # shared/lib/existing.sh and actions.SnapshotComposeImageIDs in Go.
+        prev_image_ids=''
+        for svc in `docker compose --profile ai config --services 2>/dev/null`; do
+            id=`docker compose --profile ai images -q "$svc" 2>/dev/null | head -1`
+            [ -n "$id" ] && prev_image_ids="$prev_image_ids $id"
+        done
         echo '[enable-ai] pulling AI gateway image…'
         docker compose --profile ai pull ai-gateway 2>&1
         echo '[enable-ai] starting ai-gateway container…'
         docker compose --profile ai up -d ai-gateway 2>&1
+        # Best-effort cleanup: remove each snapshotted ID that is now
+        # untagged. Errors swallowed — the enable itself already succeeded.
+        for id in $prev_image_ids; do
+            tag_count=`docker image inspect "$id" --format '{{len .RepoTags}}' 2>/dev/null || echo ''`
+            if [ "$tag_count" = '0' ]; then
+                docker image rm "$id" >/dev/null 2>&1 || true
+            fi
+        done
 
         # ── Wipe self-seeded providers + models ─────────────────────────
         echo '[wipe-seed] waiting for AI Gateway to finish init…'

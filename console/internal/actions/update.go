@@ -348,6 +348,21 @@ func ApplyUpdates(ctx context.Context, stdout, stderr io.Writer) error {
 	// Path 2: no installer beside us — do the bash fast-path inline.
 	// Calls registry probe (best-effort if we have docker login state)
 	// then docker compose pull + up -d.
+	//
+	// Snapshot the image IDs each compose service currently resolves to
+	// BEFORE the pull. These IDs form the cleanup whitelist: after the
+	// upgrade succeeds, any of these that are now fully untagged (the
+	// pull displaced them with a newer version) will be removed. This
+	// mirrors fp_try_upgrade_fastpath in shared/lib/existing.sh so both
+	// the bundled-installer path and the inline fallback behave the same.
+	//
+	// Registry-agnostic by design: only image IDs that were "ours" before
+	// the pull are candidates, and only when they end up untagged. Cannot
+	// accidentally touch unrelated images, doesn't depend on labels being
+	// preserved through mirrors, and respects any manual tags the operator
+	// may have on the same image ID.
+	prevImageIDs := SnapshotComposeImageIDs(ctx)
+
 	fmt.Fprintln(stdout, "Pulling latest images…")
 	if err := Compose(ctx, stdout, stderr, "pull"); err != nil {
 		return fmt.Errorf("docker compose pull failed: %w", err)
@@ -356,8 +371,101 @@ func ApplyUpdates(ctx context.Context, stdout, stderr io.Writer) error {
 	if err := Compose(ctx, stdout, stderr, "up", "-d"); err != nil {
 		return fmt.Errorf("docker compose up -d failed: %w", err)
 	}
+
+	// Best-effort cleanup. Errors are not surfaced — the upgrade itself
+	// succeeded; failing to clean up old images is cosmetic, not fatal.
+	removed := RemoveOrphanedImages(ctx, prevImageIDs)
+	if removed > 0 {
+		fmt.Fprintf(stdout, "Removed %d previous image(s).\n", removed)
+	}
+
 	fmt.Fprintln(stdout, "Update complete.")
 	return nil
+}
+
+// SnapshotComposeImageIDs returns the image ID each compose service
+// currently resolves to. Used by ApplyUpdates as the cleanup whitelist
+// across the pull+recreate cycle. Errors return an empty slice so the
+// upgrade itself isn't blocked by a cleanup-prep failure.
+func SnapshotComposeImageIDs(ctx context.Context) []string {
+	// `docker compose config --services` is the canonical way to list
+	// services without parsing compose.yml ourselves.
+	cmd := exec.CommandContext(ctx, dockerPath(),
+		append(append([]string{"compose"}, composeProfileArgs()...), "config", "--services")...,
+	)
+	cmd.Dir = HomeDir()
+	cmd.Env = dockerEnv()
+	svcOut, err := cmd.Output()
+	if err != nil {
+		return nil
+	}
+	services := strings.Fields(strings.TrimSpace(string(svcOut)))
+
+	ids := make([]string, 0, len(services))
+	for _, svc := range services {
+		// `docker compose images -q <svc>` returns the image ID (sha256:...)
+		// of the service's current image, even if the service isn't running.
+		imgCmd := exec.CommandContext(ctx, dockerPath(),
+			append(append([]string{"compose"}, composeProfileArgs()...), "images", "-q", svc)...,
+		)
+		imgCmd.Dir = HomeDir()
+		imgCmd.Env = dockerEnv()
+		imgOut, err := imgCmd.Output()
+		if err != nil {
+			continue
+		}
+		// Take the first line — `docker compose images -q` emits one ID
+		// per matching container; we just need the image reference.
+		for _, line := range strings.Split(strings.TrimSpace(string(imgOut)), "\n") {
+			id := strings.TrimSpace(line)
+			if id != "" {
+				ids = append(ids, id)
+				break
+			}
+		}
+	}
+	return ids
+}
+
+// RemoveOrphanedImages removes any of the supplied image IDs that are now
+// fully untagged (i.e. were displaced by a fresh pull). Images that still
+// have any tag pointing to them are skipped — that protects both the
+// "pull was a no-op" case (ID still tagged) and the "operator has a
+// manual backup tag" case (other tag still references the same ID).
+// Returns the count actually removed. All errors are swallowed: cleanup
+// is best-effort.
+func RemoveOrphanedImages(ctx context.Context, ids []string) int {
+	seen := make(map[string]bool, len(ids))
+	removed := 0
+	for _, id := range ids {
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+
+		// Check tag count via inspect. Output is just an integer.
+		inspectCmd := exec.CommandContext(ctx, dockerPath(),
+			"image", "inspect", id, "--format", "{{len .RepoTags}}",
+		)
+		inspectCmd.Env = dockerEnv()
+		out, err := inspectCmd.Output()
+		if err != nil {
+			// Image already gone or otherwise unreadable — nothing to do.
+			continue
+		}
+		if strings.TrimSpace(string(out)) != "0" {
+			// Still has tags — either pull was a no-op or operator has
+			// a manual tag. Leave it alone.
+			continue
+		}
+
+		rmCmd := exec.CommandContext(ctx, dockerPath(), "image", "rm", id)
+		rmCmd.Env = dockerEnv()
+		if err := rmCmd.Run(); err == nil {
+			removed++
+		}
+	}
+	return removed
 }
 
 // findBundledInstaller locates the installer's install.sh, if it shipped

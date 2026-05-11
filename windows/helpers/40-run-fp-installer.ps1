@@ -212,13 +212,43 @@ Write-Info "Install action: $InstallAction"
 if ($InstallAction -eq 'upgrade' -and $hasExisting -and -not $hasLegacyInstall) {
     Write-Info 'Upgrading in place -- pulling latest images and restarting'
     $profileFlag = if ($AIGateway -eq 'true') { '--profile ai' } else { '' }
+    # Snapshot-then-cleanup pattern: capture each service's current image
+    # ID before pulling, then after `compose up -d` succeeds remove any
+    # captured ID that is now fully untagged (= displaced by a newer image
+    # the pull brought down). This mirrors fp_try_upgrade_fastpath in
+    # shared/lib/existing.sh so the installer-driven upgrade behaves the
+    # same as the tray/CLI-driven `fp update --apply`. Without this the
+    # operator accumulates orphaned <none> images on every upgrade.
+    #
+    # Registry-agnostic: only image IDs that were "ours" before the pull
+    # are candidates, only when fully untagged afterward. Cannot touch
+    # unrelated images, and respects any manual backup tags the operator
+    # may have on the same image ID.
     $upgradeScript = @"
 set -e
 export FP_ASSUME_YES=1
 export FP_LEGAL_ACCEPTED=1
 cd '$WslHome' 2>/dev/null || cd /opt/falconpulsar-installer
 if [ -f '$WslHome/compose.yml' ]; then
-    sudo -u '$WslUser' -H sg docker -c "cd '$WslHome' && docker compose $profileFlag pull && docker compose $profileFlag up -d"
+    sudo -u '$WslUser' -H sg docker -c "
+        cd '$WslHome' || exit 1
+        prev_ids=''
+        for svc in \`docker compose $profileFlag config --services 2>/dev/null\`; do
+            id=\`docker compose $profileFlag images -q \"\$svc\" 2>/dev/null | head -1\`
+            [ -n \"\$id\" ] && prev_ids=\"\$prev_ids \$id\"
+        done
+        docker compose $profileFlag pull
+        docker compose $profileFlag up -d
+        removed=0
+        for id in \$prev_ids; do
+            tag_count=\`docker image inspect \"\$id\" --format '{{len .RepoTags}}' 2>/dev/null || echo ''\`
+            if [ \"\$tag_count\" = '0' ]; then
+                docker image rm \"\$id\" >/dev/null 2>&1 && removed=\$((removed + 1)) || true
+            fi
+        done
+        [ \"\$removed\" -gt 0 ] && echo \"[ok] Removed \$removed previous image(s)\"
+        exit 0
+    "
     echo '[ok] Stack upgraded and restarted'
 else
     echo '[info] No existing compose.yml found -- running full installer'

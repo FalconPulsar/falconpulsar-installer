@@ -223,6 +223,30 @@ fp_try_upgrade_fastpath() {
         fi
     fi
 
+    # Snapshot the image IDs each compose service currently resolves to,
+    # BEFORE the pull. We use these IDs as the cleanup whitelist after the
+    # upgrade succeeds — only images that were "ours" prior to the upgrade
+    # are candidates for removal, and only if they are now untagged
+    # (i.e. the pull brought a newer version that displaced them).
+    #
+    # This is registry-agnostic: it doesn't care whether the images came
+    # from Docker Hub, a private registry, GHCR, a mirror, or an air-gapped
+    # tarball — only "was this image ID ours immediately before the pull?"
+    # matters. It also can't accidentally touch unrelated images on the
+    # operator's machine (which a label-based `docker image prune` could
+    # if the label is missing or stripped by a registry).
+    local prev_image_ids=""
+    local svc current_image
+    if cd "$home" 2>/dev/null; then
+        for svc in $(docker compose config --services 2>/dev/null); do
+            current_image=$(docker compose images -q "$svc" 2>/dev/null | head -1)
+            if [ -n "$current_image" ]; then
+                prev_image_ids="${prev_image_ids} ${current_image}"
+            fi
+        done
+        cd - >/dev/null 2>&1 || true
+    fi
+
     log_step "Upgrade in place: pulling latest images"
     if declare -f fp_compose_pull_with_retry >/dev/null 2>&1; then
         fp_compose_pull_with_retry "$home" || return 1
@@ -231,5 +255,24 @@ fp_try_upgrade_fastpath() {
     fi
     log_step "Upgrade in place: recreating containers"
     ( cd "$home" && docker compose up -d ) || return 1
+
+    # Post-upgrade cleanup: remove each snapshotted previous image ID that
+    # is now fully untagged (no RepoTags pointing to it = displaced by the
+    # pull). Images that still have any tag are left alone — that covers
+    # both "pull was a no-op so the ID is still current" and "operator
+    # has a manual backup tag pointing at the same ID". Errors are
+    # swallowed: cleanup is best-effort, never fatal to the upgrade.
+    local id tag_count removed_count=0
+    for id in $prev_image_ids; do
+        tag_count=$(docker image inspect "$id" --format '{{len .RepoTags}}' 2>/dev/null || echo "")
+        if [ "$tag_count" = "0" ]; then
+            if docker image rm "$id" >/dev/null 2>&1; then
+                removed_count=$((removed_count + 1))
+            fi
+        fi
+    done
+    if [ "$removed_count" -gt 0 ]; then
+        log_step "Upgrade in place: removed ${removed_count} previous image(s)"
+    fi
     return 0
 }

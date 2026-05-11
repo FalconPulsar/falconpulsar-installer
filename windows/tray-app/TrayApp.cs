@@ -1664,10 +1664,30 @@ namespace FalconPulsar.Tray
                 // stray \\r or BOM makes Python's yaml.safe_load raise a\n" +
                 // ReaderError, crashing the ai-gateway container on start.\n" +
                 "sed -i '1s/^\\xef\\xbb\\xbf//; s/\\r$//' gateway.yaml 2>/dev/null || true\n" +
+                // Snapshot current image IDs BEFORE pulling. After `up -d`,
+                // any captured ID that's now untagged was displaced by the
+                // pull and gets removed. Stops orphaned <none> images
+                // accumulating across disable/re-enable cycles. Mirrors
+                // fp_try_upgrade_fastpath (shared/lib/existing.sh) and
+                // SnapshotComposeImageIDs/RemoveOrphanedImages in Go +
+                // the same pattern in macOS AppDelegate.swift.
+                "prev_image_ids=''\n" +
+                "for svc in `docker compose --profile ai config --services 2>/dev/null`; do\n" +
+                "    id=`docker compose --profile ai images -q \"$svc\" 2>/dev/null | head -1`\n" +
+                "    [ -n \"$id\" ] && prev_image_ids=\"$prev_image_ids $id\"\n" +
+                "done\n" +
                 "echo '[enable-ai] pulling AI gateway image…'\n" +
                 "docker compose --profile ai pull ai-gateway 2>&1\n" +
                 "echo '[enable-ai] starting ai-gateway container…'\n" +
                 "docker compose --profile ai up -d ai-gateway 2>&1\n" +
+                // Best-effort cleanup. Errors swallowed — the enable
+                // succeeded; cleanup is cosmetic.
+                "for id in $prev_image_ids; do\n" +
+                "    tag_count=`docker image inspect \"$id\" --format '{{len .RepoTags}}' 2>/dev/null || echo ''`\n" +
+                "    if [ \"$tag_count\" = '0' ]; then\n" +
+                "        docker image rm \"$id\" >/dev/null 2>&1 || true\n" +
+                "    fi\n" +
+                "done\n" +
 
                 // ── Wipe self-seeded providers + models ─────────────────
                 // The AI gateway image inserts 3 default providers + 6

@@ -313,6 +313,12 @@ func cmdAI() *cobra.Command {
 					return err
 				}
 				fmt.Fprintln(os.Stderr, "Enabling AI Capabilities…")
+				// Snapshot image IDs before pull so any displaced AI Gateway
+				// image gets removed afterward. Re-enabling after a previous
+				// disable+upgrade cycle would otherwise leave the prior
+				// gateway image as a dangling <none>. Same snapshot-then-
+				// cleanup pattern used by ApplyUpdates — see update.go.
+				prevImageIDs := actions.SnapshotComposeImageIDs(ctx)
 				if err := actions.Compose(ctx, os.Stdout, os.Stderr, "--profile", "ai",
 					"pull", "ai-gateway"); err != nil {
 					return err
@@ -321,6 +327,9 @@ func cmdAI() *cobra.Command {
 					"up", "-d", "ai-gateway"); err != nil {
 					return err
 				}
+				// Best-effort: remove any captured ID that is now fully
+				// untagged (= was displaced by the pull). Errors swallowed.
+				_ = actions.RemoveOrphanedImages(ctx, prevImageIDs)
 				// Wipe the gateway's self-seeded provider/model catalog so
 				// the user lands on a clean AI configuration. See
 				// actions.WipeGatewaySeedDefaults for the rationale.
