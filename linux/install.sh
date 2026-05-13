@@ -205,6 +205,19 @@ EOF
 
 require_root
 
+# ── Preflight: install missing base tools (curl, sg, hostname, useradd, …) ──
+# Minimal Ubuntu / Debian / RHEL / openSUSE cloud images don't ship the
+# tools the installer treats as universal. Without this step, the install
+# silently fails partway through (e.g. curl missing → can't download
+# Docker, or sg missing → docker compose calls return "command not found"
+# in the middle of the stack startup).
+#
+# Runs FIRST after require_root because every subsequent check_*, prompt_*,
+# and registry_* call depends on at least one of these tools. Idempotent —
+# no-op when everything is already present (which it will be on most
+# established workstations).
+fp_preflight_packages
+
 # ── Legal acknowledgement (must come before any system change) ──────────────
 prompt_legal_acknowledgement
 

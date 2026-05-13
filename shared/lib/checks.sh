@@ -55,6 +55,135 @@ version_ge() {
     [ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -n1)" = "$2" ]
 }
 
+# ── Preflight package install ────────────────────────────────────────────────
+#
+# A minimal Ubuntu / Debian / RHEL / openSUSE base image is missing several
+# tools the installer treats as universal:
+#
+#   curl       (every download path: get.docker.com, fp binary, /auth/me, ...)
+#   sg         (every `docker compose` invocation as the falconpulsar user)
+#   hostname   (post-install banner; non-fatal but breaks the IP detection)
+#   useradd    (service-user mode creates the falconpulsar account)
+#   openssl    (password generation; falls back to /dev/urandom — non-fatal)
+#   ss         (port-free check; falls back to lsof/netstat — non-fatal)
+#   ca-certificates  (HTTPS verification for curl)
+#
+# fp_preflight_packages detects which of those are missing, maps them to the
+# right packages per package manager, and installs them in one apt/dnf/yum/
+# zypper invocation. Idempotent: skips silently when everything is present.
+# Fails with an actionable error when no package manager is found (air-gap).
+fp_preflight_packages() {
+    local missing=()
+    local cmd
+    for cmd in curl sg hostname useradd openssl ss; do
+        command -v "$cmd" >/dev/null 2>&1 || missing+=("$cmd")
+    done
+
+    if [ ${#missing[@]} -eq 0 ]; then
+        log_info "preflight: required tools present (curl, sg, hostname, useradd, openssl, ss)"
+        return 0
+    fi
+
+    log_step "preflight — installing missing tools: ${missing[*]}"
+
+    # Map missing commands to the packages that provide them. Each branch
+    # below builds the package list for ONE package manager, then runs the
+    # install. Mappings come from the audit at the top of this section.
+    local packages=()
+    local pkg_mgr=""
+
+    if command -v apt-get >/dev/null 2>&1; then
+        pkg_mgr="apt"
+        # ca-certificates is always pulled with curl on Debian/Ubuntu; explicit
+        # so the install doesn't end up with a curl that can't verify HTTPS.
+        for cmd in "${missing[@]}"; do
+            case "$cmd" in
+                curl)     packages+=("curl" "ca-certificates") ;;
+                sg)       packages+=("login") ;;
+                hostname) packages+=("hostname") ;;
+                useradd)  packages+=("passwd") ;;
+                openssl)  packages+=("openssl") ;;
+                ss)       packages+=("iproute2") ;;
+            esac
+        done
+    elif command -v dnf >/dev/null 2>&1 || command -v yum >/dev/null 2>&1; then
+        if command -v dnf >/dev/null 2>&1; then
+            pkg_mgr="dnf"
+        else
+            pkg_mgr="yum"
+        fi
+        for cmd in "${missing[@]}"; do
+            case "$cmd" in
+                curl)     packages+=("curl" "ca-certificates") ;;
+                sg)       packages+=("shadow-utils") ;;
+                hostname) packages+=("hostname") ;;
+                useradd)  packages+=("shadow-utils") ;;
+                openssl)  packages+=("openssl") ;;
+                ss)       packages+=("iproute") ;;
+            esac
+        done
+    elif command -v zypper >/dev/null 2>&1; then
+        pkg_mgr="zypper"
+        for cmd in "${missing[@]}"; do
+            case "$cmd" in
+                curl)     packages+=("curl" "ca-certificates") ;;
+                sg)       packages+=("shadow") ;;
+                hostname) packages+=("hostname") ;;
+                useradd)  packages+=("shadow") ;;
+                openssl)  packages+=("openssl") ;;
+                ss)       packages+=("iproute2") ;;
+            esac
+        done
+    else
+        die "no supported package manager (apt/dnf/yum/zypper) detected. "\
+"Install these tools manually then re-run: ${missing[*]}"
+    fi
+
+    # De-duplicate the package list (e.g. shadow-utils appears twice if both
+    # sg and useradd are missing on RHEL). sort -u keeps the helper portable
+    # to bash 3.2 (macOS) — declare -A would have been cleaner but is bash 4+.
+    local unique_packages=()
+    local pkg
+    while IFS= read -r pkg; do
+        [ -n "$pkg" ] && unique_packages+=("$pkg")
+    done < <(printf '%s\n' "${packages[@]}" | sort -u)
+
+    log_info "preflight: ${pkg_mgr} install: ${unique_packages[*]}"
+    case "$pkg_mgr" in
+        apt)
+            # noninteractive frontend so any debconf prompts don't hang the
+            # install behind a TTY-less ssh session.
+            DEBIAN_FRONTEND=noninteractive \
+                apt-get update -qq
+            DEBIAN_FRONTEND=noninteractive \
+                apt-get install -y --no-install-recommends "${unique_packages[@]}"
+            ;;
+        dnf)
+            dnf install -y --setopt=install_weak_deps=False "${unique_packages[@]}"
+            ;;
+        yum)
+            yum install -y "${unique_packages[@]}"
+            ;;
+        zypper)
+            zypper --non-interactive install --no-recommends "${unique_packages[@]}"
+            ;;
+    esac
+
+    # Verify every originally-missing tool is now present. Catches the
+    # weird case where a package install reports success but the binary
+    # didn't land on PATH (alternative slots, restricted distros, etc.).
+    local still_missing=()
+    for cmd in "${missing[@]}"; do
+        command -v "$cmd" >/dev/null 2>&1 || still_missing+=("$cmd")
+    done
+    if [ ${#still_missing[@]} -gt 0 ]; then
+        die "preflight: still missing after install: ${still_missing[*]}. "\
+"Check the ${pkg_mgr} output above for failures. You can install them "\
+"manually then re-run the installer."
+    fi
+    log_success "preflight: installed ${unique_packages[*]}"
+}
+
 check_supported_os() {
     local os
     os="$(detect_os)"
