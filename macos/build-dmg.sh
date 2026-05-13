@@ -373,7 +373,28 @@ hdiutil create \
 
 hdiutil attach "$DMG_TMP" -nobrowse -mountpoint "$MOUNT_POINT" >/dev/null
 SetFile -a C "$MOUNT_POINT"
-hdiutil detach "$MOUNT_POINT" >/dev/null
+
+# `hdiutil detach` periodically fails on GitHub-hosted macOS runners with
+# "Resource busy" (exit 16) because Spotlight's `mdworker` is still
+# indexing the freshly-mounted volume. Sync + sleep + retry chain matches
+# what most production DMG-build scripts do. After 5 attempts we fall
+# back to `-force` which always wins (cost: forces unmount even if
+# something IS still writing, but the volume is read-write by us
+# exclusively so there's nothing to lose).
+log "detaching staging volume (retries up to 5× to defeat mdworker)"
+sync
+detach_ok=0
+for attempt in 1 2 3 4 5; do
+    if hdiutil detach "$MOUNT_POINT" >/dev/null 2>&1; then
+        detach_ok=1
+        break
+    fi
+    sleep $((attempt * 2))  # 2s, 4s, 6s, 8s, 10s — total ~30s budget
+done
+if [ "$detach_ok" -eq 0 ]; then
+    log "detach still busy after 5 attempts — forcing"
+    hdiutil detach "$MOUNT_POINT" -force >/dev/null
+fi
 
 hdiutil convert "$DMG_TMP" -format UDZO -o "$DMG_OUTPUT" >/dev/null
 rm -f "$DMG_TMP"
