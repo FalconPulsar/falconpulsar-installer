@@ -229,25 +229,38 @@ func Export(ctx context.Context, output string, cli *api.Client, user, pass stri
 
 	// API endpoints harvested as JSON files inside the zip. Order doesn't
 	// matter here (we only read; ordering is handled at import time to
-	// satisfy parent/child dependencies). For series we ask the server to
-	// include engineering limits + alarm thresholds inline, and we bump
-	// limit way up since the default is small (paginated).
-	for _, ep := range []struct{ name, path string }{
-		{"roles.json", "/api/v1/roles"},
-		{"users.json", "/api/v1/users"},
-		{"asset-types.json", "/api/v1/asset-types"},
-		{"assets.json", "/api/v1/assets"},
-		{"datasources.json", "/api/v1/datasources"},
-		{"series.json", "/api/v1/series?include_engineering=true&limit=100000"},
-		{"mappings.json", "/api/v1/mappings"},
-		{"relationships.json", "/api/v1/relationships"},
-		{"annotations.json", "/api/v1/annotations?limit=100000"},
+	// satisfy parent/child dependencies).
+	//
+	// IMPORTANT: the Core /api/v1/series endpoint hard-caps page size at
+	// server-side `output_max_rows` (default 1000) regardless of the
+	// `?limit=` value. We MUST paginate or we silently truncate large
+	// installations. The paginated path follows has_more + next_offset
+	// from the response envelope. Other endpoints (assets, datasources,
+	// mappings, etc.) return everything in one shot today, but we route
+	// them through the same helper so they auto-paginate the day Core
+	// adds per-endpoint caps. The cost when there's no pagination is one
+	// extra round-trip per endpoint.
+	for _, ep := range []struct {
+		name, path, key string
+	}{
+		{"roles.json", "/api/v1/roles", "roles"},
+		{"users.json", "/api/v1/users", "users"},
+		{"asset-types.json", "/api/v1/asset-types", "asset_types"},
+		{"assets.json", "/api/v1/assets", "assets"},
+		{"datasources.json", "/api/v1/datasources", "datasources"},
+		{"series.json", "/api/v1/series?include_engineering=true", "series"},
+		{"mappings.json", "/api/v1/mappings", "mappings"},
+		{"relationships.json", "/api/v1/relationships", "relationships"},
+		{"annotations.json", "/api/v1/annotations", "annotations"},
 	} {
-		if data, err := cli.GetRaw(ctx, ep.path); err == nil {
-			// File name in the archive uses the section name (no query string).
-			fileName := ep.name
-			_ = writeZipFile(zw, "api/"+fileName, data)
+		data, err := harvestPaginated(ctx, cli, ep.path, ep.key)
+		if err != nil {
+			// Don't abort the whole export over one failed section — write
+			// an empty stub so import can at least continue with whatever
+			// did harvest, and surface the section name in the manifest.
+			data = []byte(`{"` + ep.key + `":[]}`)
 		}
+		_ = writeZipFile(zw, "api/"+ep.name, data)
 	}
 
 	if err := zw.Close(); err != nil {
@@ -373,6 +386,119 @@ func Import(ctx context.Context, input string, cli *api.Client, user, pass strin
 		summary.Sections[ep.section] = st
 	}
 	return summary, nil
+}
+
+// harvestPaginated fetches a list endpoint's contents, walking the
+// has_more / next_offset pagination envelope until exhaustion, and
+// returns a single JSON document of the form `{"<sectionKey>": [...]}`.
+//
+// The Core REST API caps each page at `output_max_rows` (default 1000)
+// regardless of `?limit=`, so without pagination /api/v1/series silently
+// truncated large installations at 1000 entries (the bug that prompted
+// this helper).
+//
+// Behaviour by response shape:
+//
+//   1. {"<key>":[...], "has_more": true, "next_offset": N}  ← paginate
+//   2. {"<key>":[...], "has_more": false}                    ← single page, done
+//   3. {"<key>":[...]} with no has_more field                ← single page, done
+//   4. {"items":[...]}                                       ← single page, done
+//   5. [...]                                                 ← bare array, done
+//
+// Per-page size is set to `pageLimit` (we use 1000, the server's default
+// cap). If the server allows higher, the offset arithmetic still works.
+// If the server clamps lower, has_more keeps us advancing correctly.
+//
+// Safety stop: at most 10_000 iterations so a buggy server that returns
+// has_more=true forever can't lock the export.
+func harvestPaginated(ctx context.Context, cli *api.Client, basePath, sectionKey string) ([]byte, error) {
+	const pageLimit = 1000
+	const maxIterations = 10_000
+
+	var all []any
+	offset := 0
+	separator := "?"
+	if strings.Contains(basePath, "?") {
+		separator = "&"
+	}
+
+	for i := 0; i < maxIterations; i++ {
+		pagedPath := fmt.Sprintf("%s%slimit=%d&offset=%d",
+			basePath, separator, pageLimit, offset)
+		raw, err := cli.GetRaw(ctx, pagedPath)
+		if err != nil {
+			if i == 0 {
+				// Couldn't fetch the first page — propagate.
+				return nil, err
+			}
+			// Mid-pagination failure: keep what we have, stop.
+			break
+		}
+
+		// Try the keyed envelope first.
+		var envelope struct {
+			Items      []any `json:"items"`
+			HasMore    bool  `json:"has_more"`
+			NextOffset int   `json:"next_offset"`
+		}
+		_ = json.Unmarshal(raw, &envelope)
+
+		// Pull out the section-keyed array (the common case).
+		var asMap map[string]any
+		_ = json.Unmarshal(raw, &asMap)
+		var pageItems []any
+		if asMap != nil {
+			if arr, ok := asMap[sectionKey].([]any); ok {
+				pageItems = arr
+			} else if arr, ok := asMap[strings.ReplaceAll(sectionKey, "_", "-")].([]any); ok {
+				pageItems = arr
+			} else if arr, ok := asMap["items"].([]any); ok {
+				pageItems = arr
+			}
+		}
+		// Fall back to bare array.
+		if pageItems == nil {
+			var bare []any
+			if err := json.Unmarshal(raw, &bare); err == nil {
+				pageItems = bare
+			}
+		}
+
+		all = append(all, pageItems...)
+
+		// Decide whether to keep paginating. has_more is the canonical signal.
+		// If the server didn't include it (older Core, or endpoints that
+		// don't paginate), we stop after one page.
+		hasMore := false
+		nextOffset := offset + len(pageItems)
+		if asMap != nil {
+			if v, ok := asMap["has_more"].(bool); ok {
+				hasMore = v
+			}
+			if v, ok := asMap["next_offset"].(float64); ok {
+				nextOffset = int(v)
+			}
+		}
+		// also reflect into the typed envelope so we honour either field name
+		if envelope.HasMore {
+			hasMore = true
+		}
+		if envelope.NextOffset > 0 {
+			nextOffset = envelope.NextOffset
+		}
+
+		// Guard: if the server lied (has_more=true but no progress), bail.
+		if !hasMore || nextOffset <= offset || len(pageItems) == 0 {
+			break
+		}
+		offset = nextOffset
+	}
+
+	out := map[string]any{
+		sectionKey: all,
+		"count":    len(all),
+	}
+	return json.Marshal(out)
 }
 
 // InspectResult is the structured output of Inspect — what's in a backup

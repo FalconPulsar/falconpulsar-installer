@@ -291,28 +291,33 @@ enum ConfigBackup {
             }
         }
 
-        // API harvest. The list mirrors backup.go in console/. For series we
-        // request engineering+alarms inline and bump the page size so large
-        // installations export in a single shot. Per-section files use a
-        // stable name even when the URL has query parameters.
+        // API harvest. The list mirrors backup.go in console/. Each section
+        // is fetched via harvestPaginated() which walks has_more / next_offset
+        // until exhaustion — this is required for /api/v1/series, which the
+        // Core server hard-caps at output_max_rows (default 1000) per page
+        // regardless of any ?limit= the client asks for. Without pagination
+        // large installations were silently truncated at 1000 series.
         let apiDir = "\(workDir)/api"
         try fm.createDirectory(atPath: apiDir, withIntermediateDirectories: true)
-        for (name, path) in [
-            ("roles.json",         "/api/v1/roles"),
-            ("users.json",         "/api/v1/users"),
-            ("asset-types.json",   "/api/v1/asset-types"),
-            ("assets.json",        "/api/v1/assets"),
-            ("datasources.json",   "/api/v1/datasources"),
-            ("series.json",        "/api/v1/series?include_engineering=true&limit=100000"),
-            ("mappings.json",      "/api/v1/mappings"),
-            ("relationships.json", "/api/v1/relationships"),
-            ("annotations.json",   "/api/v1/annotations?limit=100000"),
-        ] {
-            let url = URL(string: "http://localhost:7433\(path)")!
-            var req = URLRequest(url: url)
-            req.addValue("Bearer \(creds.token)", forHTTPHeaderField: "Authorization")
-            if let (data, _) = try? syncRequest(req) {
-                fm.createFile(atPath: "\(apiDir)/\(name)", contents: data)
+        let sections: [(file: String, path: String, key: String)] = [
+            ("roles.json",         "/api/v1/roles",                                "roles"),
+            ("users.json",         "/api/v1/users",                                "users"),
+            ("asset-types.json",   "/api/v1/asset-types",                          "asset_types"),
+            ("assets.json",        "/api/v1/assets",                               "assets"),
+            ("datasources.json",   "/api/v1/datasources",                          "datasources"),
+            ("series.json",        "/api/v1/series?include_engineering=true",      "series"),
+            ("mappings.json",      "/api/v1/mappings",                             "mappings"),
+            ("relationships.json", "/api/v1/relationships",                        "relationships"),
+            ("annotations.json",   "/api/v1/annotations",                          "annotations"),
+        ]
+        for sec in sections {
+            if let data = Self.harvestPaginated(path: sec.path, sectionKey: sec.key, token: creds.token) {
+                fm.createFile(atPath: "\(apiDir)/\(sec.file)", contents: data)
+            } else {
+                // Empty stub so import can run with what we got. Matches the
+                // Go console behaviour.
+                let stub = "{\"\(sec.key)\":[]}".data(using: .utf8) ?? Data()
+                fm.createFile(atPath: "\(apiDir)/\(sec.file)", contents: stub)
             }
         }
 
@@ -405,6 +410,64 @@ enum ConfigBackup {
                 _ = try? syncRequest(req)   // best-effort; ignore individual failures
             }
         }
+    }
+
+    /// Walks the has_more / next_offset pagination envelope on a list
+    /// endpoint until exhaustion and returns a single JSON document of the
+    /// form `{"<sectionKey>": [...]}`. Required for /api/v1/series, which
+    /// Core caps at output_max_rows (default 1000) per page regardless of
+    /// the client-supplied limit.
+    ///
+    /// Returns nil only if the first page fails (caller writes a stub then).
+    /// Mid-pagination failures stop early and return what we collected so
+    /// far.
+    static func harvestPaginated(path: String, sectionKey: String, token: String) -> Data? {
+        let pageLimit = 1000
+        let maxIterations = 10_000
+        var all: [Any] = []
+        var offset = 0
+        let separator = path.contains("?") ? "&" : "?"
+
+        for i in 0..<maxIterations {
+            let paged = "\(path)\(separator)limit=\(pageLimit)&offset=\(offset)"
+            guard let url = URL(string: "http://localhost:7433\(paged)") else { return nil }
+            var req = URLRequest(url: url)
+            req.addValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            guard let (data, _) = try? syncRequest(req) else {
+                if i == 0 { return nil }
+                break
+            }
+
+            // Pull out the array from the response. Try keyed, then aliases,
+            // then "items", then bare array.
+            var pageItems: [Any] = []
+            var hasMore = false
+            var nextOffset = offset + 1
+            if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                if let arr = obj[sectionKey] as? [Any] {
+                    pageItems = arr
+                } else if let arr = obj[sectionKey.replacingOccurrences(of: "_", with: "-")] as? [Any] {
+                    pageItems = arr
+                } else if let arr = obj["items"] as? [Any] {
+                    pageItems = arr
+                }
+                if let m = obj["has_more"] as? Bool { hasMore = m }
+                if let n = obj["next_offset"] as? Int { nextOffset = n }
+                else if let n = obj["next_offset"] as? Double { nextOffset = Int(n) }
+            } else if let bare = try? JSONSerialization.jsonObject(with: data) as? [Any] {
+                pageItems = bare
+            }
+
+            all.append(contentsOf: pageItems)
+
+            if !hasMore || nextOffset <= offset || pageItems.isEmpty {
+                break
+            }
+            offset = nextOffset
+        }
+
+        let out: [String: Any] = [sectionKey: all, "count": all.count]
+        return try? JSONSerialization.data(withJSONObject: out)
     }
 
     /// Normalise a list-endpoint JSON response into a flat array of objects.

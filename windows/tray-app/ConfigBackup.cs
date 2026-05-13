@@ -237,32 +237,36 @@ namespace FalconPulsar.Tray
                 {
                     http.DefaultRequestHeaders.Authorization =
                         new AuthenticationHeaderValue("Bearer", creds.Token);
-                    // Harvest list mirrors backup.go in console/. New v2
-                    // sections (asset-types, series, relationships, annotations)
-                    // are included unconditionally so the resulting file is a
-                    // v2 backup, regardless of whether the target has any
-                    // data in those tables.
-                    foreach (var (name, path) in new[] {
-                        ("roles.json",         "/api/v1/roles"),
-                        ("users.json",         "/api/v1/users"),
-                        ("asset-types.json",   "/api/v1/asset-types"),
-                        ("assets.json",        "/api/v1/assets"),
-                        ("datasources.json",   "/api/v1/datasources"),
-                        ("series.json",        "/api/v1/series?include_engineering=true&limit=100000"),
-                        ("mappings.json",      "/api/v1/mappings"),
-                        ("relationships.json", "/api/v1/relationships"),
-                        ("annotations.json",   "/api/v1/annotations?limit=100000"),
-                    })
+                    // Harvest list mirrors backup.go in console/. Each section
+                    // is fetched via HarvestPaginatedAsync which walks
+                    // has_more/next_offset until exhaustion — required for
+                    // /api/v1/series, which Core caps at output_max_rows
+                    // (default 1000) per page regardless of any ?limit= the
+                    // client supplies.
+                    var sections = new (string file, string path, string key)[] {
+                        ("roles.json",         "/api/v1/roles",                                "roles"),
+                        ("users.json",         "/api/v1/users",                                "users"),
+                        ("asset-types.json",   "/api/v1/asset-types",                          "asset_types"),
+                        ("assets.json",        "/api/v1/assets",                               "assets"),
+                        ("datasources.json",   "/api/v1/datasources",                          "datasources"),
+                        ("series.json",        "/api/v1/series?include_engineering=true",      "series"),
+                        ("mappings.json",      "/api/v1/mappings",                             "mappings"),
+                        ("relationships.json", "/api/v1/relationships",                        "relationships"),
+                        ("annotations.json",   "/api/v1/annotations",                          "annotations"),
+                    };
+                    foreach (var sec in sections)
                     {
                         try
                         {
-                            var resp = await http.GetAsync($"{CoreBaseUrl}{path}");
-                            if (resp.IsSuccessStatusCode)
-                                File.WriteAllBytes(
-                                    Path.Combine(apiDir, name),
-                                    await resp.Content.ReadAsByteArrayAsync());
+                            var bytes = await HarvestPaginatedAsync(http, sec.path, sec.key);
+                            File.WriteAllBytes(Path.Combine(apiDir, sec.file), bytes);
                         }
-                        catch { /* best effort */ }
+                        catch
+                        {
+                            // Empty stub so import can run with what we got.
+                            File.WriteAllText(Path.Combine(apiDir, sec.file),
+                                              $"{{\"{sec.key}\":[]}}");
+                        }
                     }
                 }
 
@@ -368,6 +372,92 @@ namespace FalconPulsar.Tray
                 try { File.Delete(zipPath); } catch { }
                 try { Directory.Delete(workDir, recursive: true); } catch { }
             }
+        }
+
+        /// <summary>
+        /// Walks the has_more / next_offset pagination envelope on a list
+        /// endpoint until exhaustion and returns a single JSON document of
+        /// the form {"&lt;sectionKey&gt;": [...]}. Required for /api/v1/series,
+        /// which Core caps at output_max_rows (default 1000) per page
+        /// regardless of any client-supplied ?limit=.
+        ///
+        /// On error returns an empty {"&lt;sectionKey&gt;":[]} stub so the
+        /// import side can still run with the rest of the backup.
+        /// </summary>
+        private static async Task<byte[]> HarvestPaginatedAsync(
+            HttpClient http, string basePath, string sectionKey)
+        {
+            const int pageLimit = 1000;
+            const int maxIterations = 10_000;
+            var all = new JsonArray();
+            int offset = 0;
+            string separator = basePath.Contains('?') ? "&" : "?";
+
+            for (int i = 0; i < maxIterations; i++)
+            {
+                var paged = $"{basePath}{separator}limit={pageLimit}&offset={offset}";
+                HttpResponseMessage resp;
+                try { resp = await http.GetAsync($"{CoreBaseUrl}{paged}"); }
+                catch
+                {
+                    if (i == 0) throw;  // propagate first-page failure
+                    break;
+                }
+                if (!resp.IsSuccessStatusCode)
+                {
+                    if (i == 0)
+                        throw new BackupException(
+                            $"GET {paged}: HTTP {(int)resp.StatusCode}");
+                    break;
+                }
+
+                var raw = await resp.Content.ReadAsStringAsync();
+                JsonNode parsed;
+                try { parsed = JsonNode.Parse(raw); }
+                catch { break; }
+
+                JsonArray pageItems = null;
+                bool hasMore = false;
+                int nextOffset = offset + 1;
+
+                if (parsed is JsonObject obj)
+                {
+                    foreach (var k in new[] {
+                        sectionKey,
+                        sectionKey.Replace("_", "-"),
+                        "items",
+                    })
+                    {
+                        if (obj[k] is JsonArray arr)
+                        {
+                            pageItems = arr;
+                            break;
+                        }
+                    }
+                    if (obj["has_more"]?.GetValue<bool>() is bool m) hasMore = m;
+                    if (obj["next_offset"]?.GetValue<int>() is int n) nextOffset = n;
+                }
+                else if (parsed is JsonArray bare)
+                {
+                    pageItems = bare;
+                }
+
+                if (pageItems != null)
+                {
+                    foreach (var item in pageItems)
+                        all.Add(item?.DeepClone());
+                }
+
+                if (!hasMore || nextOffset <= offset || (pageItems?.Count ?? 0) == 0)
+                    break;
+                offset = nextOffset;
+            }
+
+            var outObj = new JsonObject {
+                [sectionKey] = all,
+                ["count"]    = all.Count,
+            };
+            return Encoding.UTF8.GetBytes(outObj.ToJsonString());
         }
 
         /// <summary>
