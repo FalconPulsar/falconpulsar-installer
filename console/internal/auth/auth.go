@@ -51,6 +51,30 @@ func PromptAdmin(ctx context.Context, reason string) (*api.Client, string, strin
 	return cli, user, pass, nil
 }
 
+// PromptCredentials reads username + password from the TTY without making
+// any network calls — useful when a command needs the credentials for
+// purely local work (e.g. decrypting a .fpconfig backup file with no
+// Core server present). The returned values are unverified.
+func PromptCredentials(reason string) (string, string, error) {
+	fmt.Fprintln(os.Stderr, reason)
+	fmt.Fprint(os.Stderr, "Admin username [admin]: ")
+	reader := bufio.NewReader(os.Stdin)
+	user, _ := reader.ReadString('\n')
+	for len(user) > 0 && (user[len(user)-1] == '\n' || user[len(user)-1] == '\r') {
+		user = user[:len(user)-1]
+	}
+	if user == "" {
+		user = "admin"
+	}
+	fmt.Fprint(os.Stderr, "Admin password: ")
+	passBytes, err := term.ReadPassword(int(os.Stdin.Fd()))
+	fmt.Fprintln(os.Stderr)
+	if err != nil {
+		return "", "", err
+	}
+	return user, string(passBytes), nil
+}
+
 // PromptAdminWithRetry wraps PromptAdmin with an inline-error retry loop. On
 // each failed attempt it prints the error to stderr and re-prompts, up to
 // maxAttempts. After exhaustion it returns the last error along with a final

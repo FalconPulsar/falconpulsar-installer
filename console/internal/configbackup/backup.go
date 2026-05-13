@@ -375,6 +375,178 @@ func Import(ctx context.Context, input string, cli *api.Client, user, pass strin
 	return summary, nil
 }
 
+// InspectResult is the structured output of Inspect — what's in a backup
+// without applying it. Safe to call without admin role on the *target*
+// server (it never touches the network); only the encrypting admin creds
+// are needed to decrypt.
+type InspectResult struct {
+	// Path is the source file path.
+	Path string `json:"path"`
+	// FileSize is the encrypted .fpconfig size in bytes.
+	FileSize int64 `json:"file_size"`
+	// FormatVersion read from the file header (NOT from manifest.json).
+	FormatVersion uint8 `json:"format_version"`
+	// Manifest is the raw manifest.json payload as a map.
+	Manifest map[string]any `json:"manifest"`
+	// StackFiles lists files/* entries with their decompressed size.
+	StackFiles []InspectFile `json:"stack_files"`
+	// Sections lists api/* sections with their item counts.
+	Sections []InspectSection `json:"sections"`
+	// TotalItems is the sum of Sections[].Count.
+	TotalItems int `json:"total_items"`
+}
+
+type InspectFile struct {
+	Name string `json:"name"` // e.g. "compose.yml"
+	Size int64  `json:"size"` // uncompressed bytes
+}
+
+type InspectSection struct {
+	Name  string `json:"name"`  // e.g. "users"
+	Count int    `json:"count"` // number of items
+	Bytes int64  `json:"bytes"` // uncompressed bytes
+}
+
+// Inspect decrypts a .fpconfig file with the supplied admin credentials,
+// parses the payload zip, and returns a structured summary of its contents.
+// Performs no API calls and writes nothing to disk — safe to run against
+// a backup without a Core server present.
+func Inspect(path, user, pass string) (InspectResult, error) {
+	res := InspectResult{Path: path}
+
+	enc, err := os.ReadFile(path)
+	if err != nil {
+		return res, err
+	}
+	res.FileSize = int64(len(enc))
+
+	// The decrypt() helper already validates magic + format version.
+	plain, err := decrypt(enc, user, pass)
+	if err != nil {
+		return res, err
+	}
+	// We re-extract the format version byte after the magic for the caller
+	// (decrypt() consumed it but didn't return it).
+	if len(enc) >= 5 {
+		res.FormatVersion = enc[4]
+	}
+
+	zr, err := zip.NewReader(bytes.NewReader(plain), int64(len(plain)))
+	if err != nil {
+		return res, fmt.Errorf("invalid archive inside backup: %w", err)
+	}
+
+	// Index entries by name for selective reads.
+	entries := map[string]*zip.File{}
+	for _, f := range zr.File {
+		entries[f.Name] = f
+	}
+
+	// Manifest
+	if f, ok := entries["manifest.json"]; ok {
+		if raw, err := readZipFile(f); err == nil {
+			var m map[string]any
+			_ = json.Unmarshal(raw, &m)
+			res.Manifest = m
+		}
+	}
+
+	// Stack files (files/*)
+	for _, name := range []string{"compose.yml", ".env", "gateway.yaml"} {
+		f, ok := entries["files/"+name]
+		if !ok {
+			continue
+		}
+		res.StackFiles = append(res.StackFiles, InspectFile{
+			Name: name,
+			Size: int64(f.UncompressedSize64),
+		})
+	}
+
+	// API sections (api/*). The order here mirrors the import dependency
+	// order so the inspect output reads top-to-bottom in the same order
+	// the items would be applied.
+	for _, sec := range []struct{ name, key, file string }{
+		{"roles", "roles", "roles.json"},
+		{"asset-types", "asset_types", "asset-types.json"},
+		{"users", "users", "users.json"},
+		{"datasources", "datasources", "datasources.json"},
+		{"assets", "assets", "assets.json"},
+		{"series", "series", "series.json"},
+		{"mappings", "mappings", "mappings.json"},
+		{"relationships", "relationships", "relationships.json"},
+		{"annotations", "annotations", "annotations.json"},
+	} {
+		f, ok := entries["api/"+sec.file]
+		if !ok {
+			continue
+		}
+		raw, err := readZipFile(f)
+		if err != nil {
+			continue
+		}
+		items := extractItems(raw, sec.key)
+		res.Sections = append(res.Sections, InspectSection{
+			Name:  sec.name,
+			Count: len(items),
+			Bytes: int64(f.UncompressedSize64),
+		})
+		res.TotalItems += len(items)
+	}
+
+	return res, nil
+}
+
+// HumanReadable formats an InspectResult for terminal display.
+func (r InspectResult) HumanReadable() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Backup file: %s\n", r.Path)
+	fmt.Fprintf(&b, "  File size:       %s\n", humanBytes(r.FileSize))
+	fmt.Fprintf(&b, "  Format version:  %d\n", r.FormatVersion)
+	if r.Manifest != nil {
+		if v, ok := r.Manifest["falconpulsar_version"].(string); ok {
+			fmt.Fprintf(&b, "  FalconPulsar:    %s\n", v)
+		}
+		if v, ok := r.Manifest["exported_at"].(string); ok {
+			fmt.Fprintf(&b, "  Exported:        %s\n", v)
+		}
+		if v, ok := r.Manifest["source_host"].(string); ok {
+			fmt.Fprintf(&b, "  Source host:     %s\n", v)
+		}
+		if v, ok := r.Manifest["source_platform"].(string); ok {
+			fmt.Fprintf(&b, "  Source platform: %s\n", v)
+		}
+	}
+	if len(r.StackFiles) > 0 {
+		fmt.Fprintf(&b, "\nStack files:\n")
+		for _, f := range r.StackFiles {
+			fmt.Fprintf(&b, "  • %-15s %s\n", f.Name, humanBytes(f.Size))
+		}
+	}
+	if len(r.Sections) > 0 {
+		fmt.Fprintf(&b, "\nAPI sections:\n")
+		for _, s := range r.Sections {
+			fmt.Fprintf(&b, "  • %-14s %5d items  (%s)\n",
+				s.Name, s.Count, humanBytes(s.Bytes))
+		}
+		fmt.Fprintf(&b, "\nTotal: %d items across %d sections\n",
+			r.TotalItems, len(r.Sections))
+	}
+	return b.String()
+}
+
+func humanBytes(n int64) string {
+	const k = 1024
+	switch {
+	case n < k:
+		return fmt.Sprintf("%d B", n)
+	case n < k*k:
+		return fmt.Sprintf("%.1f KiB", float64(n)/k)
+	default:
+		return fmt.Sprintf("%.1f MiB", float64(n)/(k*k))
+	}
+}
+
 // extractItems normalises the JSON returned by a list endpoint into a flat
 // array of objects. The Core API uses several response shapes depending on
 // the endpoint:

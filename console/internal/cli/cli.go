@@ -215,8 +215,53 @@ func cmdConfig() *cobra.Command {
 		},
 		cmdConfigExport(),
 		cmdConfigImport(),
+		cmdConfigInspect(),
 	)
 	return c
+}
+
+func cmdConfigInspect() *cobra.Command {
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   "inspect <file>",
+		Short: "Decrypt a .fpconfig file and show what's inside (read-only)",
+		Long: `Inspect a .fpconfig backup without applying it.
+
+The command decrypts the file using the admin credentials that were
+used at export time, parses the embedded zip, and prints a per-section
+summary: file size, format version, manifest fields, stack file sizes,
+and item counts for each API section (roles, users, asset-types,
+assets, datasources, series, mappings, relationships, annotations).
+
+No network calls are made — this works on machines where FalconPulsar
+Core is not running, as long as you have the original admin credentials
+used to encrypt the backup.
+
+Use this to verify a backup is well-formed and contains what you expect
+before running 'fp config import'.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			user, pass, err := auth.PromptCredentials(
+				"Inspect Configuration — enter the admin credentials used at export time.")
+			if err != nil {
+				return err
+			}
+			res, err := configbackup.Inspect(args[0], user, pass)
+			if err != nil {
+				return err
+			}
+			if asJSON {
+				out, _ := json.MarshalIndent(res, "", "  ")
+				fmt.Println(string(out))
+				return nil
+			}
+			fmt.Print(res.HumanReadable())
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&asJSON, "json", false,
+		"Emit the inspect report as JSON (suitable for piping to jq).")
+	return cmd
 }
 
 func cmdConfigExport() *cobra.Command {
