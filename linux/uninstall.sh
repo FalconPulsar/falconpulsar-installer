@@ -38,6 +38,15 @@ REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 if [ -f "${REPO_ROOT}/shared/lib/common.sh" ]; then
     # shellcheck source=../shared/lib/common.sh
     . "${REPO_ROOT}/shared/lib/common.sh"
+    # fpcli.sh defines fp_remove_path_append, used below to strip the
+    # `export PATH="$FP_HOME/bin:$PATH"` line we wrote during install.
+    # The fallback (uninstaller copied to /tmp) defines an inline stub.
+    if [ -f "${REPO_ROOT}/shared/lib/fpcli.sh" ]; then
+        # shellcheck source=../shared/lib/fpcli.sh
+        . "${REPO_ROOT}/shared/lib/fpcli.sh"
+    else
+        fp_remove_path_append() { :; }
+    fi
 else
     log_step()    { echo; echo "==> $1"; }
     log_info()    { echo "[info] $1"; }
@@ -52,6 +61,10 @@ else
         [ -e /proc/sys/fs/binfmt_misc/WSLInterop ] && return 0
         grep -qiE 'microsoft|wsl' /proc/version 2>/dev/null
     }
+    # Inline stub when running standalone (script copied to /tmp). The
+    # full implementation lives in shared/lib/fpcli.sh and is sourced
+    # via the if-branch above when the script runs from the repo tree.
+    fp_remove_path_append() { :; }
 fi
 
 trap 'on_error $LINENO' ERR
@@ -267,6 +280,25 @@ fi
 # per-user mode may not, so we silently skip).
 if [ -w /etc/profile.d ] || [ "$(id -u)" -eq 0 ]; then
     rm -f /etc/profile.d/falconpulsar.sh 2>/dev/null || true
+fi
+
+# Strip the "export PATH=" lines we appended to the human user's shell rc
+# at install time. We try the home dir of (a) the invoking sudoer
+# (SUDO_USER), (b) FP_USER if it's a real human (per-user model), and
+# (c) /root for the rare case the installer ran without sudo. The helper
+# is idempotent and silent on rc files that don't exist.
+_fp_uninstall_rc_homes=()
+if [ -n "${SUDO_USER:-}" ]; then
+    _h="$(getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f6)"
+    [ -n "$_h" ] && _fp_uninstall_rc_homes+=("$_h")
+fi
+if [ "$FP_INSTALL_MODEL" = "per-user" ] && [ -n "${FP_USER:-}" ] && [ "$FP_USER" != "root" ]; then
+    _h="$(getent passwd "$FP_USER" 2>/dev/null | cut -d: -f6)"
+    [ -n "$_h" ] && _fp_uninstall_rc_homes+=("$_h")
+fi
+[ "$(id -u)" -eq 0 ] && _fp_uninstall_rc_homes+=("/root")
+if [ ${#_fp_uninstall_rc_homes[@]} -gt 0 ]; then
+    fp_remove_path_append "${_fp_uninstall_rc_homes[@]}"
 fi
 
 # IMPORTANT: rm -rf $FP_HOME is the LAST filesystem operation below.

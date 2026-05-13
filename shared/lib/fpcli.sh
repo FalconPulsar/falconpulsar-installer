@@ -117,3 +117,50 @@ fp_user_shell_rc() {
         *)    echo "${HOME}/.profile" ;;
     esac
 }
+
+# Strip the 2-line block that fp_offer_path_append wrote, from every rc
+# file that might contain it. Idempotent and silent on rc files that
+# don't exist. Uses awk for portability across GNU/BSD sed dialects.
+#
+# What we wrote (from fp_offer_path_append above):
+#
+#     # Added by FalconPulsar installer
+#     export PATH="<FP_HOME>/bin:$PATH"
+#
+# We match on the marker comment AND the next line containing
+# "falconpulsar/bin" so we don't accidentally delete an unrelated comment
+# that just happens to start with the same prefix. Saves a .fp-bak copy
+# next to the file in case the user wants to inspect what was removed.
+fp_remove_path_append() {
+    local target_home
+    for target_home in "$@"; do
+        [ -n "$target_home" ] || continue
+        # Candidates: bash, zsh, fish, generic
+        local rc
+        for rc in "${target_home}/.bashrc" \
+                  "${target_home}/.bash_profile" \
+                  "${target_home}/.zshrc" \
+                  "${target_home}/.profile" \
+                  "${target_home}/.config/fish/config.fish"; do
+            [ -f "$rc" ] || continue
+            if ! grep -qsF "Added by FalconPulsar installer" "$rc"; then
+                continue
+            fi
+            # Drop the marker line AND the following PATH line.
+            # awk is the most portable way to do a two-line delete in one pass.
+            local tmp="${rc}.fp-uninstall.tmp"
+            awk '
+                BEGIN { skip = 0 }
+                /^# Added by FalconPulsar installer$/ {
+                    skip = 2     # also drop the next line
+                    next
+                }
+                skip > 0 {
+                    skip--
+                    next
+                }
+                { print }
+            ' "$rc" > "$tmp" && mv "$tmp" "$rc"
+        done
+    done
+}

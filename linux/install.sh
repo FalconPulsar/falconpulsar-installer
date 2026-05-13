@@ -620,6 +620,26 @@ SNIPPET
     log_info "PATH snippet: /etc/profile.d/falconpulsar.sh (new shells will pick up fp)"
 fi
 
+# Also write an activation script INSIDE the stack folder. This is the
+# memorable one-liner we show the user: `source ~/falconpulsar/activate.sh`.
+# Living inside $FP_HOME keeps "everything in the stack folder" — matches
+# what users expect when they look in there. Same effect as the profile.d
+# snippet, but the user can keep it in muscle memory and it follows the
+# stack wherever it moves.
+cat > "${FP_HOME}/activate.sh" <<SNIPPET
+# FalconPulsar — activate 'fp' on PATH for the current shell.
+# Usage:  source ${FP_HOME}/activate.sh
+case ":\$PATH:" in
+    *":${FP_HOME}/bin:"*) ;;
+    *) PATH="${FP_HOME}/bin:\$PATH" ;;
+esac
+export PATH
+SNIPPET
+chown "${FP_USER}:${FP_USER}" "${FP_HOME}/activate.sh" 2>/dev/null \
+    || chown "${FP_USER}:docker" "${FP_HOME}/activate.sh" 2>/dev/null \
+    || true
+chmod 0644 "${FP_HOME}/activate.sh"
+
 # ── Step 8: systemd registration (optional) ─────────────────────────────────
 log_step "step 8/8 — lifecycle registration"
 if [ "$FP_INSTALL_MODE" = "systemd" ] && is_wsl; then
@@ -722,12 +742,21 @@ ${FP_C_GREEN}${FP_C_BOLD}╔═════════════════�
   Data dir:  ${FP_DATA_DIR}
   Stack dir: ${FP_HOME}
 
-  Control the stack with the fp CLI (${FP_HOME}/bin/fp):
+  ${FP_C_BOLD}▸ fp CLI is at: ${FP_HOME}/bin/fp${FP_C_RESET}
+
+  ${FP_C_YELLOW}${FP_C_BOLD}▸ Activate 'fp' in THIS terminal (one-time per shell):${FP_C_RESET}
+        ${FP_C_BOLD}source ${FP_HOME}/activate.sh${FP_C_RESET}
+    ${FP_C_DIM}New shells & SSH logins find 'fp' automatically.${FP_C_RESET}
+    ${FP_C_DIM}If you prefer the full path:${FP_C_RESET}
+        ${FP_HOME}/bin/fp status
+
+  Control the stack with fp:
     fp                          # interactive console (TUI)
     fp status                   # stack status
     fp start | stop | restart   # control
     fp logs [service]           # tail logs
     fp config export <file>     # admin-only encrypted backup
+    fp config inspect <file>    # read-only backup verification
 
   To uninstall: sudo bash ${SCRIPT_DIR}/uninstall.sh
 
