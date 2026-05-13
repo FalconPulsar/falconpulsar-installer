@@ -395,6 +395,22 @@ jobs:
     name: create github release
     runs-on: ubuntu-latest
     needs: [bundle, build-fp-binaries, build-windows-exe, build-macos-dmg]
+    # Publish even when build-macos-dmg fails. macOS DMG signing /
+    # notarization / hdiutil packaging hits transient failures
+    # (hdiutil detach EBUSY from mdworker, Apple notary throttling,
+    # ephemeral runner DNS issues) that have nothing to do with the
+    # Linux or Windows installers. Holding the entire release hostage
+    # to one Mac flake means Linux/Windows users can't download the
+    # bundled .sh / .exe / fp binaries until someone re-tags.
+    #
+    # The three CRITICAL jobs (bundle, build-fp-binaries,
+    # build-windows-exe) must still succeed — without them we have
+    # nothing to release.
+    if: |
+      always() &&
+      needs.bundle.result == 'success' &&
+      needs.build-fp-binaries.result == 'success' &&
+      needs.build-windows-exe.result == 'success'
     permissions:
       contents: write
     steps:
@@ -410,8 +426,14 @@ jobs:
           name: bundles-windows
           path: dist/
 
-      - name: Download macOS DMG
+      # macOS DMG is best-effort. If build-macos-dmg failed, this step
+      # downloads nothing (continue-on-error) and the release goes out
+      # without a DMG. Users on macOS can still install via the bundled
+      # install-macos.sh which IS in bundles-shell.
+      - name: Download macOS DMG (best-effort)
         uses: actions/download-artifact@v5
+        if: needs.build-macos-dmg.result == 'success'
+        continue-on-error: true
         with:
           name: bundles-macos
           path: dist/
