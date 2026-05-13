@@ -789,17 +789,27 @@ func (a *App) showMessage(title, body string, dismissable bool) {
 	a.pages.AddPage("modal", m, true, true)
 }
 
+// keyHint is the standard footer shown on form-based modals. It's added
+// as a bottom frame text so it doesn't share width with the title, and
+// it appears on every form prompt for free.
+const keyHint = "Tab: next field · Enter: confirm · Esc: cancel"
+
 func (a *App) pushModal(title string, content tview.Primitive, w, h int) {
 	frame := tview.NewFrame(content).
 		SetBorders(1, 1, 1, 1, 2, 2).
-		AddText(title, true, tview.AlignCenter, theme.Accent)
+		AddText(title, true, tview.AlignCenter, theme.Accent).
+		AddText(keyHint, false, tview.AlignCenter, theme.TextMuted)
 	frame.SetBackgroundColor(theme.Panel)
 	frame.SetBorder(true).SetBorderColor(theme.BorderFocus)
+	// h is the inner content height; we add 5 rows of chrome:
+	// border-top(1) + title-text(1) + padding-top(1) + padding-bottom(1) +
+	// footer-text(1) + border-bottom(1) ≈ 6. Use h+6 so the form's button
+	// row is never clipped even when the footer hint is rendered.
 	flex := tview.NewFlex().
 		AddItem(nil, 0, 1, false).
 		AddItem(tview.NewFlex().SetDirection(tview.FlexRow).
 			AddItem(nil, 0, 1, false).
-			AddItem(frame, h+4, 0, true).
+			AddItem(frame, h+6, 0, true).
 			AddItem(nil, 0, 1, false),
 			w, 0, true).
 		AddItem(nil, 0, 1, false)
@@ -841,11 +851,9 @@ func (a *App) askAdminThen(purpose string, then func(*api.Client, string, string
 	form.AddButton("Cancel", cancel)
 	// Esc cancels from anywhere in the form (matches the rest of the TUI).
 	form.SetCancelFunc(cancel)
-	// Render at height 11 so the button row is never clipped by the frame
-	// chrome (border + padding + title). Title carries a hint for first-
-	// time users who can't see a mouse pointer hovering over buttons.
-	a.pushModal(purpose+"   (Tab: next · Enter: confirm · Esc: cancel)",
-		form, 64, 11)
+	// Inner content height of 9 (2 fields + spacing + button row); the
+	// keyboard hint footer is added by pushModal so the title stays clean.
+	a.pushModal(purpose, form, 56, 9)
 	a.tv.SetFocus(form)
 }
 
@@ -867,8 +875,7 @@ func (a *App) askPathThen(title, suggestion string, then func(string)) {
 	form.AddButton("OK", submit)
 	form.AddButton("Cancel", cancel)
 	form.SetCancelFunc(cancel)
-	a.pushModal(title+"   (Tab: next · Enter: confirm · Esc: cancel)",
-		form, 76, 8)
+	a.pushModal(title, form, 72, 6)
 	a.tv.SetFocus(form)
 }
 
