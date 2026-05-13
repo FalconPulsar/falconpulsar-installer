@@ -520,6 +520,13 @@ type InspectResult struct {
 	Sections []InspectSection `json:"sections"`
 	// TotalItems is the sum of Sections[].Count.
 	TotalItems int `json:"total_items"`
+	// Coverage is the series ↔ mappings cross-reference: how many series
+	// are missing a mapping, broken down by source_type so the user can
+	// distinguish "expected" no-mapping series (calculated, manual,
+	// simulated, _system telemetry) from "external" orphans that should
+	// probably be cleaned up. Empty if either series.json or mappings.json
+	// is missing/empty.
+	Coverage Coverage `json:"coverage"`
 }
 
 type InspectFile struct {
@@ -531,6 +538,129 @@ type InspectSection struct {
 	Name  string `json:"name"`  // e.g. "users"
 	Count int    `json:"count"` // number of items
 	Bytes int64  `json:"bytes"` // uncompressed bytes
+}
+
+// Coverage breaks down how series relate to mappings: which series have
+// at least one mapping feeding them, which legitimately don't (calculated,
+// manual, simulated, _system telemetry), and which are external-source
+// orphans that should probably be cleaned up.
+//
+// Series:mapping is N:1 (many mappings can feed one series for redundancy),
+// so MappingsCount can exceed SeriesWithMapping. Likewise SeriesCount can
+// exceed MappedSeriesCount because non-external series don't need mappings.
+type Coverage struct {
+	SeriesCount        int    `json:"series_count"`
+	MappingsCount      int    `json:"mappings_count"`
+	SeriesWithMapping  int    `json:"series_with_mapping"`   // distinct series paths referenced by ≥1 mapping
+	SeriesNoMapping    int    `json:"series_no_mapping"`     // series with zero mappings
+	SystemTelemetry    int    `json:"system_telemetry"`      // _system.*  (no mapping expected)
+	SourceCalculated   int    `json:"source_calculated"`     // source_type=calculated (no mapping expected)
+	SourceManual       int    `json:"source_manual"`         // source_type=manual (no mapping expected)
+	SourceSimulated    int    `json:"source_simulated"`      // source_type=simulated (no mapping expected)
+	ExternalOrphans    int    `json:"external_orphans"`      // source_type=external AND no mapping → cleanup candidates
+	OrphanExamples     []string `json:"orphan_examples"`     // up to 10 example paths
+	RedundantMappings  int    `json:"redundant_mappings"`    // total mappings - distinct mapped series (excess due to N:1 redundancy)
+}
+
+// extractStringField pulls a string from a JSON object, returning "" if
+// the field is missing or not a string. Survives raw types from
+// json.Unmarshal into interface{}.
+func extractStringField(item any, key string) string {
+	obj, ok := item.(map[string]any)
+	if !ok {
+		return ""
+	}
+	v, ok := obj[key].(string)
+	if !ok {
+		return ""
+	}
+	return v
+}
+
+// assetPathOf returns the asset-path portion of a series path
+// ("name@asset.path" → "asset.path"). Returns the whole string if there
+// is no @.
+func assetPathOf(seriesPath string) string {
+	at := strings.IndexByte(seriesPath, '@')
+	if at < 0 {
+		return seriesPath
+	}
+	return seriesPath[at+1:]
+}
+
+// isSystemSeries returns true if a series is internal telemetry that the
+// server writes directly (no mapping expected). System series live under
+// the `_system.*` asset path.
+func isSystemSeries(seriesPath string) bool {
+	ap := assetPathOf(seriesPath)
+	return ap == "_system" || strings.HasPrefix(ap, "_system.") || strings.HasPrefix(ap, "_system/")
+}
+
+// computeCoverage builds the coverage report by cross-referencing the
+// series and mappings arrays from a parsed backup. seriesItems and
+// mappingsItems are the []any payloads extracted from api/series.json
+// and api/mappings.json respectively (after extractItems).
+func computeCoverage(seriesItems, mappingsItems []any) Coverage {
+	cov := Coverage{
+		SeriesCount:   len(seriesItems),
+		MappingsCount: len(mappingsItems),
+	}
+
+	// Build the set of series paths that have ≥1 mapping. We deduplicate
+	// because N:1 redundancy lets two mappings reference the same series.
+	mapped := make(map[string]struct{}, len(mappingsItems))
+	for _, m := range mappingsItems {
+		ts := extractStringField(m, "target_series")
+		if ts != "" {
+			mapped[ts] = struct{}{}
+		}
+	}
+	cov.SeriesWithMapping = len(mapped)
+	cov.RedundantMappings = cov.MappingsCount - cov.SeriesWithMapping
+	if cov.RedundantMappings < 0 {
+		cov.RedundantMappings = 0 // safety: shouldn't go negative
+	}
+
+	// Bucket every series.
+	for _, s := range seriesItems {
+		path := extractStringField(s, "path")
+		if path == "" {
+			continue
+		}
+		if _, hasMap := mapped[path]; hasMap {
+			continue
+		}
+		cov.SeriesNoMapping++
+
+		if isSystemSeries(path) {
+			cov.SystemTelemetry++
+			continue
+		}
+		switch extractStringField(s, "source_type") {
+		case "calculated":
+			cov.SourceCalculated++
+		case "manual":
+			cov.SourceManual++
+		case "simulated":
+			cov.SourceSimulated++
+		case "external", "":
+			// "" means the API didn't include source_type; treat as
+			// external since that's the implicit default and the most
+			// common case where a missing mapping is a real problem.
+			cov.ExternalOrphans++
+			if len(cov.OrphanExamples) < 10 {
+				cov.OrphanExamples = append(cov.OrphanExamples, path)
+			}
+		default:
+			// Unrecognized source_type (future enum value) — count as
+			// orphan so it gets surfaced rather than hidden.
+			cov.ExternalOrphans++
+			if len(cov.OrphanExamples) < 10 {
+				cov.OrphanExamples = append(cov.OrphanExamples, path)
+			}
+		}
+	}
+	return cov
 }
 
 // Inspect decrypts a .fpconfig file with the supplied admin credentials,
@@ -591,7 +721,9 @@ func Inspect(path, user, pass string) (InspectResult, error) {
 
 	// API sections (api/*). The order here mirrors the import dependency
 	// order so the inspect output reads top-to-bottom in the same order
-	// the items would be applied.
+	// the items would be applied. We also retain series + mappings arrays
+	// for the coverage cross-reference below.
+	var seriesItems, mappingsItems []any
 	for _, sec := range []struct{ name, key, file string }{
 		{"roles", "roles", "roles.json"},
 		{"asset-types", "asset_types", "asset-types.json"},
@@ -618,6 +750,18 @@ func Inspect(path, user, pass string) (InspectResult, error) {
 			Bytes: int64(f.UncompressedSize64),
 		})
 		res.TotalItems += len(items)
+		switch sec.name {
+		case "series":
+			seriesItems = items
+		case "mappings":
+			mappingsItems = items
+		}
+	}
+
+	// Cross-reference series ↔ mappings. Skipped when either side is
+	// empty (e.g. a backup of an asset-types-only test instance).
+	if len(seriesItems) > 0 || len(mappingsItems) > 0 {
+		res.Coverage = computeCoverage(seriesItems, mappingsItems)
 	}
 
 	return res, nil
@@ -658,7 +802,55 @@ func (r InspectResult) HumanReadable() string {
 		fmt.Fprintf(&b, "\nTotal: %d items across %d sections\n",
 			r.TotalItems, len(r.Sections))
 	}
+	if r.Coverage.SeriesCount > 0 || r.Coverage.MappingsCount > 0 {
+		c := r.Coverage
+		fmt.Fprintf(&b, "\nCoverage (series ↔ mappings):\n")
+		fmt.Fprintf(&b, "  • series with mapping:     %5d  (%s)\n",
+			c.SeriesWithMapping, pctOf(c.SeriesWithMapping, c.SeriesCount))
+		fmt.Fprintf(&b, "  • series without mapping:  %5d  (%s)\n",
+			c.SeriesNoMapping, pctOf(c.SeriesNoMapping, c.SeriesCount))
+		if c.SeriesNoMapping > 0 {
+			// Indented breakdown by why a series has no mapping.
+			rows := []struct {
+				label string
+				count int
+				note  string
+			}{
+				{"_system telemetry",     c.SystemTelemetry,  "(internal — no mapping expected)"},
+				{"source=calculated",     c.SourceCalculated, "(derived from FPQ — no mapping expected)"},
+				{"source=manual",         c.SourceManual,     "(user-entered — no mapping expected)"},
+				{"source=simulated",      c.SourceSimulated,  "(twin output — no mapping expected)"},
+				{"source=external (ORPHANS)", c.ExternalOrphans,
+					"← cleanup candidates"},
+			}
+			for _, row := range rows {
+				if row.count > 0 {
+					fmt.Fprintf(&b, "      ├─ %-28s %5d  %s\n",
+						row.label, row.count, row.note)
+				}
+			}
+			if len(c.OrphanExamples) > 0 {
+				fmt.Fprintf(&b, "      └─ example orphans:\n")
+				for _, p := range c.OrphanExamples {
+					fmt.Fprintf(&b, "            %s\n", p)
+				}
+			}
+		}
+		if c.RedundantMappings > 0 {
+			fmt.Fprintf(&b,
+				"  • redundant mappings:     %5d  (mappings beyond 1-per-series, e.g. N:1 failover)\n",
+				c.RedundantMappings)
+		}
+	}
 	return b.String()
+}
+
+// pctOf renders an X/Y count as "X (P%)" with safe div-by-zero handling.
+func pctOf(part, total int) string {
+	if total <= 0 {
+		return "0%"
+	}
+	return fmt.Sprintf("%.1f%%", 100.0*float64(part)/float64(total))
 }
 
 func humanBytes(n int64) string {
