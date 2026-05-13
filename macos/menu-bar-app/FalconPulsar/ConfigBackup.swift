@@ -4,10 +4,15 @@ import CryptoKit
 
 // =============================================================================
 //  FalconPulsar configuration backup format (.fpconfig)
+//
+//  Authoritative spec lives in console/internal/configbackup/backup.go.
+//  The macOS/Windows/Linux implementations all produce + consume the same
+//  binary envelope below; the v2 payload also includes asset-types, series
+//  (with engineering+alarms inline), relationships, and annotations.
 // =============================================================================
 //  Outer framing (binary):
 //    [0..3]   Magic = "FPCF"                 (4 bytes)
-//    [4]      Format version = 1             (1 byte)
+//    [4]      Format version                 (1 byte; writes: 2, accepts: 1, 2)
 //    [5..20]  PBKDF2 salt                    (16 bytes)
 //    [21..32] AES-GCM nonce/IV               (12 bytes)
 //    [33..]   AES-256-GCM ciphertext of the zip payload
@@ -23,18 +28,25 @@ import CryptoKit
 //  Payload (zip archive):
 //    manifest.json                 ← format + FP version + timestamp + source host
 //    files/compose.yml
-//    files/.env
+//    files/.env                    ← may contain secrets (encrypted)
 //    files/gateway.yaml
+//    api/roles.json                ← GET /api/v1/roles
 //    api/users.json                ← GET /api/v1/users
-//    api/datasources.json          ← GET /api/v1/datasources
-//    api/mappings.json             ← GET /api/v1/mappings
+//    api/asset-types.json          ← GET /api/v1/asset-types       (NEW in v2)
 //    api/assets.json               ← GET /api/v1/assets
-//    knowledge/**                  ← optional, ai-gateway/knowledge/ if present
+//    api/datasources.json          ← GET /api/v1/datasources
+//    api/series.json               ← GET /api/v1/series?include_engineering=true&limit=100000   (NEW in v2)
+//    api/mappings.json             ← GET /api/v1/mappings
+//    api/relationships.json        ← GET /api/v1/relationships     (NEW in v2)
+//    api/annotations.json          ← GET /api/v1/annotations       (NEW in v2)
 // =============================================================================
 
 enum ConfigBackup {
     static let magic: [UInt8] = [0x46, 0x50, 0x43, 0x46]  // "FPCF"
-    static let formatVersion: UInt8 = 1
+    /// Version this build *writes*. Older versions are still accepted on read.
+    static let formatVersion: UInt8 = 2
+    /// Oldest format this build can decrypt and parse.
+    static let minReadableFormatVersion: UInt8 = 1
     static let pbkdf2Iterations: UInt32 = 100_000
     static let saltLength = 16
     static let nonceLength = 12
@@ -214,8 +226,13 @@ enum ConfigBackup {
         guard Array(data.prefix(4)) == magic else {
             throw BackupError.invalidFile("magic bytes mismatch")
         }
-        guard data[4] == formatVersion else {
-            throw BackupError.invalidFile("unsupported format version \(data[4])")
+        // Accept any version we know how to read. The version byte is
+        // authenticated by the GCM tag below, so a tampered value would fail
+        // decryption anyway.
+        let v = data[4]
+        guard v >= Self.minReadableFormatVersion && v <= Self.formatVersion else {
+            throw BackupError.invalidFile(
+                "unsupported format version \(v) (this client supports v\(Self.minReadableFormatVersion)–v\(Self.formatVersion))")
         }
         let salt  = data.subdata(in: 5..<5+saltLength)
         let nonce = data.subdata(in: 5+saltLength..<5+saltLength+nonceLength)
@@ -274,15 +291,22 @@ enum ConfigBackup {
             }
         }
 
-        // API harvest
+        // API harvest. The list mirrors backup.go in console/. For series we
+        // request engineering+alarms inline and bump the page size so large
+        // installations export in a single shot. Per-section files use a
+        // stable name even when the URL has query parameters.
         let apiDir = "\(workDir)/api"
         try fm.createDirectory(atPath: apiDir, withIntermediateDirectories: true)
         for (name, path) in [
-            ("users.json",       "/api/v1/users"),
-            ("datasources.json", "/api/v1/datasources"),
-            ("mappings.json",    "/api/v1/mappings"),
-            ("assets.json",      "/api/v1/assets"),
-            ("roles.json",       "/api/v1/roles"),
+            ("roles.json",         "/api/v1/roles"),
+            ("users.json",         "/api/v1/users"),
+            ("asset-types.json",   "/api/v1/asset-types"),
+            ("assets.json",        "/api/v1/assets"),
+            ("datasources.json",   "/api/v1/datasources"),
+            ("series.json",        "/api/v1/series?include_engineering=true&limit=100000"),
+            ("mappings.json",      "/api/v1/mappings"),
+            ("relationships.json", "/api/v1/relationships"),
+            ("annotations.json",   "/api/v1/annotations?limit=100000"),
         ] {
             let url = URL(string: "http://localhost:7433\(path)")!
             var req = URLRequest(url: url)
@@ -343,23 +367,36 @@ enum ConfigBackup {
             }
         }
 
-        // Push API data back (best-effort; resource types may not all accept
-        // bulk upsert). Records that POST returns a conflict are skipped.
+        // Push API data back in dependency order. v2-aware: handles the new
+        // sections (asset-types, series, relationships, annotations) if
+        // present in the zip. Strips server-assigned fields before POSTing
+        // so the target server mints fresh IDs by natural key.
+        //
+        // For each section we try the keyed-by-entity convention first
+        // ({"users":[...]}, {"series":[...]}), fall back to bare-array,
+        // then a generic {"items":[...]} wrapper.
         let apiDir = "\(workDir)/api"
-        for (name, path) in [
-            ("roles.json",       "/api/v1/roles"),
-            ("users.json",       "/api/v1/users"),
-            ("datasources.json", "/api/v1/datasources"),
-            ("assets.json",      "/api/v1/assets"),
-            ("mappings.json",    "/api/v1/mappings"),
-        ] {
-            let file = "\(apiDir)/\(name)"
-            guard fm.fileExists(atPath: file),
-                  let json = try? Data(contentsOf: URL(fileURLWithPath: file)),
-                  let arr = try? JSONSerialization.jsonObject(with: json) as? [[String: Any]]
-            else { continue }
-            for item in arr {
-                let url = URL(string: "http://localhost:7433\(path)")!
+        let sections: [(file: String, path: String, key: String)] = [
+            ("roles.json",         "/api/v1/roles",         "roles"),
+            ("asset-types.json",   "/api/v1/asset-types",   "asset_types"),
+            ("users.json",         "/api/v1/users",         "users"),
+            ("datasources.json",   "/api/v1/datasources",   "datasources"),
+            ("assets.json",        "/api/v1/assets",        "assets"),
+            ("series.json",        "/api/v1/series",        "series"),
+            ("mappings.json",      "/api/v1/mappings",      "mappings"),
+            ("relationships.json", "/api/v1/relationships", "relationships"),
+            ("annotations.json",   "/api/v1/annotations",   "annotations"),
+        ]
+        for sec in sections {
+            let filePath = "\(apiDir)/\(sec.file)"
+            guard fm.fileExists(atPath: filePath),
+                  let json = try? Data(contentsOf: URL(fileURLWithPath: filePath)) else {
+                continue
+            }
+            let items = Self.extractItems(from: json, sectionKey: sec.key)
+            for raw in items {
+                let item = Self.stripServerIDs(raw)
+                let url = URL(string: "http://localhost:7433\(sec.path)")!
                 var req = URLRequest(url: url)
                 req.httpMethod = "POST"
                 req.addValue("Bearer \(creds.token)", forHTTPHeaderField: "Authorization")
@@ -368,6 +405,48 @@ enum ConfigBackup {
                 _ = try? syncRequest(req)   // best-effort; ignore individual failures
             }
         }
+    }
+
+    /// Normalise a list-endpoint JSON response into a flat array of objects.
+    /// The Core API has three possible shapes:
+    ///   - `[{...}, {...}]`                  ← bare array
+    ///   - `{"items": [...]}`                ← generic wrapper
+    ///   - `{"users": [...]}`                ← keyed by entity name
+    static func extractItems(from data: Data, sectionKey: String) -> [[String: Any]] {
+        // Bare array first
+        if let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
+            return arr
+        }
+        // Object wrapper
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return []
+        }
+        if let arr = obj[sectionKey] as? [[String: Any]] { return arr }
+        if let arr = obj["items"] as? [[String: Any]] { return arr }
+        // Aliases: hyphen↔underscore, singular form
+        let dashed = sectionKey.replacingOccurrences(of: "_", with: "-")
+        if let arr = obj[dashed] as? [[String: Any]] { return arr }
+        if sectionKey.hasSuffix("s") {
+            let singular = String(sectionKey.dropLast())
+            if let arr = obj[singular] as? [[String: Any]] { return arr }
+        }
+        return []
+    }
+
+    /// Strip server-assigned fields so POST creates a fresh record with
+    /// natural-key matching instead of cloning source-instance IDs.
+    static func stripServerIDs(_ item: [String: Any]) -> [String: Any] {
+        let stripKeys: Set<String> = [
+            "id", "created_at", "updated_at", "disk_bytes",
+            "point_count", "first_timestamp", "last_timestamp",
+            "last_value_ts", "last_value",
+        ]
+        var out: [String: Any] = [:]
+        out.reserveCapacity(item.count)
+        for (k, v) in item where !stripKeys.contains(k) {
+            out[k] = v
+        }
+        return out
     }
 }
 

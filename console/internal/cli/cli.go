@@ -252,10 +252,21 @@ func cmdConfigImport() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := configbackup.Import(ctx, args[0], cli, user, pass); err != nil {
+			summary, err := configbackup.Import(ctx, args[0], cli, user, pass)
+			if err != nil {
 				return err
 			}
-			fmt.Fprintln(os.Stderr, "Import complete. Restart the stack (fp restart) for all changes to take effect.")
+			// Show the per-section breakdown so the user can see whether
+			// items were skipped (already present) or actually failed.
+			fmt.Fprint(os.Stderr, summary.HumanReadable())
+			if summary.TotalErrors > 0 {
+				fmt.Fprintln(os.Stderr,
+					"⚠ Some items failed to import (see counts above). "+
+						"Re-run with the source's admin credentials, or "+
+						"inspect the listed errors for details.")
+			}
+			fmt.Fprintln(os.Stderr,
+				"Restart the stack (fp restart) for all changes to take effect.")
 			return nil
 		},
 	}

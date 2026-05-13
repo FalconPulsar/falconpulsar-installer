@@ -57,13 +57,13 @@ PATH. The install path is wired in `shared/lib/fpcli.sh`.
 
 ## `.fpconfig` backup format
 
-Identical binary format to `macos/menu-bar-app/FalconPulsar/ConfigBackup.swift`
+Identical binary envelope to `macos/menu-bar-app/FalconPulsar/ConfigBackup.swift`
 and `windows/tray-app/ConfigBackup.cs`. Export on one platform, import on
 another.
 
 ```
 [0..3]   Magic "FPCF"
-[4]      Format version = 1
+[4]      Format version (current: 2, accepts: 1, 2)
 [5..20]  PBKDF2 salt (16 bytes)
 [21..32] AES-GCM nonce (12 bytes)
 [33..]   AES-256-GCM ciphertext of the zip payload
@@ -71,6 +71,61 @@ another.
 ```
 
 Key = `PBKDF2-HMAC-SHA256("<admin_user>:<admin_password>", salt, 100_000, 32)`.
+
+### Payload (zip)
+
+```
+manifest.json                  format_version + fp_version + host + timestamp
+files/compose.yml              docker compose for the stack
+files/.env                     env vars (may contain secrets — encrypted)
+files/gateway.yaml             AI Gateway config seed
+api/roles.json                 GET /api/v1/roles
+api/users.json                 GET /api/v1/users
+api/asset-types.json           GET /api/v1/asset-types         (new in v2)
+api/assets.json                GET /api/v1/assets
+api/datasources.json           GET /api/v1/datasources
+api/series.json                GET /api/v1/series              (new in v2; includes engineering + alarms)
+api/mappings.json              GET /api/v1/mappings
+api/relationships.json         GET /api/v1/relationships       (new in v2)
+api/annotations.json           GET /api/v1/annotations         (new in v2)
+```
+
+### Format-version compatibility
+
+| Reader \ File | v1 file | v2 file |
+|---|---|---|
+| v1 client (older release) | ✓ works | ✗ rejected (`unsupported backup format version 2`) |
+| v2 client (this release)  | ✓ works (missing sections silently skipped) | ✓ full restore |
+
+### Import behavior (v2)
+
+On import, sections are applied in **dependency order**:
+
+```
+roles → asset-types → users → datasources → assets → series → mappings → relationships → annotations
+```
+
+For each item the client strips server-generated fields (`id`, `created_at`,
+`updated_at`, `point_count`, `disk_bytes`, etc.) before POSTing — so the target
+mints fresh IDs using the natural keys (`name`, `path`, `username`). Items
+that conflict with already-existing records on the target (HTTP 409) are
+counted as **skipped**, not errors; other failures are counted as errors and
+the first 5 messages per section are surfaced in the CLI / TUI summary.
+
+A successful run prints a per-section breakdown:
+
+```
+Import complete: 47 created, 3 skipped (already existed), 2 errors.
+  • roles         created=2  skipped=0  errors=0
+  • asset-types   created=5  skipped=0  errors=0
+  • users         created=3  skipped=1  errors=0
+  • datasources   created=4  skipped=0  errors=0
+  • assets        created=12 skipped=0  errors=0
+  • series        created=18 skipped=2  errors=1
+      ! POST /api/v1/series: HTTP 400 (asset not found: foo.bar.baz)
+  • mappings      created=3  skipped=0  errors=1
+      ! POST /api/v1/mappings: HTTP 422 (series_id null)
+```
 
 ## Admin-only operations
 

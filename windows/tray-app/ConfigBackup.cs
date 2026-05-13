@@ -14,11 +14,13 @@ namespace FalconPulsar.Tray
 {
     // =========================================================================
     //  FalconPulsar configuration backup format (.fpconfig)
-    //  ---- THIS MUST STAY IN SYNC WITH macOS ConfigBackup.swift ----
+    //  ---- THIS MUST STAY IN SYNC WITH macOS ConfigBackup.swift and
+    //  ---- console/internal/configbackup/backup.go (Linux fp CLI).
+    //  ---- The authoritative spec lives in the Go file.
     //
     //  Outer framing (binary):
     //    [0..3]   Magic = "FPCF"                 (4 bytes)
-    //    [4]      Format version = 1             (1 byte)
+    //    [4]      Format version                  (1 byte; writes: 2, accepts: 1, 2)
     //    [5..20]  PBKDF2 salt                    (16 bytes)
     //    [21..32] AES-GCM nonce/IV               (12 bytes)
     //    [33..]   AES-256-GCM ciphertext of the zip payload
@@ -28,14 +30,21 @@ namespace FalconPulsar.Tray
     //    PBKDF2-HMAC-SHA256(password="<user>:<pass>", salt=<salt>,
     //                       iter=100_000, keyLen=32)
     //
-    //  Payload: zip archive
-    //    manifest.json, files/compose.yml, files/.env, files/gateway.yaml,
-    //    api/users.json, api/datasources.json, api/mappings.json, api/assets.json
+    //  Payload (zip):
+    //    manifest.json, files/{compose.yml,.env,gateway.yaml},
+    //    api/{roles,users,asset-types,assets,datasources,series,mappings,
+    //         relationships,annotations}.json
+    //    (asset-types, series, relationships, annotations are new in v2.)
     // =========================================================================
 
     public static class ConfigBackup
     {
-        public const byte FormatVersion = 1;
+        /// <summary>Format version this build *writes*. Older versions are still accepted on read.</summary>
+        public const byte FormatVersion = 2;
+
+        /// <summary>Oldest format this build can decrypt and parse.</summary>
+        public const byte MinReadableFormatVersion = 1;
+
         public const int SaltLength = 16;
         public const int NonceLength = 12;
         public const int TagLength = 16;
@@ -165,8 +174,13 @@ namespace FalconPulsar.Tray
             for (int i = 0; i < Magic.Length; i++)
                 if (data[i] != Magic[i])
                     throw new BackupException("Not a FalconPulsar backup file: magic mismatch.");
-            if (data[Magic.Length] != FormatVersion)
-                throw new BackupException($"Unsupported backup format version: {data[Magic.Length]}");
+            // Accept any version we know how to read. The version byte is
+            // authenticated by the GCM tag, so a tampered value would fail
+            // decryption later.
+            var v = data[Magic.Length];
+            if (v < MinReadableFormatVersion || v > FormatVersion)
+                throw new BackupException(
+                    $"Unsupported backup format version {v} (this client supports v{MinReadableFormatVersion}–v{FormatVersion}).");
 
             var salt  = new byte[SaltLength];  Array.Copy(data, 5, salt, 0, SaltLength);
             var nonce = new byte[NonceLength]; Array.Copy(data, 5 + SaltLength, nonce, 0, NonceLength);
@@ -223,12 +237,21 @@ namespace FalconPulsar.Tray
                 {
                     http.DefaultRequestHeaders.Authorization =
                         new AuthenticationHeaderValue("Bearer", creds.Token);
+                    // Harvest list mirrors backup.go in console/. New v2
+                    // sections (asset-types, series, relationships, annotations)
+                    // are included unconditionally so the resulting file is a
+                    // v2 backup, regardless of whether the target has any
+                    // data in those tables.
                     foreach (var (name, path) in new[] {
-                        ("users.json",       "/api/v1/users"),
-                        ("datasources.json", "/api/v1/datasources"),
-                        ("mappings.json",    "/api/v1/mappings"),
-                        ("assets.json",      "/api/v1/assets"),
-                        ("roles.json",       "/api/v1/roles"),
+                        ("roles.json",         "/api/v1/roles"),
+                        ("users.json",         "/api/v1/users"),
+                        ("asset-types.json",   "/api/v1/asset-types"),
+                        ("assets.json",        "/api/v1/assets"),
+                        ("datasources.json",   "/api/v1/datasources"),
+                        ("series.json",        "/api/v1/series?include_engineering=true&limit=100000"),
+                        ("mappings.json",      "/api/v1/mappings"),
+                        ("relationships.json", "/api/v1/relationships"),
+                        ("annotations.json",   "/api/v1/annotations?limit=100000"),
                     })
                     {
                         try
@@ -245,7 +268,7 @@ namespace FalconPulsar.Tray
 
                 var manifest = new
                 {
-                    format_version = 1,
+                    format_version = (int)FormatVersion,
                     falconpulsar_version = "0.1.3",
                     exported_at = DateTime.UtcNow.ToString("o"),
                     source_host = Environment.MachineName,
@@ -298,32 +321,42 @@ namespace FalconPulsar.Tray
                     }
                 }
 
-                // Push API data (best-effort)
+                // Push API data in dependency order. v2-aware: includes the
+                // new sections if present in the zip. Old v1 backups simply
+                // skip the missing files. For each item we strip server-
+                // assigned fields (id, created_at, point_count, ...) so the
+                // target server mints fresh IDs by natural key.
                 var apiDir = Path.Combine(workDir, "api");
                 if (Directory.Exists(apiDir))
                 {
                     using var http = new HttpClient();
                     http.DefaultRequestHeaders.Authorization =
                         new AuthenticationHeaderValue("Bearer", creds.Token);
-                    foreach (var (name, path) in new[] {
-                        ("roles.json",       "/api/v1/roles"),
-                        ("users.json",       "/api/v1/users"),
-                        ("datasources.json", "/api/v1/datasources"),
-                        ("assets.json",      "/api/v1/assets"),
-                        ("mappings.json",    "/api/v1/mappings"),
-                    })
+                    var sections = new (string file, string path, string key)[] {
+                        ("roles.json",         "/api/v1/roles",         "roles"),
+                        ("asset-types.json",   "/api/v1/asset-types",   "asset_types"),
+                        ("users.json",         "/api/v1/users",         "users"),
+                        ("datasources.json",   "/api/v1/datasources",   "datasources"),
+                        ("assets.json",        "/api/v1/assets",        "assets"),
+                        ("series.json",        "/api/v1/series",        "series"),
+                        ("mappings.json",      "/api/v1/mappings",      "mappings"),
+                        ("relationships.json", "/api/v1/relationships", "relationships"),
+                        ("annotations.json",   "/api/v1/annotations",   "annotations"),
+                    };
+                    foreach (var sec in sections)
                     {
-                        var file = Path.Combine(apiDir, name);
+                        var file = Path.Combine(apiDir, sec.file);
                         if (!File.Exists(file)) continue;
                         try
                         {
-                            var arr = JsonNode.Parse(await File.ReadAllTextAsync(file)) as JsonArray;
-                            if (arr == null) continue;
-                            foreach (var item in arr)
+                            var items = ExtractItems(await File.ReadAllTextAsync(file), sec.key);
+                            foreach (var raw in items)
                             {
-                                var body = new StringContent(item?.ToJsonString() ?? "{}",
+                                var stripped = StripServerIDs(raw);
+                                var body = new StringContent(stripped.ToJsonString(),
                                                              Encoding.UTF8, "application/json");
-                                try { await http.PostAsync($"{CoreBaseUrl}{path}", body); } catch { }
+                                try { await http.PostAsync($"{CoreBaseUrl}{sec.path}", body); }
+                                catch { /* best-effort */ }
                             }
                         }
                         catch { /* skip malformed */ }
@@ -335,6 +368,66 @@ namespace FalconPulsar.Tray
                 try { File.Delete(zipPath); } catch { }
                 try { Directory.Delete(workDir, recursive: true); } catch { }
             }
+        }
+
+        /// <summary>
+        /// Normalises a list-endpoint JSON response into a flat array of objects.
+        /// Tries bare array, then {"section":[...]} keyed, then {"items":[...]},
+        /// then alias forms (hyphen↔underscore, singular).
+        /// </summary>
+        private static IEnumerable<JsonObject> ExtractItems(string raw, string sectionKey)
+        {
+            JsonNode root;
+            try { root = JsonNode.Parse(raw); }
+            catch { yield break; }
+
+            if (root is JsonArray bareArr)
+            {
+                foreach (var n in bareArr)
+                    if (n is JsonObject o) yield return o;
+                yield break;
+            }
+            if (root is not JsonObject obj) yield break;
+
+            JsonNode TryKey(string k) =>
+                obj.ContainsKey(k) ? obj[k] : null;
+
+            foreach (var k in new[] {
+                sectionKey,
+                "items",
+                sectionKey.Replace("_", "-"),
+                sectionKey.EndsWith("s") ? sectionKey.Substring(0, sectionKey.Length - 1) : null,
+            })
+            {
+                if (k == null) continue;
+                if (TryKey(k) is JsonArray arr)
+                {
+                    foreach (var n in arr)
+                        if (n is JsonObject o) yield return o;
+                    yield break;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Strips server-assigned fields so POST creates a fresh record on the
+        /// target instead of trying to clone source-instance IDs (which would
+        /// either collide or fail FK lookups).
+        /// </summary>
+        private static JsonObject StripServerIDs(JsonObject item)
+        {
+            var stripKeys = new HashSet<string> {
+                "id", "created_at", "updated_at", "disk_bytes",
+                "point_count", "first_timestamp", "last_timestamp",
+                "last_value_ts", "last_value",
+            };
+            var clone = new JsonObject();
+            foreach (var kv in item)
+            {
+                if (stripKeys.Contains(kv.Key)) continue;
+                clone[kv.Key] = kv.Value?.DeepClone();
+            }
+            return clone;
         }
     }
 }

@@ -753,15 +753,23 @@ func (a *App) doImport() {
 		a.askAdminThen("Import Configuration", func(cli *api.Client, user, pass string) {
 			a.showMessage("Importing…", "Please wait", false)
 			go func() {
-				err := configbackup.Import(context.Background(), path, cli, user, pass)
+				summary, err := configbackup.Import(context.Background(), path, cli, user, pass)
 				a.tv.QueueUpdateDraw(func() {
 					a.pages.RemovePage("modal")
 					if err != nil {
 						a.showMessage("Import failed", err.Error(), true)
-					} else {
-						a.showMessage("Import complete",
-							"Restart the stack (F4) for changes to take effect.", true)
+						return
 					}
+					// Show the per-section summary. If errors occurred we
+					// flag the modal as critical so the user knows to act.
+					title := "Import complete"
+					if summary.TotalErrors > 0 {
+						title = "Import partial — see details"
+					}
+					a.showMessage(title,
+						summary.HumanReadable()+
+							"\nRestart the stack (F4) for changes to take effect.",
+						true)
 				})
 			}()
 		})
