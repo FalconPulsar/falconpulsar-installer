@@ -814,7 +814,7 @@ func (a *App) askAdminThen(purpose string, then func(*api.Client, string, string
 		SetButtonBackgroundColor(theme.AccentDim).
 		SetLabelColor(theme.Text)
 	form.SetBackgroundColor(theme.Panel)
-	form.AddButton("Continue", func() {
+	submit := func() {
 		user := form.GetFormItem(0).(*tview.InputField).GetText()
 		pass := form.GetFormItem(1).(*tview.InputField).GetText()
 		a.pages.RemovePage("modal")
@@ -835,9 +835,17 @@ func (a *App) askAdminThen(purpose string, then func(*api.Client, string, string
 			}
 			a.tv.QueueUpdateDraw(func() { then(cli, user, pass) })
 		}()
-	})
-	form.AddButton("Cancel", func() { a.pages.RemovePage("modal") })
-	a.pushModal(purpose, form, 52, 8)
+	}
+	cancel := func() { a.pages.RemovePage("modal") }
+	form.AddButton("Continue", submit)
+	form.AddButton("Cancel", cancel)
+	// Esc cancels from anywhere in the form (matches the rest of the TUI).
+	form.SetCancelFunc(cancel)
+	// Render at height 11 so the button row is never clipped by the frame
+	// chrome (border + padding + title). Title carries a hint for first-
+	// time users who can't see a mouse pointer hovering over buttons.
+	a.pushModal(purpose+"   (Tab: next · Enter: confirm · Esc: cancel)",
+		form, 64, 11)
 	a.tv.SetFocus(form)
 }
 
@@ -848,15 +856,19 @@ func (a *App) askPathThen(title, suggestion string, then func(string)) {
 		SetButtonBackgroundColor(theme.AccentDim).
 		SetLabelColor(theme.Text)
 	form.SetBackgroundColor(theme.Panel)
-	form.AddButton("OK", func() {
+	submit := func() {
 		path := form.GetFormItem(0).(*tview.InputField).GetText()
 		a.pages.RemovePage("modal")
 		if path != "" {
 			then(path)
 		}
-	})
-	form.AddButton("Cancel", func() { a.pages.RemovePage("modal") })
-	a.pushModal(title, form, 72, 5)
+	}
+	cancel := func() { a.pages.RemovePage("modal") }
+	form.AddButton("OK", submit)
+	form.AddButton("Cancel", cancel)
+	form.SetCancelFunc(cancel)
+	a.pushModal(title+"   (Tab: next · Enter: confirm · Esc: cancel)",
+		form, 76, 8)
 	a.tv.SetFocus(form)
 }
 
