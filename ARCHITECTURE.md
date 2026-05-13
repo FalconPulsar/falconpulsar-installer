@@ -17,6 +17,7 @@ If you want to make a contribution, also read [CONTRIBUTING.md](CONTRIBUTING.md)
 - [Linux installer](#linux-installer)
 - [macOS installer](#macos-installer)
 - [Windows installer](#windows-installer)
+- [Configuration backup (`.fpconfig`)](#configuration-backup-fpconfig)
 - [Shared libraries](#shared-libraries)
 - [Environment variables reference](#environment-variables-reference)
 - [CI pipeline](#ci-pipeline)
@@ -377,6 +378,110 @@ The admin password is **never** passed on the command line. The flow:
 
 This avoids exposing the password via `/proc/<pid>/cmdline`, which is
 world-readable to any local user.
+
+## Configuration backup (`.fpconfig`)
+
+FalconPulsar ships three independent implementations of the configuration
+backup feature — one per platform — because they each need to integrate
+with native UI primitives (NSAlert, Windows.Forms, `tview`/`cobra`). All
+three produce + consume the same binary file format, so a backup created
+on macOS can be restored on Linux and vice versa.
+
+| Platform | Source | UI surface |
+|---|---|---|
+| macOS | `macos/menu-bar-app/FalconPulsar/ConfigBackup.swift` | Tray → Configuration Backup → Export/Import |
+| Windows | `windows/tray-app/ConfigBackup.cs` | Tray → Configuration Backup → Export/Import |
+| Linux | `console/internal/configbackup/backup.go` | `fp config export/import` CLI + `fp` TUI (F7/F8) |
+
+The authoritative format spec lives in the Go file; the Swift and C# files
+must be kept in sync.
+
+### File format (binary envelope)
+
+```
+[0..3]   Magic = "FPCF"
+[4]      Format version (writes: 2; readers accept: 1..2)
+[5..20]  PBKDF2 salt (16 bytes)
+[21..32] AES-GCM nonce/IV (12 bytes)
+[33..]   AES-256-GCM ciphertext of the zip payload
+[tail 16 bytes] GCM auth tag
+```
+
+Key derivation: `PBKDF2-HMAC-SHA256("<admin_user>:<admin_password>",
+salt, 100_000 iterations, 32-byte output)`.
+
+### Payload (zip)
+
+```
+manifest.json                  format_version + fp_version + host + timestamp
+files/compose.yml              docker compose for the stack
+files/.env                     env vars (may contain secrets — encrypted)
+files/gateway.yaml             AI Gateway config seed
+api/roles.json                 GET /api/v1/roles
+api/users.json                 GET /api/v1/users
+api/asset-types.json           GET /api/v1/asset-types          (new in v2)
+api/assets.json                GET /api/v1/assets
+api/datasources.json           GET /api/v1/datasources
+api/series.json                GET /api/v1/series               (new in v2)
+api/mappings.json              GET /api/v1/mappings
+api/relationships.json         GET /api/v1/relationships        (new in v2)
+api/annotations.json           GET /api/v1/annotations          (new in v2)
+```
+
+### Import behaviour
+
+Sections are applied in **dependency order** so foreign keys resolve:
+
+```
+roles → asset-types → users → datasources → assets → series →
+mappings → relationships → annotations
+```
+
+For each item the client **strips server-generated fields** (`id`,
+`created_at`, `updated_at`, `point_count`, `disk_bytes`,
+`first/last_timestamp`, `last_value`/`last_value_ts`) before POSTing.
+This forces the target server to mint fresh IDs using the **natural
+keys** (`name`, `path`, `username`, etc.). Otherwise the source
+instance's UUIDs would either collide or cause FK lookup failures.
+
+Conflicts (HTTP 409) are counted as **skipped** — they're treated as
+"already present, no action needed", not as errors. Other HTTP failures
+are counted as **errors** and the first 5 messages per section are
+surfaced in the result UI.
+
+### Phase B — server-side `/api/v1/admin/backup` (planned)
+
+The three implementations currently duplicate ~250 lines of harvest +
+parse + apply logic each. A future change will move the logic into
+Core's REST API:
+
+```
+POST /api/v1/admin/backup/export
+  → returns the raw zip+manifest+entity-JSON payload as a binary stream
+  → client wraps with AES-GCM and writes to disk
+
+POST /api/v1/admin/backup/import?dry_run=1&on_conflict=skip|overwrite|merge
+  → accepts the decrypted payload
+  → applies atomically with proper transaction boundaries
+  → returns a structured summary
+
+GET  /api/v1/admin/backup/manifest
+  → preview what an import would do without applying
+```
+
+Once these land, the macOS Swift / Windows C# / Linux Go implementations
+all become thin wrappers around the three endpoints, eliminating the
+~250 LOC × 3 duplication. The on-disk `.fpconfig` format stays unchanged
+so backups created today are still readable by future versions.
+
+The Web UI (Config Hub) can then add a "Backup" page that reuses the
+same endpoints — no need for the UI to bundle the Go console or shell
+out to it.
+
+This was deliberately scoped out of the v2 work because the immediate
+data-correctness gap (missing entity types, silent import failures) was
+more pressing. Once the server endpoint lands, the bundled `.fpconfig`
+format gracefully bumps to v3 with the same v1/v2 backward-compat story.
 
 ## Shared libraries
 
