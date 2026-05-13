@@ -136,8 +136,9 @@ fp_preflight_packages() {
             esac
         done
     else
-        die "no supported package manager (apt/dnf/yum/zypper) detected. "\
-"Install these tools manually then re-run: ${missing[*]}"
+        local err_msg="no supported package manager (apt/dnf/yum/zypper) detected. "
+        err_msg+="Install these tools manually then re-run: ${missing[*]}"
+        die "$err_msg"
     fi
 
     # De-duplicate the package list (e.g. shadow-utils appears twice if both
@@ -178,9 +179,10 @@ fp_preflight_packages() {
         command -v "$cmd" >/dev/null 2>&1 || still_missing+=("$cmd")
     done
     if [ ${#still_missing[@]} -gt 0 ]; then
-        die "preflight: still missing after install: ${still_missing[*]}. "\
-"Check the ${pkg_mgr} output above for failures. You can install them "\
-"manually then re-run the installer."
+        local err_msg="preflight: still missing after install: ${still_missing[*]}. "
+        err_msg+="Check the ${pkg_mgr} output above for failures. "
+        err_msg+="You can install them manually then re-run the installer."
+        die "$err_msg"
     fi
     log_success "preflight: installed ${unique_packages[*]}"
 }
