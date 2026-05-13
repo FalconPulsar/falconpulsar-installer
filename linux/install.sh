@@ -448,8 +448,9 @@ fi
 install -d -m 0750 -o "$FP_USER" -g "$FP_USER" "$FP_DATA_DIR"
 
 # Copy root's Docker Hub credentials into the falconpulsar user's home so
-# `sg docker -c 'docker compose pull'` (which runs as falconpulsar) can pull
-# the private images. Pre-release only — once images are public this can go.
+# `sudo -u falconpulsar -g docker -H bash -c 'docker compose pull'` can
+# pull the private images. Pre-release only — once images are public
+# this can go.
 ROOT_DOCKER_CFG="${DOCKER_CONFIG:-/root/.docker}/config.json"
 if [ -f "$ROOT_DOCKER_CFG" ]; then
     install -d -m 0700 -o "$FP_USER" -g "$FP_USER" "${FP_HOME}/.docker"
@@ -527,9 +528,14 @@ log_success "wrote ${FP_HOME}/compose.yml and ${FP_HOME}/.env (admin password NO
 # ── Step 7: Pull, start core, bootstrap token, start the rest ──────────────
 log_step "step 7/8 — pulling images and starting stack"
 
-# We use sg here because the falconpulsar user was just added to the docker
-# group in this same session and the new GID isn't in their existing process
-# table yet. `sg docker -c ...` gives us a fresh group context immediately.
+# `sudo -g docker` sets the effective gid to docker for the duration of the
+# call. We need it because the falconpulsar user was just added to the
+# docker group in this same session and the new GID isn't in their
+# existing process table yet. Previously we used `sg docker -c` for this,
+# but /usr/bin/sg is missing from some minimal Ubuntu cloud images even
+# when the `login` package is installed (filesystem-stripped containers,
+# etc.). sudo is always present (we're invoked through it), so this is
+# the universal path.
 fp_compose_pull_with_retry "$FP_HOME" 3 "$FP_USER"
 
 # ── 7a. Start core only with FP_ADMIN_PASS injected from this shell ────────
@@ -541,11 +547,11 @@ fp_compose_pull_with_retry "$FP_HOME" 3 "$FP_USER"
 #
 # We escape any single quotes in the password (replace ' with '\'') so
 # arbitrary user-supplied passwords don't break the inner shell parsing
-# of `sg docker -c "..."`. Auto-generated passwords are alphanumeric and
-# don't need this, but a user-supplied one might.
+# of the bash -c "..." invocation. Auto-generated passwords are
+# alphanumeric and don't need this, but a user-supplied one might.
 log_info "starting core (first-run init may take 60-90s)"
 FP_ADMIN_PASS_ESC="${FP_ADMIN_PASS//\'/\'\\\'\'}"
-sudo -u "$FP_USER" -H sg docker -c \
+sudo -u "$FP_USER" -g docker -H bash -c \
     "cd '${FP_HOME}' && FP_ADMIN_PASS='${FP_ADMIN_PASS_ESC}' docker compose up -d core"
 unset FP_ADMIN_PASS_ESC
 
@@ -553,7 +559,7 @@ unset FP_ADMIN_PASS_ESC
 log_info "waiting for core to become healthy"
 deadline=$(( $(date +%s) + 180 ))
 while :; do
-    health=$(sudo -u "$FP_USER" -H sg docker -c "docker inspect -f '{{.State.Health.Status}}' falconpulsar-core 2>/dev/null" || echo unknown)
+    health=$(sudo -u "$FP_USER" -g docker -H bash -c "docker inspect -f '{{.State.Health.Status}}' falconpulsar-core 2>/dev/null" || echo unknown)
     case "$health" in
         healthy) log_success "core is healthy"; break ;;
         unhealthy) die "core became unhealthy. Check: docker logs falconpulsar-core" ;;
@@ -576,14 +582,14 @@ fi
 # ── 7c. Start the rest of the stack ───────────────────────────────────────
 if [ "${FP_AI_GATEWAY_ENABLED}" = "true" ]; then
     log_info "starting ui and ai-gateway"
-    sudo -u "$FP_USER" -H sg docker -c "cd '${FP_HOME}' && docker compose --profile ai up -d"
+    sudo -u "$FP_USER" -g docker -H bash -c "cd '${FP_HOME}' && docker compose --profile ai up -d"
     # Wipe the gateway's self-seeded provider/model catalog so the user
     # lands on a clean AI configuration page. See bootstrap.sh for the
     # full rationale + the upstream fix this stops being necessary after.
     fp_wipe_gateway_seed_defaults
 else
     log_info "starting ui (AI Gateway disabled)"
-    sudo -u "$FP_USER" -H sg docker -c "cd '${FP_HOME}' && docker compose up -d"
+    sudo -u "$FP_USER" -g docker -H bash -c "cd '${FP_HOME}' && docker compose up -d"
 fi
 
 # ── 7d. Install the fp CLI under ${FP_HOME}/bin/ (self-contained stack) ───
@@ -680,7 +686,7 @@ if [ "$FP_INSTALL_MODE" = "systemd" ]; then
     log_info "manage with: sudo -u ${FP_USER} XDG_RUNTIME_DIR=/run/user/${FP_UID} systemctl --user <cmd> falconpulsar"
 else
     log_info "no systemd unit installed (mode: docker)"
-    log_info "to start/stop manually: sudo -u ${FP_USER} -H sg docker -c 'cd ${FP_HOME} && docker compose <up -d|down>'"
+    log_info "to start/stop manually: sudo -u ${FP_USER} -g docker -H bash -c 'cd ${FP_HOME} && docker compose <up -d|down>'"
 fi
 
 # ── Final reconciliation: uninstall.sh + .env ownership ────────────────────

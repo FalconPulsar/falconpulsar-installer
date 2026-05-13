@@ -61,12 +61,16 @@ version_ge() {
 # tools the installer treats as universal:
 #
 #   curl       (every download path: get.docker.com, fp binary, /auth/me, ...)
-#   sg         (every `docker compose` invocation as the falconpulsar user)
 #   hostname   (post-install banner; non-fatal but breaks the IP detection)
 #   useradd    (service-user mode creates the falconpulsar account)
 #   openssl    (password generation; falls back to /dev/urandom — non-fatal)
 #   ss         (port-free check; falls back to lsof/netstat — non-fatal)
 #   ca-certificates  (HTTPS verification for curl)
+#
+# Note: we used to also require `sg` (switch-group), but some minimal
+# Ubuntu cloud images ship the `login` package WITHOUT /usr/bin/sg. We
+# now use `sudo -u <user> -g docker -H bash -c "..."` everywhere instead,
+# which sets the effective gid via sudo and is universally available.
 #
 # fp_preflight_packages detects which of those are missing, maps them to the
 # right packages per package manager, and installs them in one apt/dnf/yum/
@@ -75,12 +79,12 @@ version_ge() {
 fp_preflight_packages() {
     local missing=()
     local cmd
-    for cmd in curl sg hostname useradd openssl ss; do
+    for cmd in curl hostname useradd openssl ss; do
         command -v "$cmd" >/dev/null 2>&1 || missing+=("$cmd")
     done
 
     if [ ${#missing[@]} -eq 0 ]; then
-        log_info "preflight: required tools present (curl, sg, hostname, useradd, openssl, ss)"
+        log_info "preflight: required tools present (curl, hostname, useradd, openssl, ss)"
         return 0
     fi
 
@@ -99,7 +103,6 @@ fp_preflight_packages() {
         for cmd in "${missing[@]}"; do
             case "$cmd" in
                 curl)     packages+=("curl" "ca-certificates") ;;
-                sg)       packages+=("login") ;;
                 hostname) packages+=("hostname") ;;
                 useradd)  packages+=("passwd") ;;
                 openssl)  packages+=("openssl") ;;
@@ -115,7 +118,6 @@ fp_preflight_packages() {
         for cmd in "${missing[@]}"; do
             case "$cmd" in
                 curl)     packages+=("curl" "ca-certificates") ;;
-                sg)       packages+=("shadow-utils") ;;
                 hostname) packages+=("hostname") ;;
                 useradd)  packages+=("shadow-utils") ;;
                 openssl)  packages+=("openssl") ;;
@@ -127,7 +129,6 @@ fp_preflight_packages() {
         for cmd in "${missing[@]}"; do
             case "$cmd" in
                 curl)     packages+=("curl" "ca-certificates") ;;
-                sg)       packages+=("shadow") ;;
                 hostname) packages+=("hostname") ;;
                 useradd)  packages+=("shadow") ;;
                 openssl)  packages+=("openssl") ;;

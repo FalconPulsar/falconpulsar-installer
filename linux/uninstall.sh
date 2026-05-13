@@ -145,13 +145,16 @@ elif ! id "$FP_USER" >/dev/null 2>&1; then
 fi
 
 # run_as_fp_user: run a shell command as the stack owner with the docker
-# group active. When we're already that user (per-user mode without root),
-# skip sudo and just use sg docker.
+# group active. `-g docker` sets egid to the docker group regardless of
+# the current group membership. Always uses sudo (even when already
+# running as the right user) because sudo is universally present and
+# /usr/bin/sg isn't always (some minimal Ubuntu cloud images strip it
+# from the `login` package install).
 run_as_fp_user() {
     if [ "$(id -un)" = "$FP_USER" ]; then
-        sg docker -c "$1"
+        sudo -g docker -H bash -c "$1"
     else
-        sudo -u "$FP_USER" -H sg docker -c "$1"
+        sudo -u "$FP_USER" -g docker -H bash -c "$1"
     fi
 }
 

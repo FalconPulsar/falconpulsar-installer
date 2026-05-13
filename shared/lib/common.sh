@@ -201,8 +201,14 @@ detect_os() {
 #   Run `docker compose pull` up to `attempts` times with exponential-ish
 #   backoff (2s, 4s, 8s). Returns 0 on any successful attempt, non-zero
 #   after all retries fail. If `run_as_user` is set, re-execs via
-#   `sudo -u $user -H sg docker -c` (Linux install path); otherwise runs
-#   directly (macOS / non-system-user install).
+#   `sudo -u $user -g docker -H bash -c` (Linux install path); otherwise
+#   runs directly (macOS / non-system-user install).
+#
+# The -g docker flag sets egid to the docker group for the call's
+# duration, which lets the freshly-created falconpulsar user reach
+# docker.sock without an intervening logout/login. Previously we used
+# `sg docker` for this, but /usr/bin/sg is missing on some minimal
+# Ubuntu cloud images even with the `login` package installed.
 #
 # Used by install.sh and existing.sh's upgrade fast-path so a transient
 # network flap doesn't abort the install and force the user to start over.
@@ -215,7 +221,7 @@ fp_compose_pull_with_retry() {
     while [ "$attempt" -lt "$attempts" ]; do
         attempt=$((attempt + 1))
         if [ -n "$run_as" ]; then
-            ( sudo -u "$run_as" -H sg docker -c "cd '${home}' && docker compose pull" )
+            ( sudo -u "$run_as" -g docker -H bash -c "cd '${home}' && docker compose pull" )
             rc=$?
         else
             ( cd "$home" && docker compose pull )
