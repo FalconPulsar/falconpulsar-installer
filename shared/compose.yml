@@ -34,6 +34,17 @@
 #                       /api/v1/tokens. Used by the ai-gateway container as
 #                       its Bearer auth header. Limited permission set —
 #                       see shared/lib/bootstrap.sh.
+#   FP_BRIDGE_TOKEN     Shared internal-only secret for the Core→Gateway
+#                       bridge calls. Both core and ai-gateway containers
+#                       must receive the same value. Generated at install
+#                       time by the installer (32+ random bytes hex). If
+#                       unset, ai-gateway rejects /api/v1/bridge/* with 503
+#                       (SEC-001 fail-closed). Rotate by overwriting in
+#                       .env and `docker compose up -d` — no rebuild needed.
+#   FP_ALLOWED_ORIGINS  Comma-separated CORS allowlist for the AI Gateway.
+#                       Empty falls back to the dev defaults baked into
+#                       main.py (localhost UI + tauri shell). Set when the
+#                       UI is served from a non-default origin.
 #   FP_REST_PORT        REST API port (default 7433)
 #   FP_WS_PORT          WebSocket port (default 7434)
 #   FP_PUBSUB_PORT      Pub/Sub WebSocket port (default 7435)
@@ -85,6 +96,10 @@ services:
       # forever and the entrypoint skips re-init because the config file
       # already exists.
       FP_ADMIN_PASS: ${FP_ADMIN_PASS:-}
+      # SEC-001: shared secret core→gateway uses on /api/v1/bridge/* calls.
+      # Both core and ai-gateway must see the same value, otherwise bridge
+      # calls return 401 (wrong token) / 503 (gateway unconfigured).
+      FP_BRIDGE_TOKEN: ${FP_BRIDGE_TOKEN:-}
       # Front-door HTTPS declaration. Read by core's --init-auto and
       # persisted to falconpulsar.toml; subsequent restarts read the
       # value from the TOML so this env stays empty after first run.
@@ -131,7 +146,12 @@ services:
     profiles: ["ai"]
     user: "${FP_UID}:${FP_GID}"
     ports:
-      - "${FP_GATEWAY_PORT:-7436}:7436"
+      # SEC-001: bind to ${FP_GATEWAY_BIND:-127.0.0.1} by default so the
+      # gateway is not reachable from outside the host. Browser clients
+      # reach it via the nginx UI container proxy (internal docker DNS).
+      # Set FP_GATEWAY_BIND=0.0.0.0 in .env only if you need direct LAN
+      # access (and you understand auth is bearer-token only).
+      - "${FP_GATEWAY_BIND:-127.0.0.1}:${FP_GATEWAY_PORT:-7436}:7436"
     volumes:
       # Persistent storage for conversations, user memory, and knowledge
       # embeddings. Without this mount, all AI Gateway state is lost on
@@ -151,6 +171,16 @@ services:
       # token instead of the admin username/password. The token has a
       # limited permission set — see shared/lib/bootstrap.sh.
       FP_API_KEY: ${FP_API_KEY:-}
+      # SEC-001: must match the value passed to the core container so the
+      # gateway's AuthMiddleware accepts incoming /api/v1/bridge/* calls
+      # from core. If unset, the gateway returns 503 on every bridge call
+      # (fail-closed — see auth.py).
+      FP_BRIDGE_TOKEN: ${FP_BRIDGE_TOKEN:-}
+      # SEC-001: CORS allowlist. Comma-separated list of origins that the
+      # web UI / Tauri shell will hit the gateway from. Empty = main.py
+      # bakes in safe localhost dev defaults. Override when the UI is
+      # served from a custom origin.
+      FP_ALLOWED_ORIGINS: ${FP_ALLOWED_ORIGINS:-}
       # LLM provider credentials are loaded from the Core DB via REST at
       # runtime (Settings > AI Configuration in the Web UI). Do NOT inject
       # ANTHROPIC_API_KEY / XAI_API_KEY here — they would bypass the DB
