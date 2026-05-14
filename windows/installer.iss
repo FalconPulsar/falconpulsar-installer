@@ -952,6 +952,44 @@ begin
   Result := S;
 end;
 
+// SEC-010: registry-input validator. Reject anything containing a
+// character that the Windows command interpreter or bash would treat
+// specially before we splice it into a command line. Both the native
+// Windows cmd path (cmd /c "type ... | docker login ...") and the
+// WSL bash path interpolate UrlVal/UserVal/RegHost into a string;
+// without this filter, a username like `foo" & calc.exe & "` would
+// break out of the quoted argument and run arbitrary commands.
+//
+// Allowed character set:
+//   * alphanumerics
+//   * dot, hyphen, underscore (FQDN parts, usernames)
+//   * colon (port suffix)
+//   * forward slash (registry path)
+// Anything else (quotes, backticks, $, %, &, |, ;, <, >, \, spaces,
+// control characters, etc.) causes the test to abort with a clear
+// error rather than reaching the shell.
+function IsSafeRegistryInput(const S: String): Boolean;
+var
+  I: Integer;
+  C: Char;
+begin
+  Result := True;
+  if Length(S) = 0 then Exit;
+  for I := 1 to Length(S) do
+  begin
+    C := S[I];
+    if not ((C >= 'A') and (C <= 'Z'))
+       and not ((C >= 'a') and (C <= 'z'))
+       and not ((C >= '0') and (C <= '9'))
+       and (C <> '.') and (C <> '-') and (C <> '_')
+       and (C <> ':') and (C <> '/') then
+    begin
+      Result := False;
+      Exit;
+    end;
+  end;
+end;
+
 // Registry page: Test Connection button handler.
 // Calls wsl.exe directly (not through a helper script) because {app}
 // has not been initialized yet -- the directory selection page comes
@@ -976,6 +1014,24 @@ begin
   if Length(UrlVal) = 0 then
   begin
     RegistryStatusLabel.Caption := 'Enter a registry URL first.';
+    Exit;
+  end;
+
+  // SEC-010: validate every field that will end up on a shell command
+  // line. Password goes via a temp file (stdin), so we don't validate
+  // it — it can contain any character. URL and username MUST be safe.
+  if not IsSafeRegistryInput(UrlVal) then
+  begin
+    RegistryStatusLabel.Caption :=
+      'Registry URL contains unsupported characters. Allowed: letters, ' +
+      'digits, dot, hyphen, underscore, colon, slash.';
+    Exit;
+  end;
+  if (Length(UserVal) > 0) and not IsSafeRegistryInput(UserVal) then
+  begin
+    RegistryStatusLabel.Caption :=
+      'Registry username contains unsupported characters. Allowed: ' +
+      'letters, digits, dot, hyphen, underscore.';
     Exit;
   end;
 
