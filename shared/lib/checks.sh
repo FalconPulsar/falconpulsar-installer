@@ -392,6 +392,197 @@ check_ports() {
     log_success "all required ports are free: ${ports}"
 }
 
+# fp_check_ports_interactive <var_name> [var_name ...]
+#
+# Recoverable replacement for check_ports. Takes a list of FP_*_PORT
+# variable names (NOT values). For each name it reads the current value,
+# checks for conflicts, and on conflict offers:
+#
+#   1) Remap one of the conflicting FalconPulsar ports to a free number
+#   2) Re-check (the operator stopped the process out of band)
+#   3) Abort the installation
+#
+# On successful remap the function mutates the named variable in place
+# (export "$var=$new_port") and re-checks. The caller can then read the
+# updated value through the same variable name in subsequent steps —
+# step 6 (.env writing) and step 7 (compose up) both reference the
+# variables, so a remap propagates automatically.
+#
+# Returns 0 on success; calls die() on abort or after FP_PORT_REMAP_MAX
+# unresolved iterations (default 8).
+#
+# Honoured environment overrides:
+#   FP_ASSUME_YES=1           Non-interactive: any conflict is fatal with
+#                             a clear "set FP_*_PORT or stop the holder"
+#                             message. No prompts.
+#   FP_PORT_REMAP_MAX         Override the iteration cap (default 8).
+fp_check_ports_interactive() {
+    local -a port_vars=("$@")
+    if [ "${#port_vars[@]}" -eq 0 ]; then
+        die "fp_check_ports_interactive: no port variable names supplied"
+    fi
+
+    local max_attempts="${FP_PORT_REMAP_MAX:-8}"
+    local attempt=0
+
+    while [ "$attempt" -lt "$max_attempts" ]; do
+        attempt=$((attempt + 1))
+
+        # Snapshot the current values into a parallel array so we can
+        # show them to the user and pick which to remap.
+        local -a conflict_vars=()
+        local -a conflict_ports=()
+        local v port
+        for v in "${port_vars[@]}"; do
+            eval "port=\${$v:-}"
+            [ -z "$port" ] && continue
+            if port_in_use "$port"; then
+                conflict_vars+=("$v")
+                conflict_ports+=("$port")
+            fi
+        done
+
+        if [ "${#conflict_vars[@]}" -eq 0 ]; then
+            local summary=""
+            for v in "${port_vars[@]}"; do
+                eval "port=\${$v:-}"
+                [ -n "$port" ] && summary="${summary}${port} "
+            done
+            log_success "all required ports are free: ${summary% }"
+            return 0
+        fi
+
+        # Print the conflicts.
+        log_error ""
+        log_error "Port conflict(s) detected — these ports are already in use:"
+        local i=0
+        while [ "$i" -lt "${#conflict_vars[@]}" ]; do
+            printf '\n    %s = %s\n' "${conflict_vars[$i]}" "${conflict_ports[$i]}" >&2
+            port_holder "${conflict_ports[$i]}" >&2 || printf '    (could not identify the process holding the port)\n' >&2
+            i=$((i + 1))
+        done
+
+        # Non-interactive: fail fast with actionable instructions.
+        if [ "${FP_ASSUME_YES:-0}" = "1" ]; then
+            log_error ""
+            log_error "Cannot prompt for remap in non-interactive mode (FP_ASSUME_YES=1)."
+            log_error "Either stop the offending process(es) and re-run, or pre-set"
+            log_error "the FalconPulsar port environment variables to free numbers, e.g.:"
+            local cv
+            for cv in "${conflict_vars[@]}"; do
+                log_error "    ${cv}=<free-port>"
+            done
+            die "port conflict (non-interactive)"
+        fi
+
+        # Interactive: present three top-level options.
+        printf '\n%sWhat would you like to do?%s\n' "${FP_C_BOLD}" "${FP_C_RESET}" >&2
+        printf '  %s1%s) Remap a FalconPulsar port to a different number\n' "${FP_C_CYAN}" "${FP_C_RESET}" >&2
+        printf '  %s2%s) Re-check (after you stop the conflicting process)\n' "${FP_C_CYAN}" "${FP_C_RESET}" >&2
+        printf '  %s3%s) Abort the installation\n\n' "${FP_C_CYAN}" "${FP_C_RESET}" >&2
+        printf 'Choice [1-3, default 2]: ' >&2
+        local choice=''
+        IFS= read -r choice </dev/tty 2>/dev/null || choice=''
+        case "${choice:-2}" in
+            1)
+                fp_prompt_port_remap conflict_vars conflict_ports || true
+                ;;
+            2)
+                log_info "re-checking ports..."
+                ;;
+            3|q|Q|cancel)
+                die "installation cancelled by user (unresolved port conflict)"
+                ;;
+            *)
+                log_warn "invalid choice; re-checking"
+                ;;
+        esac
+    done
+
+    die "port conflict not resolved after ${max_attempts} attempts"
+}
+
+# fp_prompt_port_remap <conflict_vars_arrname> <conflict_ports_arrname>
+#
+# Helper called by fp_check_ports_interactive. Lets the user pick which
+# of the conflicting ports to remap and what to remap it to. Validates
+# the new port (numeric, 1024-65535 — privileged ports rejected because
+# the falconpulsar service user can't bind them, also rejects already-
+# in-use numbers). Mutates the named port variable on success.
+fp_prompt_port_remap() {
+    # We receive array NAMES so we can read both the variable name and
+    # the current value side-by-side. Bash 4+ namerefs would be cleaner
+    # but POSIX-ish eval keeps us portable to older macOS bash.
+    local cvars_name="$1"
+    local cports_name="$2"
+    local count
+    eval "count=\${#${cvars_name}[@]}"
+
+    if [ "$count" -eq 1 ]; then
+        local only_var only_port
+        eval "only_var=\${${cvars_name}[0]}"
+        eval "only_port=\${${cports_name}[0]}"
+        fp_prompt_single_port_remap "$only_var" "$only_port"
+        return $?
+    fi
+
+    printf '\nWhich port would you like to remap?\n' >&2
+    local i=0
+    while [ "$i" -lt "$count" ]; do
+        local cv cp
+        eval "cv=\${${cvars_name}[$i]}"
+        eval "cp=\${${cports_name}[$i]}"
+        printf '  %s%d%s) %s (currently %s)\n' "${FP_C_CYAN}" "$((i+1))" "${FP_C_RESET}" "$cv" "$cp" >&2
+        i=$((i + 1))
+    done
+    printf '\nChoice [1-%d]: ' "$count" >&2
+    local pick=''
+    IFS= read -r pick </dev/tty 2>/dev/null || pick=''
+    case "$pick" in
+        ''|*[!0-9]*) log_warn "not a number; cancelling remap"; return 1 ;;
+    esac
+    if [ "$pick" -lt 1 ] || [ "$pick" -gt "$count" ]; then
+        log_warn "out of range; cancelling remap"
+        return 1
+    fi
+    local idx=$((pick - 1))
+    local target_var target_port
+    eval "target_var=\${${cvars_name}[$idx]}"
+    eval "target_port=\${${cports_name}[$idx]}"
+    fp_prompt_single_port_remap "$target_var" "$target_port"
+}
+
+# fp_prompt_single_port_remap <var_name> <current_port>
+# Asks for a new port number, validates it, and assigns it back to the
+# named variable (also export it so child processes see the change).
+fp_prompt_single_port_remap() {
+    local var_name="$1"
+    local current="$2"
+    printf '\n    Current %s = %s\n' "$var_name" "$current" >&2
+    printf '    New port [1024-65535]: ' >&2
+    local new_port=''
+    IFS= read -r new_port </dev/tty 2>/dev/null || new_port=''
+    case "$new_port" in
+        ''|*[!0-9]*) log_warn "not a number; cancelling remap"; return 1 ;;
+    esac
+    if [ "$new_port" -lt 1024 ] || [ "$new_port" -gt 65535 ]; then
+        log_warn "port out of unprivileged range 1024-65535; cancelling remap"
+        return 1
+    fi
+    if [ "$new_port" = "$current" ]; then
+        log_warn "port unchanged; cancelling remap"
+        return 1
+    fi
+    if port_in_use "$new_port"; then
+        log_warn "port ${new_port} is also already in use; cancelling remap"
+        return 1
+    fi
+    eval "${var_name}=${new_port}"
+    export "${var_name?}"
+    log_success "remapped ${var_name}=${new_port}"
+    return 0
+}
+
 # ── Docker checks ────────────────────────────────────────────────────────────
 check_docker_installed() {
     command -v docker >/dev/null 2>&1

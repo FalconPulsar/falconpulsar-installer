@@ -49,6 +49,95 @@ fp_detect_existing_install() {
     fi
 }
 
+# ── Phantom-container detection ─────────────────────────────────────────────
+#
+# A "phantom" is a docker container that:
+#   - has a name starting with `falconpulsar-` AND the compose project
+#     label `com.docker.compose.project=falconpulsar`
+#   - belongs to a working_dir that no longer holds a compose.yml
+#     (i.e. the user uninstalled the stack dir but the container kept
+#     running)
+#
+# Why detect them: they hold our standard ports, so a re-install at
+# the same FP_HOME would conflict — but fp_detect_existing_install
+# misses the case because there's no compose.yml to find. Without this
+# check the user hits "port 7433 in use" with no obvious way out.
+#
+# Populates the FP_PHANTOM_CONTAINERS array as "name|workdir" entries.
+# Returns 0 if any phantom was found, 1 otherwise.
+FP_PHANTOM_CONTAINERS=()
+fp_detect_phantom_containers() {
+    FP_PHANTOM_CONTAINERS=()
+    command -v docker >/dev/null 2>&1 || return 1
+
+    local target_home="$1"
+    local line name workdir
+    while IFS=$'\t' read -r name workdir; do
+        [ -z "$name" ] && continue
+        # If the container belongs to the install we're targeting, it's
+        # not a phantom — fp_apply_existing_action will handle it via the
+        # normal upgrade/reinstall/fresh path.
+        if [ -n "$target_home" ] && [ "$workdir" = "$target_home" ]; then
+            continue
+        fi
+        # Phantom = working_dir is gone or has no compose.yml.
+        if [ -z "$workdir" ] || [ ! -d "$workdir" ] || [ ! -f "${workdir}/compose.yml" ]; then
+            FP_PHANTOM_CONTAINERS+=("${name}|${workdir:-(no working_dir label)}")
+        fi
+    done < <(
+        docker ps -a \
+            --filter "name=falconpulsar-" \
+            --filter "label=com.docker.compose.project=falconpulsar" \
+            --format '{{.Names}}'$'\t''{{.Label "com.docker.compose.project.working_dir"}}' \
+            2>/dev/null
+    )
+
+    [ "${#FP_PHANTOM_CONTAINERS[@]}" -gt 0 ]
+}
+
+# fp_handle_phantom_containers
+#
+# If FP_PHANTOM_CONTAINERS has entries (i.e. fp_detect_phantom_containers
+# returned 0), prompt the user. On "stop", remove each phantom with
+# `docker rm -f`. Honoured env: FP_ASSUME_YES=1 → auto-remove (the
+# alternative is dying on the port check that immediately follows, so
+# silent cleanup is the only sensible non-interactive behaviour).
+fp_handle_phantom_containers() {
+    [ "${#FP_PHANTOM_CONTAINERS[@]}" -gt 0 ] || return 0
+
+    log_warn ""
+    log_warn "Found FalconPulsar containers from a previous install whose stack"
+    log_warn "directory no longer exists. These will hold our ports and break"
+    log_warn "the install if left running:"
+    local entry
+    for entry in "${FP_PHANTOM_CONTAINERS[@]}"; do
+        printf '    %s   (orphaned from: %s)\n' "${entry%%|*}" "${entry##*|}" >&2
+    done
+    printf '\n' >&2
+
+    local do_remove=0
+    if [ "${FP_ASSUME_YES:-0}" = "1" ]; then
+        do_remove=1
+        log_info "FP_ASSUME_YES=1 — removing orphaned containers"
+    elif confirm "Stop and remove these orphaned containers?" default-yes; then
+        do_remove=1
+    fi
+
+    if [ "$do_remove" = "1" ]; then
+        for entry in "${FP_PHANTOM_CONTAINERS[@]}"; do
+            local cname="${entry%%|*}"
+            if docker rm -f "$cname" >/dev/null 2>&1; then
+                log_success "removed orphan ${cname}"
+            else
+                log_warn "could not remove ${cname} — it may need manual cleanup"
+            fi
+        done
+        FP_PHANTOM_CONTAINERS=()
+    else
+        log_warn "keeping orphans — the port-conflict prompt below will surface them again"
+    fi
+}
+
 # Detect a real prior install. An empty stack dir alone does NOT count —
 # `useradd --create-home falconpulsar` creates `/home/falconpulsar` on Linux,
 # which is not an install artifact. We require at least one of:
