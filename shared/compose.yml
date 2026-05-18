@@ -100,6 +100,14 @@ services:
       # Both core and ai-gateway must see the same value, otherwise bridge
       # calls return 401 (wrong token) / 503 (gateway unconfigured).
       FP_BRIDGE_TOKEN: ${FP_BRIDGE_TOKEN:-}
+      # Tell Core where to reach the AI Gateway for bridge calls.
+      # Without this, Core's gateway_http_post() falls back to
+      # "127.0.0.1:7436" which inside Core's container resolves to
+      # Core itself (not the ai-gateway service). The Docker DNS name
+      # "ai-gateway" resolves to the gateway container on the shared
+      # network. Recognised by fpd/main.c (FP_GATEWAY_URL env override
+      # for the [endpoints].gateway TOML field).
+      FP_GATEWAY_URL: http://ai-gateway:7436
       # Front-door HTTPS declaration. Read by core's --init-auto and
       # persisted to falconpulsar.toml; subsequent restarts read the
       # value from the TOML so this env stays empty after first run.
