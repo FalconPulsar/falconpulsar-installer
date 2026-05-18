@@ -162,24 +162,54 @@ fp_download_with_pat() {
     local dest="$3"
     local seen_code="$4"
 
+    # Split incoming "owner/name" so we can prompt for the owner
+    # separately. Many enterprise customers fork FalconPulsar into
+    # their own org and need to point the installer at their fork —
+    # the PAT they're about to paste is on their account, not on ours.
+    local default_owner="${repo%%/*}"
+    local default_name="${repo##*/}"
+
     log_warn "GitHub returned ${seen_code} for ${repo} — the release appears to be private."
 
     if [ -z "${FP_GITHUB_TOKEN:-}" ]; then
         if [ "${FP_ASSUME_YES:-0}" = "1" ]; then
             log_error ""
-            log_error "Set FP_GITHUB_TOKEN in the environment with a PAT that has"
-            log_error "read access to ${repo} and re-run the installer, or use"
+            log_error "Set FP_GITHUB_TOKEN (and optionally FP_REPO=<owner>/<name>)"
+            log_error "in the environment and re-run the installer, or use"
             log_error "FP_LOCAL_FP_BINARY to point at a local fp binary."
             return 1
         fi
         printf '\n' >&2
         printf '%sGitHub authentication required%s\n' "${FP_C_BOLD}" "${FP_C_RESET}" >&2
-        printf 'The fp CLI lives in a release on %s%s%s. Anonymous downloads got\n' \
-            "${FP_C_CYAN}" "${repo}" "${FP_C_RESET}" >&2
-        printf 'an HTTP %s, so it looks private. Paste a personal access token\n' "$seen_code" >&2
-        printf '(classic PAT with %sread:packages%s + %srepo%s scope, or a fine-grained\n' \
-            "${FP_C_BOLD}" "${FP_C_RESET}" "${FP_C_BOLD}" "${FP_C_RESET}" >&2
-        printf 'PAT with %sContents: read%s on this repo). It is used once and discarded.\n\n' \
+        printf 'The fp CLI lives in a private GitHub release. Anonymous downloads got\n' >&2
+        printf 'an HTTP %s on %s%s%s, so it looks private to you.\n\n' \
+            "$seen_code" "${FP_C_CYAN}" "$repo" "${FP_C_RESET}" >&2
+        printf 'If you have your own fork of the installer in a different GitHub\n' >&2
+        printf 'organisation, enter the owner here. Otherwise hit Enter to keep the\n' >&2
+        printf 'default. You can also paste a full %sowner/repo%s path if your fork has\n' \
+            "${FP_C_BOLD}" "${FP_C_RESET}" >&2
+        printf 'a different name.\n\n' >&2
+
+        # ── GitHub user / owner prompt ────────────────────────────────────
+        printf '    GitHub user / organisation [%s%s%s]: ' \
+            "${FP_C_BOLD}" "$default_owner" "${FP_C_RESET}" >&2
+        local entered_owner=''
+        IFS= read -r entered_owner </dev/tty 2>/dev/null || entered_owner=''
+        if [ -n "$entered_owner" ]; then
+            case "$entered_owner" in
+                */*) repo="$entered_owner" ;;            # "myorg/myfork"
+                *)   repo="${entered_owner}/${default_name}" ;;  # just "myorg"
+            esac
+            log_info "using repository ${repo}"
+        fi
+
+        # ── PAT prompt ────────────────────────────────────────────────────
+        printf '\nPaste a personal access token for %s%s%s on %s%s%s. Token is used\n' \
+            "${FP_C_BOLD}" "${repo%%/*}" "${FP_C_RESET}" \
+            "${FP_C_CYAN}" "$repo" "${FP_C_RESET}" >&2
+        printf 'once and discarded — never written to disk. Scope:\n' >&2
+        printf '  • classic PAT: %srepo%s\n' "${FP_C_BOLD}" "${FP_C_RESET}" >&2
+        printf '  • fine-grained PAT: %sContents: read%s on the target repo\n\n' \
             "${FP_C_BOLD}" "${FP_C_RESET}" >&2
         printf '    Token (input hidden, paste then Enter): ' >&2
         stty -echo 2>/dev/null || true
