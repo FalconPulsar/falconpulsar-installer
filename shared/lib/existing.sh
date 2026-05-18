@@ -145,6 +145,23 @@ fp_prompt_existing_action() {
             log_error "confirmation did not match — aborting"
             exit 1
         fi
+
+        # Parity with the Mac SwiftUI / Windows Inno-Setup "Remove cached
+        # images" toggle. Defaults to true (matches prior Linux behaviour),
+        # but the user can opt to keep the images so a re-install pulls
+        # from the local layer cache rather than the network.
+        # Honours --keep-cached-images / --remove-cached-images flags and
+        # FP_REMOVE_CACHED_IMAGES env (true|false) for unattended runs.
+        if [ -z "${FP_REMOVE_CACHED_IMAGES:-}" ]; then
+            if [ "${FP_ASSUME_YES:-0}" = "1" ]; then
+                FP_REMOVE_CACHED_IMAGES=true
+            elif confirm "Also remove cached FalconPulsar Docker images? (saves space, slower next install)" default-yes; then
+                FP_REMOVE_CACHED_IMAGES=true
+            else
+                FP_REMOVE_CACHED_IMAGES=false
+            fi
+        fi
+        export FP_REMOVE_CACHED_IMAGES
     fi
 
     export FP_INSTALL_ACTION
@@ -169,14 +186,22 @@ fp_apply_existing_action() {
             if [ -f "${home}/compose.yml" ]; then
                 ( cd "$home" && docker compose --profile ai down --remove-orphans --volumes 2>/dev/null ) || true
             fi
-            # Best-effort image + orphan volume cleanup
+            # Best-effort image + orphan volume cleanup.
+            # Image removal is gated by FP_REMOVE_CACHED_IMAGES so the user
+            # can keep them cached locally for a faster re-install.
+            # Volumes are always purged — keeping them with FP_INSTALL_ACTION=fresh
+            # would leave stale data behind that contradicts the "fresh" choice.
             if command -v docker >/dev/null 2>&1; then
-                docker images --filter reference='*falconpulsar*' --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | \
-                    while IFS= read -r img; do
-                    if [ -n "$img" ]; then
-                        docker rmi -f "$img" >/dev/null 2>&1 || true
-                    fi
-                done
+                if [ "${FP_REMOVE_CACHED_IMAGES:-true}" != "false" ]; then
+                    docker images --filter reference='*falconpulsar*' --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | \
+                        while IFS= read -r img; do
+                        if [ -n "$img" ]; then
+                            docker rmi -f "$img" >/dev/null 2>&1 || true
+                        fi
+                    done
+                else
+                    log_info "keeping cached FalconPulsar images (FP_REMOVE_CACHED_IMAGES=false)"
+                fi
                 docker volume ls --format '{{.Name}}' 2>/dev/null | grep -E '^falconpulsar' | \
                     while IFS= read -r vol; do
                     if [ -n "$vol" ]; then

@@ -256,6 +256,162 @@ fp_registry_prompt_menu() {
     esac
 }
 
+# ─── Upfront wizard-style prompt (Linux parity with Mac/Windows) ─────────────
+
+# fp_registry_prompt_settings
+#
+# Asks the user for everything the Mac SwiftUI RegistryPage and the Windows
+# Inno Setup RegistryPage collect on their GUI wizards: registry URL, skip
+# checkbox, optional credentials, and a "test connection" pass — all BEFORE
+# the main install proceeds. Mac/Windows pass their values via env vars
+# (FP_REGISTRY / FP_REGISTRY_USER / FP_REGISTRY_PASS / FP_REGISTRY_SKIP);
+# this helper does the equivalent collection on Linux.
+#
+# Once this runs, fp_registry_ensure_access takes its env-driven happy path
+# instead of falling through to the post-failure interactive recovery. That
+# recovery still works as a safety net for users on stripped-down shells
+# where /dev/tty isn't usable.
+#
+# Honoured environment overrides — skip prompting if any are pre-set:
+#   FP_REGISTRY            registry prefix already chosen
+#   FP_REGISTRY_USER       credentials already provided
+#   FP_REGISTRY_PASS       (paired with USER)
+#   FP_REGISTRY_SKIP=1     skip the whole step (air-gapped / pre-pulled)
+#   FP_ASSUME_YES=1        non-interactive: accept whatever defaults are
+#                          set in env, do not block on prompts.
+fp_registry_prompt_settings() {
+    # Fully unattended path: env says skip → done.
+    if [ "${FP_REGISTRY_SKIP:-0}" = "1" ]; then
+        log_info "FP_REGISTRY_SKIP=1 — skipping registry configuration prompt"
+        return 0
+    fi
+
+    # Fully unattended path: --yes / FP_ASSUME_YES=1. Honour whatever is in
+    # env, do not prompt. fp_registry_ensure_access will fail fast later if
+    # there are no creds and the registry is private.
+    if [ "${FP_ASSUME_YES:-0}" = "1" ]; then
+        log_info "FP_ASSUME_YES=1 — using registry settings from environment"
+        return 0
+    fi
+
+    printf '\n%sContainer registry%s\n' "${FP_C_BOLD}" "${FP_C_RESET}" >&2
+    printf 'FalconPulsar images are pulled from a container registry. The default is\n' >&2
+    printf 'public Docker Hub. If your organisation hosts a private mirror, point\n' >&2
+    printf 'the installer at it now and provide credentials.\n\n' >&2
+
+    # ── Registry URL ────────────────────────────────────────────────────────
+    local default_reg="${FP_REGISTRY:-falconpulsar}"
+    printf '%sRegistry URL%s [%s]: ' "${FP_C_BOLD}" "${FP_C_RESET}" "$default_reg" >&2
+    local entered_reg=''
+    IFS= read -r entered_reg </dev/tty 2>/dev/null || entered_reg=''
+    if [ -n "$entered_reg" ]; then
+        FP_REGISTRY="$entered_reg"
+    fi
+    export FP_REGISTRY
+
+    # ── Skip option ─────────────────────────────────────────────────────────
+    # Useful for air-gapped installs where images are already pulled
+    # locally — we don't want to probe the network at all.
+    printf '\n' >&2
+    if confirm "Skip the registry probe entirely (air-gapped / pre-pulled images)?" default-no; then
+        FP_REGISTRY_SKIP=1
+        export FP_REGISTRY_SKIP
+        log_info "registry probe will be skipped (FP_REGISTRY_SKIP=1)"
+        return 0
+    fi
+
+    # ── Credentials (only if pre-provided or user opts in) ──────────────────
+    # The happy path for public images: user keeps the default registry,
+    # says "no credentials needed", probe runs against the public registry.
+    if [ -n "${FP_REGISTRY_USER:-}" ] && [ -n "${FP_REGISTRY_PASS:-}" ]; then
+        log_info "using pre-provided registry credentials from environment"
+    else
+        printf '\n' >&2
+        if confirm "Does this registry require authentication?" default-no; then
+            if ! fp_registry_prompt_credentials "$FP_REGISTRY"; then
+                log_warn "no credentials entered — continuing without authentication"
+                FP_REGISTRY_USER=""
+                FP_REGISTRY_PASS=""
+            fi
+        else
+            FP_REGISTRY_USER=""
+            FP_REGISTRY_PASS=""
+        fi
+    fi
+
+    # ── Test connection (parity with the Mac/Windows "Test connection" btn) ─
+    # Always run a probe up front so the user gets immediate feedback before
+    # the installer commits to anything destructive. If creds were entered,
+    # docker login runs first. The retry loop is bounded by
+    # FP_REGISTRY_MAX_RETRIES and matches the recovery menu used by
+    # fp_registry_ensure_access — same UX, just hoisted to the top.
+    local attempts=0
+    while : ; do
+        if [ -n "${FP_REGISTRY_USER:-}" ] && [ -n "${FP_REGISTRY_PASS:-}" ]; then
+            if ! fp_registry_login "$FP_REGISTRY" "$FP_REGISTRY_USER" "$FP_REGISTRY_PASS"; then
+                attempts=$((attempts + 1))
+                if [ "$attempts" -ge "$FP_REGISTRY_MAX_RETRIES" ]; then
+                    die "registry login failed too many times — aborting"
+                fi
+                log_warn "credentials rejected — try again ($attempts/$FP_REGISTRY_MAX_RETRIES)"
+                if ! fp_registry_prompt_credentials "$FP_REGISTRY"; then
+                    die "no credentials entered — aborting"
+                fi
+                continue
+            fi
+            # Login succeeded — wipe the password from this shell now that
+            # docker has it cached in ~/.docker/config.json.
+            FP_REGISTRY_PASS=""
+        fi
+
+        local rc=0
+        fp_registry_probe "$FP_REGISTRY" "$FP_REGISTRY_SENTINEL" "$FP_VERSION" || rc=$?
+        case $rc in
+            0)
+                # All good — fp_registry_ensure_access will be a no-op now.
+                return 0
+                ;;
+            1)
+                # Auth still required even after login (or with no login).
+                # Offer the same menu fp_registry_ensure_access uses.
+                local choice
+                choice="$(fp_registry_prompt_menu)"
+                case "$choice" in
+                    cancel)   die "installation cancelled by user" ;;
+                    different)
+                        fp_registry_prompt_registry || true
+                        attempts=0
+                        continue
+                        ;;
+                    creds)
+                        if ! fp_registry_prompt_credentials "$FP_REGISTRY"; then
+                            continue
+                        fi
+                        continue
+                        ;;
+                esac
+                ;;
+            2)
+                # Network / image-not-found / rate-limit. Let the user
+                # pick a different registry or cancel; don't keep retrying
+                # the same broken URL.
+                local choice
+                choice="$(fp_registry_prompt_menu)"
+                case "$choice" in
+                    cancel)    die "installation cancelled by user" ;;
+                    different) fp_registry_prompt_registry || true; attempts=0; continue ;;
+                    creds)
+                        if ! fp_registry_prompt_credentials "$FP_REGISTRY"; then
+                            continue
+                        fi
+                        continue
+                        ;;
+                esac
+                ;;
+        esac
+    done
+}
+
 # ─── Top-level orchestrator ──────────────────────────────────────────────────
 
 # fp_registry_ensure_access
@@ -282,8 +438,14 @@ fp_registry_ensure_access() {
 
     local attempts=0
     while : ; do
-        fp_registry_probe "$FP_REGISTRY" "$FP_REGISTRY_SENTINEL" "$FP_VERSION"
-        local rc=$?
+        # IMPORTANT: probe with `|| rc=$?`, not bare-call-then-$?. Under set
+        # -e the bare call would abort the installer the instant the probe
+        # returned non-zero — never reaching the case below, never showing
+        # the recovery prompt. (This was the symptom users hit when the
+        # registry needed auth: "registry probe: authentication required",
+        # then silent return to the shell.)
+        local rc=0
+        fp_registry_probe "$FP_REGISTRY" "$FP_REGISTRY_SENTINEL" "$FP_VERSION" || rc=$?
         case $rc in
             0) return 0 ;;
             1)

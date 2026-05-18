@@ -135,13 +135,34 @@ chmod +x "$INSTALL_SH" "$UNINSTALL_SH"
 # process -- the trap above removes it on exit. Passing "$@" forwards any
 # flags the user gave after the subcommand (e.g. --purge --yes for uninstall,
 # or --mode docker for install).
+#
+# When the user invokes us via `curl ... | sudo bash`, this bootstrap's
+# stdin is the curl pipe — already at EOF by the time the child runs.
+# The child installer needs a real TTY to prompt for legal, registry
+# credentials, admin password, etc. Reattach stdin to /dev/tty whenever
+# one is available so those prompts actually work. Fall back to the
+# inherited stdin on systems without /dev/tty (rare; usually CI runners,
+# in which case --yes / FP_ASSUME_YES=1 should be set anyway).
+STDIN_REDIR=""
+if [ -r /dev/tty ]; then
+    STDIN_REDIR="/dev/tty"
+fi
+
 case "$ACTION" in
     install)
         bs_info "Running installer ($INSTALL_SH)"
-        bash "$INSTALL_SH" "$@"
+        if [ -n "$STDIN_REDIR" ]; then
+            bash "$INSTALL_SH" "$@" < "$STDIN_REDIR"
+        else
+            bash "$INSTALL_SH" "$@"
+        fi
         ;;
     uninstall)
         bs_info "Running uninstaller ($UNINSTALL_SH)"
-        bash "$UNINSTALL_SH" "$@"
+        if [ -n "$STDIN_REDIR" ]; then
+            bash "$UNINSTALL_SH" "$@" < "$STDIN_REDIR"
+        else
+            bash "$UNINSTALL_SH" "$@"
+        fi
         ;;
 esac

@@ -144,6 +144,10 @@ Options:
   --rest-port <n>           REST API port (default: 7433)
   --ui-port <n>             Web UI port (default: 8080)
   --yes, -y                 Assume yes to all prompts (FP_ASSUME_YES=1)
+  --remove-cached-images    On a fresh install, also remove cached
+                            FalconPulsar Docker images (default: ask)
+  --keep-cached-images      On a fresh install, keep cached images
+                            (default: ask)
   --debug                   Verbose debug output
   --help, -h                This help
 
@@ -174,6 +178,8 @@ while [ $# -gt 0 ]; do
         --rest-port)   FP_REST_PORT="$2"; shift 2 ;;
         --ui-port)     FP_UI_PORT="$2"; shift 2 ;;
         -y|--yes)      FP_ASSUME_YES=1; shift ;;
+        --remove-cached-images) FP_REMOVE_CACHED_IMAGES=true; shift ;;
+        --keep-cached-images)   FP_REMOVE_CACHED_IMAGES=false; shift ;;
         --debug)       FP_DEBUG=1; shift ;;
         -h|--help)     print_help; exit 0 ;;
         *)             die "unknown argument: $1 (try --help)" ;;
@@ -317,11 +323,23 @@ else
     log_info "no existing install detected — proceeding with fresh install"
 fi
 
-# Verify we can pull images from the configured registry. If the registry
-# requires authentication, fp_registry_ensure_access prompts the user for
-# credentials (or a different registry) and runs `docker login`. Whatever
-# configuration ends up in root's ~/.docker/config.json here is copied into
-# the falconpulsar user's home in step 6 so the unprivileged user can pull.
+# Container registry — wizard-style prompt (Linux parity with Mac SwiftUI
+# RegistryPage and Windows Inno Setup RegistryPage). Collects URL +
+# optional credentials + optional skip + does a live "test connection"
+# probe BEFORE the installer commits to anything. After this returns,
+# fp_registry_ensure_access is effectively a no-op safety net.
+#
+# Skipped automatically (no prompt) when FP_ASSUME_YES=1 or when
+# FP_REGISTRY / FP_REGISTRY_USER / FP_REGISTRY_PASS / FP_REGISTRY_SKIP were
+# pre-set in the environment (CI, headless installs, parent installer).
+fp_registry_prompt_settings
+
+# Verify we can pull images from the configured registry. After
+# fp_registry_prompt_settings above, this is usually a no-op; it's kept as
+# a safety net for non-interactive runs that supplied bad env credentials.
+# Whatever configuration ends up in root's ~/.docker/config.json here is
+# copied into the falconpulsar user's home in step 6 so the unprivileged
+# user can pull.
 fp_registry_ensure_access
 
 # ── Step 3: Create the falconpulsar user ────────────────────────────────────
