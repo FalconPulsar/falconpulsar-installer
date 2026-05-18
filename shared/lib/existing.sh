@@ -262,9 +262,23 @@ fp_try_upgrade_fastpath() {
     # if the label is missing or stripped by a registry).
     local prev_image_ids=""
     local svc current_image
+    # Detect the install-time AI choice from the existing .env. The
+    # ai-gateway service lives behind compose's "ai" profile (see
+    # shared/compose.yml:profiles), so every compose invocation in this
+    # fast-path needs to pass --profile ai when AI is enabled — otherwise
+    # the AI container is invisible to `compose config --services`,
+    # `compose images`, `compose pull`, and `compose up -d`, and the
+    # upgrade silently keeps the OLD ai-gateway image running.
+    local fp_profile_flag=""
+    if grep -q '^FP_AI_GATEWAY_ENABLED=true' "${home}/.env" 2>/dev/null; then
+        fp_profile_flag="--profile ai"
+    fi
+
     if cd "$home" 2>/dev/null; then
-        for svc in $(docker compose config --services 2>/dev/null); do
-            current_image=$(docker compose images -q "$svc" 2>/dev/null | head -1)
+        # shellcheck disable=SC2086  # word-splitting on $fp_profile_flag is intentional
+        for svc in $(docker compose $fp_profile_flag config --services 2>/dev/null); do
+            # shellcheck disable=SC2086
+            current_image=$(docker compose $fp_profile_flag images -q "$svc" 2>/dev/null | head -1)
             if [ -n "$current_image" ]; then
                 prev_image_ids="${prev_image_ids} ${current_image}"
             fi
@@ -276,10 +290,12 @@ fp_try_upgrade_fastpath() {
     if declare -f fp_compose_pull_with_retry >/dev/null 2>&1; then
         fp_compose_pull_with_retry "$home" || return 1
     else
-        ( cd "$home" && docker compose pull ) || return 1
+        # shellcheck disable=SC2086
+        ( cd "$home" && docker compose $fp_profile_flag pull ) || return 1
     fi
     log_step "Upgrade in place: recreating containers"
-    ( cd "$home" && docker compose up -d ) || return 1
+    # shellcheck disable=SC2086
+    ( cd "$home" && docker compose $fp_profile_flag up -d ) || return 1
 
     # Post-upgrade cleanup: remove each snapshotted previous image ID that
     # is now fully untagged (no RepoTags pointing to it = displaced by the

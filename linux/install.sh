@@ -407,9 +407,20 @@ export FP_UID FP_GID
 
 # Stop any stale containers from a previous install before proceeding.
 # This prevents port conflicts and ensures a clean state.
+#
+# Always pass --profile ai here: if the previous install had AI enabled,
+# the ai-gateway container lives behind the "ai" compose profile and a
+# bare `compose down` won't touch it (the user would end up with an
+# orphaned ai-gateway running while the new install tries to bring up
+# its own — port/name conflict). Passing the flag is harmless on AI-
+# disabled installs because compose just ignores services that don't
+# match the profile.
+#
+# We use raw `docker compose` here (not fp) because the new install's
+# fp binary isn't on disk yet — that lives in step 7.
 if run_as_user "$FP_USER" docker compose -f "${FP_HOME}/compose.yml" ps -q 2>/dev/null | grep -q .; then
     log_info "stopping stale containers from previous install..."
-    run_as_user "$FP_USER" docker compose -f "${FP_HOME}/compose.yml" down --remove-orphans 2>/dev/null || true
+    run_as_user "$FP_USER" docker compose -f "${FP_HOME}/compose.yml" --profile ai down --remove-orphans 2>/dev/null || true
     log_info "stale containers stopped"
 fi
 
@@ -435,13 +446,14 @@ if [ -z "$FP_INSTALL_MODE" ]; then
 
 Choose how FalconPulsar should be managed:
 
-  ${FP_C_BOLD}1) docker${FP_C_RESET}    Pure docker-compose. Manage with:
-                  cd ${FP_HOME} && docker compose up -d / down
+  ${FP_C_BOLD}1) docker${FP_C_RESET}    Pure docker-compose, managed by you. Manage with:
+                  fp start | stop | restart | status
               You restart the stack manually after a reboot.
 
   ${FP_C_BOLD}2) systemd${FP_C_RESET}   Register a systemd user unit so the stack
               starts at boot and can be managed with:
                   systemctl --user start/stop/status falconpulsar
+              (also works via fp start/stop/restart)
 
 EOF
     while :; do
@@ -754,7 +766,8 @@ if [ "$FP_INSTALL_MODE" = "systemd" ]; then
     log_info "manage with: sudo -u ${FP_USER} XDG_RUNTIME_DIR=/run/user/${FP_UID} systemctl --user <cmd> falconpulsar"
 else
     log_info "no systemd unit installed (mode: docker)"
-    log_info "to start/stop manually: sudo -u ${FP_USER} -g docker -H bash -c 'cd ${FP_HOME} && docker compose <up -d|down>'"
+    log_info "to start/stop manually: fp start | fp stop | fp restart"
+    log_info "(fp automatically handles --profile ai based on .env's FP_AI_GATEWAY_ENABLED)"
 fi
 
 # ── Final reconciliation: uninstall.sh + .env ownership ────────────────────
