@@ -378,10 +378,28 @@ for dir in "$FP_HOME" "$FP_DATA_DIR" "$FP_GATEWAY_DATA_DIR" "${FP_HOME}/.docker"
     fi
 done
 chown -R "${FP_USER}:${FP_USER}" "$FP_HOME"
-chmod 0755 "$FP_HOME"
-chmod 0755 "$FP_DATA_DIR"
+# 0750 = owner rwx, group rx, others none. Group is `falconpulsar`
+# (the system user's primary group). The invoking human gets in via
+# group membership added below — they need it to inspect compose.yml,
+# .env, the data dir, logs, etc. Additional users can be granted access
+# later with: sudo usermod -aG falconpulsar <user>.
+chmod 0750 "$FP_HOME"
+chmod 0750 "$FP_DATA_DIR"
 chmod 0700 "${FP_HOME}/.docker"
 log_success "home directory ready: ${FP_HOME}"
+
+# ── Add the invoking human to the falconpulsar group ────────────────────────
+# Without this, the human who ran `sudo bash install.sh` cannot read
+# anything inside ${FP_HOME} (group-owned by 'falconpulsar', mode 0750).
+# Skipped on per-user installs — FP_USER is already the human.
+if [ "$FP_INSTALL_MODEL" = "service-user" ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
+    if id -nG "$SUDO_USER" 2>/dev/null | tr ' ' '\n' | grep -qx "$FP_USER"; then
+        log_success "${SUDO_USER} is already in the ${FP_USER} group"
+    else
+        usermod -aG "$FP_USER" "$SUDO_USER"
+        log_success "added ${SUDO_USER} to the ${FP_USER} group (re-login required)"
+    fi
+fi
 
 FP_UID="$(id -u "$FP_USER")"
 FP_GID="$(id -g "$FP_USER")"
@@ -398,6 +416,17 @@ fi
 # ── Step 4: Docker group membership ─────────────────────────────────────────
 log_step "step 4/8 — docker group"
 add_user_to_docker_group "$FP_USER"
+
+# Also add the invoking human to the docker group so they can run
+# `docker ps` / `docker logs falconpulsar-core` etc. without sudo.
+# Per-user installs already covered this via the line above.
+if [ "$FP_INSTALL_MODEL" = "service-user" ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
+    if id -nG "$SUDO_USER" 2>/dev/null | tr ' ' '\n' | grep -qx "docker"; then
+        log_success "${SUDO_USER} is already in the docker group"
+    else
+        add_user_to_docker_group "$SUDO_USER"
+    fi
+fi
 
 # ── Step 5: Install mode selection ──────────────────────────────────────────
 log_step "step 5/8 — install mode"
@@ -815,6 +844,17 @@ ${FP_C_GREEN}${FP_C_BOLD}╔═════════════════�
     fp logs [service]           # tail logs
     fp config export <file>     # admin-only encrypted backup
     fp config inspect <file>    # read-only backup verification
+
+  ${FP_C_BOLD}▸ Granting access to additional users${FP_C_RESET}
+    The installing user (${FP_C_BOLD}${SUDO_USER:-$FP_USER}${FP_C_RESET}) was added to the
+    ${FP_C_BOLD}${FP_USER}${FP_C_RESET} and ${FP_C_BOLD}docker${FP_C_RESET} groups. To give another user the same
+    access (read the stack files + run docker commands without sudo):
+
+        sudo usermod -aG ${FP_USER},docker <username>
+        # then that user must log out + back in for the groups to apply
+
+    To activate the new groups in your CURRENT shell (no logout):
+        newgrp docker        # or open a new terminal
 
   To uninstall: sudo bash ${SCRIPT_DIR}/uninstall.sh
 
