@@ -46,6 +46,8 @@ fi
 UNINSTALL_SH="${REPO_ROOT}/linux/uninstall.sh"
 LIB_DIR="${REPO_ROOT}/shared/lib"
 COMPOSE_YML="${REPO_ROOT}/shared/compose.yml"
+NGINX_CONF="${REPO_ROOT}/shared/nginx.conf"
+GATEWAY_YAML="${REPO_ROOT}/shared/gateway.yaml"
 
 # ── Header ──────────────────────────────────────────────────────────────────
 cat <<'BUNDLE_HEADER'
@@ -97,6 +99,32 @@ if [ "$PLATFORM" != "linux-uninstall" ]; then
     printf 'cat >"${__FP_BUNDLE_DIR}/shared/compose.yml" <<'\''__FP_EOF_COMPOSE__'\''\n'
     cat "$COMPOSE_YML"
     printf '\n__FP_EOF_COMPOSE__\n\n'
+fi
+
+# ── Embed shared/nginx.conf (install flavors only) ──────────────────────────
+# Step 6 of install.sh runs:
+#   install ... ${REPO_ROOT}/shared/nginx.conf ${FP_HOME}/nginx.conf
+# (mac install.sh does the same via cp). Without this embed, the bundled
+# installer fails with `install: No such file or directory` after the
+# user has already entered admin credentials.
+if [ "$PLATFORM" != "linux-uninstall" ]; then
+    [ -f "$NGINX_CONF" ] || { echo "ERROR: missing $NGINX_CONF" >&2; exit 1; }
+    printf 'cat >"${__FP_BUNDLE_DIR}/shared/nginx.conf" <<'\''__FP_EOF_NGINX__'\''\n'
+    cat "$NGINX_CONF"
+    printf '\n__FP_EOF_NGINX__\n\n'
+fi
+
+# ── Embed shared/gateway.yaml (install flavors only) ────────────────────────
+# install.sh references it conditionally (only when AI Gateway is enabled),
+# but always embed it -- it's ~1 KB and the check at the call site is
+# `[ -f "${REPO_ROOT}/shared/gateway.yaml" ]`, so a missing file just
+# silently skips the copy. Embedding makes the AI-enabled path Just Work
+# without an extra runtime download.
+if [ "$PLATFORM" != "linux-uninstall" ]; then
+    [ -f "$GATEWAY_YAML" ] || { echo "ERROR: missing $GATEWAY_YAML" >&2; exit 1; }
+    printf 'cat >"${__FP_BUNDLE_DIR}/shared/gateway.yaml" <<'\''__FP_EOF_GATEWAY__'\''\n'
+    cat "$GATEWAY_YAML"
+    printf '\n__FP_EOF_GATEWAY__\n\n'
 fi
 
 # ── Embed linux/systemd/falconpulsar.service.template (linux install only) ──
