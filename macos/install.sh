@@ -117,12 +117,18 @@ EOF
 prompt_legal_acknowledgement
 
 # ── Step 1: Pre-flight ──────────────────────────────────────────────────────
+# Note on ordering: the port check used to run here and aborted with
+# `die "port conflict"` if any FalconPulsar port was bound. That made
+# re-running the installer impossible whenever a previous install's own
+# containers were still running. The port check now runs later (after
+# the existing-install block stops our own containers and a phantom-
+# container sweep removes orphans from prior installs) so it only flags
+# genuinely-external conflicts, and offers remap-or-abort instead of dying.
 log_step "step 1/6 — pre-flight checks"
 check_supported_os
 check_arch
 check_ram
 check_disk "$HOME"
-check_ports "$FP_REST_PORT" "$FP_WS_PORT" "$FP_PUBSUB_PORT" "$FP_GATEWAY_PORT" "$FP_UI_PORT"
 
 # ── Step 2: Detect container runtime ────────────────────────────────────────
 log_step "step 2/6 — container runtime"
@@ -281,6 +287,27 @@ if fp_has_existing_install; then
 else
     log_info "no existing install detected — proceeding with fresh install"
 fi
+
+# ── Phantom-container sweep ─────────────────────────────────────────────────
+# Same problem the Linux installer solves: containers from a previous
+# install whose stack directory has been removed manually (or whose
+# FP_HOME differs from the one we're about to write to) don't show up
+# in fp_detect_existing_install but are still running and holding our
+# ports. Surface + offer to remove BEFORE the port check.
+log_step "checking for orphaned containers from previous installs"
+if fp_detect_phantom_containers "$FP_HOME"; then
+    fp_handle_phantom_containers
+else
+    log_success "no orphaned FalconPulsar containers found"
+fi
+
+# ── Port check (smart, recoverable) ─────────────────────────────────────────
+# Runs after the existing-install block has stopped our own containers
+# (and after the phantom sweep). Anything still on an FP port is
+# external — the prompt lets the user remap our port, re-check, or
+# abort instead of dying outright.
+log_step "verifying required TCP ports are free"
+fp_check_ports_interactive FP_REST_PORT FP_WS_PORT FP_PUBSUB_PORT FP_GATEWAY_PORT FP_UI_PORT
 
 # Verify we can pull images from the configured registry. If the registry
 # requires authentication, fp_registry_ensure_access prompts the user for

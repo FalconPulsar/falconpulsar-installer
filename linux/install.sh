@@ -228,13 +228,20 @@ fp_preflight_packages
 prompt_legal_acknowledgement
 
 # ── Step 1: Pre-flight checks ───────────────────────────────────────────────
+# Note on ordering: the port check used to run here and aborted with
+# `die "port conflict"` if any FalconPulsar port was bound. That made
+# re-running the installer impossible whenever a previous install's own
+# containers were still running — those containers held our ports and
+# the user never got to choose Upgrade / Reinstall / Fresh. The port
+# check now runs LATER (after the existing-install block stops our own
+# containers) so it only ever flags genuinely-external conflicts, and
+# it offers remap-or-abort instead of dying.
 log_step "step 1/8 — pre-flight checks"
 check_supported_os
 check_arch
 check_kernel
 check_ram
 check_disk "$(dirname "$FP_HOME")"
-check_ports "$FP_REST_PORT" "$FP_WS_PORT" "$FP_PUBSUB_PORT" "$FP_GATEWAY_PORT" "$FP_UI_PORT"
 
 # ── Step 2: Install Docker if missing ───────────────────────────────────────
 log_step "step 2/8 — Docker Engine"
@@ -322,6 +329,30 @@ if fp_has_existing_install; then
 else
     log_info "no existing install detected — proceeding with fresh install"
 fi
+
+# ── Phantom-container sweep ─────────────────────────────────────────────────
+# Containers from a previous install whose stack directory has been
+# removed manually (or whose FP_HOME differs from the one we're about to
+# write to) won't appear in fp_detect_existing_install because there's
+# no compose.yml to find — but they're still running and holding our
+# ports. Detect + offer to remove them BEFORE the port check, so the
+# user gets a clear "I see these orphans, here's what to do" rather
+# than a generic "port 7433 is in use".
+log_step "checking for orphaned containers from previous installs"
+if fp_detect_phantom_containers "$FP_HOME"; then
+    fp_handle_phantom_containers
+else
+    log_success "no orphaned FalconPulsar containers found"
+fi
+
+# ── Port check (smart, recoverable) ─────────────────────────────────────────
+# Runs AFTER the existing-install block has stopped our own containers
+# (and after the phantom sweep has cleaned up dangling ones from prior
+# installs). Whatever still holds an FP port at this point is external —
+# we surface what's holding it and let the user remap our port, re-check
+# after fixing manually, or abort.
+log_step "verifying required TCP ports are free"
+fp_check_ports_interactive FP_REST_PORT FP_WS_PORT FP_PUBSUB_PORT FP_GATEWAY_PORT FP_UI_PORT
 
 # Container registry — wizard-style prompt (Linux parity with Mac SwiftUI
 # RegistryPage and Windows Inno Setup RegistryPage). Collects URL +
