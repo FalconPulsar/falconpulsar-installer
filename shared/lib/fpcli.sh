@@ -42,10 +42,10 @@ fp_install_cli() {
     mkdir -p "${home}/bin"
 
     # Prefer a local copy bundled by the GUI installer (FP_LOCAL_FP_BINARY).
-    # Falling back to the GitHub release means a network round-trip and only
-    # works if v${version} is actually tagged. Bundled binaries are how the
-    # macOS DMG and the Windows installer ship fp; this branch keeps install
-    # working even when GitHub is unreachable or the release is missing.
+    # Falling back to the GitHub release means a network round-trip and
+    # depends on the release containing fp-<platform>. Bundled binaries are
+    # how the macOS DMG and the Windows installer ship fp; this branch keeps
+    # install working even when GitHub is unreachable.
     if [ -n "${FP_LOCAL_FP_BINARY:-}" ] && [ -f "${FP_LOCAL_FP_BINARY}" ]; then
         cp "${FP_LOCAL_FP_BINARY}" "${dest}"
         chmod +x "${dest}"
@@ -54,15 +54,188 @@ fp_install_cli() {
     fi
 
     local repo="${FP_REPO:-FalconPulsar/falconpulsar-installer}"
-    local url="https://github.com/${repo}/releases/download/v${version}/fp-${suffix}"
+    # Use /latest/ so the URL is version-agnostic. The bundled installer
+    # doesn't (and shouldn't have to) know its own version tag, and
+    # `v${version}` was previously falling back to "vlatest" or "v0.1.0"
+    # — neither of which existed as actual release tags, so the binary
+    # was never downloaded and users ended up with no fp in their bin/.
+    local url="https://github.com/${repo}/releases/latest/download/fp-${suffix}"
 
     log_info "downloading fp CLI (${suffix}) from ${url}"
-    if ! curl -fsSL -o "${dest}" "$url"; then
-        log_warn "fp CLI download failed — you can still manage the stack via 'docker compose'"
+    if fp_download_release_asset "$repo" "fp-${suffix}" "$dest" "$version"; then
+        chmod +x "${dest}"
+        log_success "fp CLI installed at ${dest}"
         return 0
     fi
-    chmod +x "${dest}"
-    log_success "fp CLI installed at ${dest}"
+    log_warn "fp CLI download failed — you can still manage the stack via 'docker compose'"
+    return 0
+}
+
+# fp_download_release_asset <repo> <asset-name> <dest> [version]
+#
+# Downloads <asset-name> from the most recent release of <repo>.
+# Handles both the public-repo case (no auth) and the private-repo case
+# (prompts for a GitHub PAT, then re-downloads via the API so the
+# Authorization header survives GitHub's cross-origin redirect).
+#
+# The /releases/latest/download/ shortcut URL is deliberately NOT used:
+# GitHub excludes prereleases from that endpoint, and FalconPulsar
+# currently ships prerelease tags only (v0.1.4-alpha.X). We instead
+# resolve the most recent release via the API and build the download
+# URL from the returned tag name.
+#
+# Honoured environment overrides:
+#   FP_GITHUB_TOKEN    Pre-provided PAT (skip the prompt entirely)
+#   FP_ASSUME_YES=1    Non-interactive — fail fast if auth is needed and
+#                      FP_GITHUB_TOKEN is unset.
+#
+# Returns 0 on success, 1 on failure (caller decides whether that's
+# fatal — fp_install_cli treats it as a warning so an offline / private
+# install can still proceed via `docker compose`).
+fp_download_release_asset() {
+    local repo="$1"
+    local asset="$2"
+    local dest="$3"
+    # version arg (4th) is informational only — kept for ABI compat.
+
+    # Step 1: resolve the most recent release tag via the API. This
+    # also tells us whether the repo is private (401/403) before we
+    # try the download itself.
+    local api_releases="https://api.github.com/repos/${repo}/releases?per_page=1"
+    local tmp_json="${dest}.api.json"
+    local http_code
+    http_code="$(curl -sSL -o "$tmp_json" -w "%{http_code}" \
+        -H "Accept: application/vnd.github+json" \
+        "$api_releases" 2>/dev/null || true)"
+
+    case "$http_code" in
+        200)
+            local tag
+            tag="$(awk -F'"' '/"tag_name":/ { print $4; exit }' "$tmp_json" 2>/dev/null)"
+            rm -f "$tmp_json"
+            if [ -z "$tag" ]; then
+                log_warn "no releases found in ${repo}"
+                return 1
+            fi
+            local public_url="https://github.com/${repo}/releases/download/${tag}/${asset}"
+            local dl_code
+            dl_code="$(curl -sSL -o "$dest" -w "%{http_code}" "$public_url" 2>/dev/null || true)"
+            if [ "$dl_code" = "200" ]; then
+                return 0
+            fi
+            rm -f "$dest"
+            # An asset 404 mid-flow (after the API gave us a tag) usually
+            # means the release is private and the download endpoint
+            # requires auth even though the API allowed the listing.
+            if [ "$dl_code" = "404" ] || [ "$dl_code" = "401" ] || [ "$dl_code" = "403" ]; then
+                fp_download_with_pat "$repo" "$asset" "$dest" "$dl_code"
+                return $?
+            fi
+            log_warn "release asset not found: ${asset} (in ${tag} of ${repo}, HTTP ${dl_code:-no-response})"
+            return 1
+            ;;
+        401|403|404)
+            # GitHub returns 404 to anonymous callers on private repos
+            # (to avoid leaking existence), 401/403 on bad/missing auth.
+            # All three mean "try with a token" — fp_download_with_pat
+            # also re-resolves the tag via the authenticated API.
+            rm -f "$tmp_json"
+            fp_download_with_pat "$repo" "$asset" "$dest" "$http_code"
+            return $?
+            ;;
+        *)
+            rm -f "$tmp_json"
+            log_warn "GitHub API unreachable (HTTP ${http_code:-no-response})"
+            return 1
+            ;;
+    esac
+}
+
+# fp_download_with_pat <repo> <asset> <dest> <http_code>
+#
+# Interactive path for a private GitHub repo. Prompts for a PAT
+# (or uses FP_GITHUB_TOKEN), then downloads via the REST API so
+# Authorization is honoured through the redirect to objects.github.
+fp_download_with_pat() {
+    local repo="$1"
+    local asset="$2"
+    local dest="$3"
+    local seen_code="$4"
+
+    log_warn "GitHub returned ${seen_code} for ${repo} — the release appears to be private."
+
+    if [ -z "${FP_GITHUB_TOKEN:-}" ]; then
+        if [ "${FP_ASSUME_YES:-0}" = "1" ]; then
+            log_error ""
+            log_error "Set FP_GITHUB_TOKEN in the environment with a PAT that has"
+            log_error "read access to ${repo} and re-run the installer, or use"
+            log_error "FP_LOCAL_FP_BINARY to point at a local fp binary."
+            return 1
+        fi
+        printf '\n' >&2
+        printf '%sGitHub authentication required%s\n' "${FP_C_BOLD}" "${FP_C_RESET}" >&2
+        printf 'The fp CLI lives in a release on %s%s%s. Anonymous downloads got\n' \
+            "${FP_C_CYAN}" "${repo}" "${FP_C_RESET}" >&2
+        printf 'an HTTP %s, so it looks private. Paste a personal access token\n' "$seen_code" >&2
+        printf '(classic PAT with %sread:packages%s + %srepo%s scope, or a fine-grained\n' \
+            "${FP_C_BOLD}" "${FP_C_RESET}" "${FP_C_BOLD}" "${FP_C_RESET}" >&2
+        printf 'PAT with %sContents: read%s on this repo). It is used once and discarded.\n\n' \
+            "${FP_C_BOLD}" "${FP_C_RESET}" >&2
+        printf '    Token (input hidden, paste then Enter): ' >&2
+        stty -echo 2>/dev/null || true
+        IFS= read -r FP_GITHUB_TOKEN </dev/tty 2>/dev/null || FP_GITHUB_TOKEN=""
+        stty echo 2>/dev/null || true
+        printf '\n' >&2
+        if [ -z "$FP_GITHUB_TOKEN" ]; then
+            log_error "no token entered — cannot download fp from a private repo"
+            return 1
+        fi
+    fi
+
+    # Step 1: hit the API to resolve the asset's download URL.
+    # `/releases?per_page=1` returns the most recent release including
+    # prereleases (unlike `/releases/latest` which skips prereleases).
+    # We then find the asset entry by name and grab its API `url` —
+    # NOT browser_download_url, because only the API URL honours the
+    # Authorization header through GitHub's redirect to objects.github.
+    local api_url="https://api.github.com/repos/${repo}/releases?per_page=1"
+    local asset_url
+    asset_url="$(
+        curl -sSL \
+            -H "Authorization: token ${FP_GITHUB_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "$api_url" 2>/dev/null \
+        | awk -v want="\"name\": \"${asset}\"" '
+            /"url":/ { lasturl=$0 }
+            $0 ~ want { print lasturl; exit }
+        ' \
+        | sed -E 's/.*"url": "([^"]+)".*/\1/'
+    )"
+
+    if [ -z "$asset_url" ]; then
+        log_error "could not resolve ${asset} via the GitHub API — check that the"
+        log_error "token has access to ${repo} and that the latest release contains"
+        log_error "an asset named '${asset}'."
+        # Don't leak the token through curl's verbose output — caller wipes it.
+        return 1
+    fi
+
+    # Step 2: download the asset. -L follows the redirect to objects.github;
+    # we explicitly ask for octet-stream so the API hands back the binary,
+    # not the JSON metadata.
+    if ! curl -fsSL \
+        -H "Authorization: token ${FP_GITHUB_TOKEN}" \
+        -H "Accept: application/octet-stream" \
+        -o "$dest" \
+        "$asset_url"; then
+        log_error "download failed even with the supplied token — the token may"
+        log_error "lack the right scope, or the GitHub redirect may have stripped"
+        log_error "auth. Verify the token can pull releases from ${repo}."
+        return 1
+    fi
+
+    log_success "downloaded ${asset} via GitHub API (authenticated)"
+    return 0
 }
 
 fp_offer_path_append() {
