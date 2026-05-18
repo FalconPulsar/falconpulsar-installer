@@ -29,15 +29,24 @@ Wants=network-online.target
 Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=@@FP_HOME@@
+# fp resolves the stack directory from FP_HOME first, then falls back to
+# ~/falconpulsar or /home/falconpulsar. Setting FP_HOME explicitly is
+# defensive: it makes the unit work regardless of the resolution order
+# and means the unit file is the single source of truth for "where is
+# the stack on this host".
+Environment=FP_HOME=@@FP_HOME@@
 
-# `docker compose up -d` returns immediately once containers are started.
-# RemainAfterExit=yes keeps the unit "active" so stop/restart work cleanly.
-ExecStart=/usr/bin/docker compose up -d --remove-orphans
-ExecStop=/usr/bin/docker compose down --remove-orphans
-
-# Auto-pull-and-restart on `systemctl --user restart`. The pull is best-effort
-# so an offline restart still works against locally-cached images.
-ExecReload=/bin/sh -c '/usr/bin/docker compose pull || true; /usr/bin/docker compose up -d --remove-orphans'
+# Delegate to the fp CLI rather than calling `docker compose` directly.
+# fp reads .env's FP_AI_GATEWAY_ENABLED and automatically appends
+# `--profile ai` when needed (see actions.go:composeProfileArgs). Without
+# this indirection every systemctl restart silently dropped the AI
+# gateway container because the bare `docker compose` doesn't activate
+# the "ai" profile. The fp binary lives in @@FP_HOME@@/bin/fp; it is
+# installed by linux/install.sh's step 7 well before this unit is
+# enabled, so the path is always populated by the time systemd runs it.
+ExecStart=@@FP_HOME@@/bin/fp start
+ExecStop=@@FP_HOME@@/bin/fp stop
+ExecReload=@@FP_HOME@@/bin/fp restart
 
 TimeoutStartSec=300
 TimeoutStopSec=120
