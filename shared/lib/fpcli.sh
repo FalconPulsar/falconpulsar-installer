@@ -156,6 +156,12 @@ fp_download_release_asset() {
 # Interactive path for a private GitHub repo. Prompts for a PAT
 # (or uses FP_GITHUB_TOKEN), then downloads via the REST API so
 # Authorization is honoured through the redirect to objects.github.
+#
+# Retries up to FP_PAT_MAX_ATTEMPTS times (default 5) on auth failure
+# so a typo in the token or the owner doesn't terminate the whole
+# install. Each failed attempt re-prompts for owner + token and
+# surfaces the actual HTTP status from the API so the user can tell
+# whether they need a new token, a different scope, or a different org.
 fp_download_with_pat() {
     local repo="$1"
     local asset="$2"
@@ -171,101 +177,186 @@ fp_download_with_pat() {
 
     log_warn "GitHub returned ${seen_code} for ${repo} — the release appears to be private."
 
-    if [ -z "${FP_GITHUB_TOKEN:-}" ]; then
-        if [ "${FP_ASSUME_YES:-0}" = "1" ]; then
-            log_error ""
-            log_error "Set FP_GITHUB_TOKEN (and optionally FP_REPO=<owner>/<name>)"
-            log_error "in the environment and re-run the installer, or use"
-            log_error "FP_LOCAL_FP_BINARY to point at a local fp binary."
-            return 1
-        fi
-        printf '\n' >&2
-        printf '%sGitHub authentication required%s\n' "${FP_C_BOLD}" "${FP_C_RESET}" >&2
-        printf 'The fp CLI lives in a private GitHub release. Anonymous downloads got\n' >&2
-        printf 'an HTTP %s on %s%s%s, so it looks private to you.\n\n' \
-            "$seen_code" "${FP_C_CYAN}" "$repo" "${FP_C_RESET}" >&2
-        printf 'If you have your own fork of the installer in a different GitHub\n' >&2
-        printf 'organisation, enter the owner here. Otherwise hit Enter to keep the\n' >&2
-        printf 'default. You can also paste a full %sowner/repo%s path if your fork has\n' \
-            "${FP_C_BOLD}" "${FP_C_RESET}" >&2
-        printf 'a different name.\n\n' >&2
-
-        # ── GitHub user / owner prompt ────────────────────────────────────
-        printf '    GitHub user / organisation [%s%s%s]: ' \
-            "${FP_C_BOLD}" "$default_owner" "${FP_C_RESET}" >&2
-        local entered_owner=''
-        IFS= read -r entered_owner </dev/tty 2>/dev/null || entered_owner=''
-        if [ -n "$entered_owner" ]; then
-            case "$entered_owner" in
-                */*) repo="$entered_owner" ;;            # "myorg/myfork"
-                *)   repo="${entered_owner}/${default_name}" ;;  # just "myorg"
-            esac
-            log_info "using repository ${repo}"
-        fi
-
-        # ── PAT prompt ────────────────────────────────────────────────────
-        printf '\nPaste a personal access token for %s%s%s on %s%s%s. Token is used\n' \
-            "${FP_C_BOLD}" "${repo%%/*}" "${FP_C_RESET}" \
-            "${FP_C_CYAN}" "$repo" "${FP_C_RESET}" >&2
-        printf 'once and discarded — never written to disk. Scope:\n' >&2
-        printf '  • classic PAT: %srepo%s\n' "${FP_C_BOLD}" "${FP_C_RESET}" >&2
-        printf '  • fine-grained PAT: %sContents: read%s on the target repo\n\n' \
-            "${FP_C_BOLD}" "${FP_C_RESET}" >&2
-        printf '    Token (input hidden, paste then Enter): ' >&2
-        stty -echo 2>/dev/null || true
-        IFS= read -r FP_GITHUB_TOKEN </dev/tty 2>/dev/null || FP_GITHUB_TOKEN=""
-        stty echo 2>/dev/null || true
-        printf '\n' >&2
-        if [ -z "$FP_GITHUB_TOKEN" ]; then
-            log_error "no token entered — cannot download fp from a private repo"
-            return 1
-        fi
+    # Non-interactive (assume-yes) builds can only use the env preset.
+    # No prompt loop possible — fall back immediately.
+    if [ "${FP_ASSUME_YES:-0}" = "1" ] && [ -z "${FP_GITHUB_TOKEN:-}" ]; then
+        log_error ""
+        log_error "Set FP_GITHUB_TOKEN (and optionally FP_REPO=<owner>/<name>)"
+        log_error "in the environment and re-run the installer, or use"
+        log_error "FP_LOCAL_FP_BINARY to point at a local fp binary."
+        return 1
     fi
 
-    # Step 1: hit the API to resolve the asset's download URL.
-    # `/releases?per_page=1` returns the most recent release including
-    # prereleases (unlike `/releases/latest` which skips prereleases).
-    # We then find the asset entry by name and grab its API `url` —
-    # NOT browser_download_url, because only the API URL honours the
-    # Authorization header through GitHub's redirect to objects.github.
-    local api_url="https://api.github.com/repos/${repo}/releases?per_page=1"
-    local asset_url
-    asset_url="$(
-        curl -sSL \
+    local max_attempts="${FP_PAT_MAX_ATTEMPTS:-5}"
+    local attempt=0
+    # Was a token supplied via env? If so, attempt 1 uses that without
+    # prompting; only re-prompt on failure.
+    local token_from_env=0
+    [ -n "${FP_GITHUB_TOKEN:-}" ] && token_from_env=1
+
+    while [ "$attempt" -lt "$max_attempts" ]; do
+        attempt=$((attempt + 1))
+        local remaining=$((max_attempts - attempt))
+
+        # ── Prompt (skipped on attempt 1 if FP_GITHUB_TOKEN preset) ────────
+        if [ "$attempt" -gt 1 ] || [ "$token_from_env" -eq 0 ]; then
+            printf '\n' >&2
+            if [ "$attempt" -eq 1 ]; then
+                printf '%sGitHub authentication required%s\n' \
+                    "${FP_C_BOLD}" "${FP_C_RESET}" >&2
+                printf 'The fp CLI lives in a private GitHub release. Anonymous downloads got\n' >&2
+                printf 'an HTTP %s on %s%s%s, so it looks private to you.\n\n' \
+                    "$seen_code" "${FP_C_CYAN}" "$repo" "${FP_C_RESET}" >&2
+            else
+                printf '%sAttempt %d of %d%s — re-enter credentials (or press Enter at the\n' \
+                    "${FP_C_BOLD}" "$attempt" "$max_attempts" "${FP_C_RESET}" >&2
+                printf 'token prompt to cancel and continue with docker compose).\n\n' >&2
+            fi
+            printf 'If you have your own fork of the installer in a different GitHub\n' >&2
+            printf 'organisation, enter the owner here. Otherwise hit Enter to keep the\n' >&2
+            printf 'default. You can also paste a full %sowner/repo%s path if your fork has\n' \
+                "${FP_C_BOLD}" "${FP_C_RESET}" >&2
+            printf 'a different name.\n\n' >&2
+
+            # ── GitHub user / owner prompt ────────────────────────────────
+            local current_owner="${repo%%/*}"
+            printf '    GitHub user / organisation [%s%s%s]: ' \
+                "${FP_C_BOLD}" "$current_owner" "${FP_C_RESET}" >&2
+            local entered_owner=''
+            IFS= read -r entered_owner </dev/tty 2>/dev/null || entered_owner=''
+            if [ -n "$entered_owner" ]; then
+                case "$entered_owner" in
+                    */*) repo="$entered_owner" ;;            # "myorg/myfork"
+                    *)   repo="${entered_owner}/${default_name}" ;;  # just "myorg"
+                esac
+                log_info "using repository ${repo}"
+            fi
+
+            # ── PAT prompt ────────────────────────────────────────────────
+            printf '\nPaste a personal access token for %s%s%s on %s%s%s. Token is used\n' \
+                "${FP_C_BOLD}" "${repo%%/*}" "${FP_C_RESET}" \
+                "${FP_C_CYAN}" "$repo" "${FP_C_RESET}" >&2
+            printf 'once and discarded — never written to disk. Scope:\n' >&2
+            printf '  • classic PAT: %srepo%s\n' "${FP_C_BOLD}" "${FP_C_RESET}" >&2
+            printf '  • fine-grained PAT: %sContents: read%s on the target repo\n\n' \
+                "${FP_C_BOLD}" "${FP_C_RESET}" >&2
+            printf '    Token (input hidden, paste then Enter): ' >&2
+            stty -echo 2>/dev/null || true
+            IFS= read -r FP_GITHUB_TOKEN </dev/tty 2>/dev/null || FP_GITHUB_TOKEN=""
+            stty echo 2>/dev/null || true
+            printf '\n' >&2
+            # Strip surrounding whitespace — paste-from-clipboard sometimes
+            # includes a stray space or trailing newline that makes the
+            # token invalid even though it visually looks correct.
+            FP_GITHUB_TOKEN="$(printf '%s' "$FP_GITHUB_TOKEN" | tr -d '[:space:]')"
+
+            if [ -z "$FP_GITHUB_TOKEN" ]; then
+                log_warn "no token entered — giving up on private-repo download"
+                return 1
+            fi
+        fi
+
+        # ── Step 1: hit the API to resolve the asset's download URL. ─────
+        # `/releases?per_page=1` returns the most recent release including
+        # prereleases (unlike `/releases/latest` which skips prereleases).
+        # We capture the HTTP status separately so we can give a meaningful
+        # error on retry instead of the generic "could not resolve" message.
+        local api_url="https://api.github.com/repos/${repo}/releases?per_page=1"
+        local api_body_file="${dest}.api.json"
+        local api_code
+        api_code="$(curl -sSL -o "$api_body_file" -w '%{http_code}' \
             -H "Authorization: token ${FP_GITHUB_TOKEN}" \
             -H "Accept: application/vnd.github+json" \
-            "$api_url" 2>/dev/null \
-        | awk -v want="\"name\": \"${asset}\"" '
-            /"url":/ { lasturl=$0 }
-            $0 ~ want { print lasturl; exit }
-        ' \
-        | sed -E 's/.*"url": "([^"]+)".*/\1/'
-    )"
+            "$api_url" 2>/dev/null || echo '000')"
 
-    if [ -z "$asset_url" ]; then
-        log_error "could not resolve ${asset} via the GitHub API — check that the"
-        log_error "token has access to ${repo} and that the latest release contains"
-        log_error "an asset named '${asset}'."
-        # Don't leak the token through curl's verbose output — caller wipes it.
+        if [ "$api_code" != "200" ]; then
+            rm -f "$api_body_file"
+            case "$api_code" in
+                401)
+                    log_error "GitHub API returned HTTP 401 (Bad credentials)."
+                    log_error "  The token is invalid, expired, or was mistyped."
+                    ;;
+                403)
+                    log_error "GitHub API returned HTTP 403 (Forbidden)."
+                    log_error "  Token lacks the required scope. Classic PATs need 'repo';"
+                    log_error "  fine-grained PATs need 'Contents: read' on ${repo}."
+                    ;;
+                404)
+                    log_error "GitHub API returned HTTP 404 for ${repo}."
+                    log_error "  Either the repo doesn't exist under that owner, or your"
+                    log_error "  token's account doesn't have access to it."
+                    ;;
+                000)
+                    log_error "Could not reach GitHub API — check network connectivity."
+                    ;;
+                *)
+                    log_error "GitHub API returned HTTP ${api_code} for ${repo}."
+                    ;;
+            esac
+            # Clear token so the next loop iteration prompts again.
+            FP_GITHUB_TOKEN=""
+            token_from_env=0
+            if [ "$remaining" -gt 0 ]; then
+                log_info "(${remaining} attempt(s) remaining)"
+                continue
+            fi
+            log_error "out of attempts — falling back to 'docker compose' (the stack still works)."
+            return 1
+        fi
+
+        # API call succeeded — parse out the API URL for the named asset.
+        # Tightened regex: match the literal `"url":` field at indent only,
+        # NOT `browser_download_url:` (which contains "url:" as a substring
+        # and used to overwrite the lasturl tracker on every asset).
+        local asset_url
+        asset_url="$(
+            awk -v want="\"name\": \"${asset}\"" '
+                /^[[:space:]]*"url":/ { lasturl=$0 }
+                $0 ~ want { print lasturl; exit }
+            ' "$api_body_file" \
+            | sed -E 's/.*"url": "([^"]+)".*/\1/'
+        )"
+        rm -f "$api_body_file"
+
+        if [ -z "$asset_url" ]; then
+            log_error "API call succeeded (HTTP 200) but the latest release of ${repo}"
+            log_error "does not contain an asset named '${asset}'. The release may have"
+            log_error "been published without per-platform binaries — contact the maintainer."
+            # No point in retrying with a different token — the asset name itself
+            # is missing from the release. Bail.
+            return 1
+        fi
+
+        # ── Step 2: download the asset. ──────────────────────────────────
+        # -L follows the redirect to objects.github; we explicitly ask for
+        # octet-stream so the API hands back the binary, not JSON metadata.
+        local dl_code
+        dl_code="$(curl -sSL -o "$dest" -w '%{http_code}' \
+            -H "Authorization: token ${FP_GITHUB_TOKEN}" \
+            -H "Accept: application/octet-stream" \
+            "$asset_url" 2>/dev/null || echo '000')"
+
+        if [ "$dl_code" = "200" ]; then
+            log_success "downloaded ${asset} via GitHub API (authenticated)"
+            return 0
+        fi
+
+        # Download failed even though the asset URL resolved — usually a
+        # redirect-strips-auth or scope mismatch on the actual asset object.
+        rm -f "$dest"
+        log_error "asset download failed with HTTP ${dl_code} after API resolved the URL."
+        log_error "  The token may lack the right scope on the actual file object."
+        FP_GITHUB_TOKEN=""
+        token_from_env=0
+        if [ "$remaining" -gt 0 ]; then
+            log_info "(${remaining} attempt(s) remaining)"
+            continue
+        fi
+        log_error "out of attempts — falling back to 'docker compose'."
         return 1
-    fi
+    done
 
-    # Step 2: download the asset. -L follows the redirect to objects.github;
-    # we explicitly ask for octet-stream so the API hands back the binary,
-    # not the JSON metadata.
-    if ! curl -fsSL \
-        -H "Authorization: token ${FP_GITHUB_TOKEN}" \
-        -H "Accept: application/octet-stream" \
-        -o "$dest" \
-        "$asset_url"; then
-        log_error "download failed even with the supplied token — the token may"
-        log_error "lack the right scope, or the GitHub redirect may have stripped"
-        log_error "auth. Verify the token can pull releases from ${repo}."
-        return 1
-    fi
-
-    log_success "downloaded ${asset} via GitHub API (authenticated)"
-    return 0
+    return 1
 }
 
 fp_offer_path_append() {

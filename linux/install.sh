@@ -723,6 +723,23 @@ elif [ -n "${SUDO_USER:-}" ]; then
     _fp_path_user="$SUDO_USER"
 fi
 if [ -n "$_fp_path_user" ]; then
+    # The bundle script creates REPO_ROOT via `mktemp -d` which produces
+    # a mode 0700 dir owned by whoever ran the installer (root, via curl|sudo).
+    # We're about to `sudo -u "$_fp_path_user"` to drop privileges so the
+    # PATH-append prompt edits the right user's rc files — but that user
+    # cannot read root-owned 0700 dirs / 0600 files, so the `source` lines
+    # below would fail with "Permission denied" (which used to leave the
+    # user with the alarming `fp_offer_path_append: command not found`
+    # at the very end of an otherwise-clean install).
+    #
+    # `a+rX` adds read for everyone + execute (traverse) on directories
+    # only. The temp dir lives in /tmp and contains no secrets (compose.yml,
+    # nginx.conf, the lib shell scripts) — making it world-readable for the
+    # ~5 seconds the trap'd cleanup takes is fine. The actual install
+    # secrets (admin password, registry creds) live in $FP_HOME/.env which
+    # has its own 0640 mode.
+    chmod -R a+rX "$REPO_ROOT" 2>/dev/null || true
+
     sudo -u "$_fp_path_user" -H bash -c "
         export HOME=\"\$(getent passwd $_fp_path_user | cut -d: -f6)\"
         source '${REPO_ROOT}/shared/lib/common.sh'
