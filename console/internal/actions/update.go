@@ -380,6 +380,19 @@ func ApplyUpdates(ctx context.Context, stdout, stderr io.Writer) error {
 	}
 
 	fmt.Fprintln(stdout, "Update complete.")
+
+	// Legacy opt-out installs: the Workspace now ships commands and standing
+	// watches that REQUIRE the gateway. Surface a one-screen offer here —
+	// this output also streams through the macOS menu-bar and Windows tray
+	// update panels, so every surface sees it.
+	if !AIGatewayEnabled() {
+		fmt.Fprintln(stdout, "")
+		fmt.Fprintln(stdout, "NEW IN THIS RELEASE")
+		fmt.Fprintln(stdout, "  Workspace commands and standing watches require the FalconPulsar")
+		fmt.Fprintln(stdout, "  Gateway, which is currently disabled on this install.")
+		fmt.Fprintln(stdout, "  Enable it with:  fp ai enable")
+		fmt.Fprintln(stdout, "  (No API key needed — AI models stay optional in ConfigHub.)")
+	}
 	return nil
 }
 

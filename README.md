@@ -101,9 +101,13 @@ End to end, all three installers do the same six things:
    - **macOS**: stack lives under the invoking user's home at
      `~/falconpulsar/`.
 4. **Generate the production stack files** — `compose.yml`, `.env`, and
-   optionally `gateway.yaml` — in the stack directory.
-5. **Pull and start the containers** — `core`, `ui`, and optionally
-   `ai-gateway`. Wait for healthchecks to pass.
+   `gateway.yaml` — in the stack directory.
+5. **Pull and start the containers** — `core`, `ui`, and `ai-gateway`
+   (the FalconPulsar Gateway — installed by default; it powers Workspace
+   commands, standing watches, and the AI assistant. Operators on
+   constrained edge hardware can opt out at install or with
+   `fp ai disable`; AI models themselves stay optional either way and are
+   configured in ConfigHub). Wait for healthchecks to pass.
 6. **Register lifecycle management** — optional systemd user unit on
    Linux, `restart: always` on macOS, Start Menu shortcuts + system tray
    auto-start on Windows.

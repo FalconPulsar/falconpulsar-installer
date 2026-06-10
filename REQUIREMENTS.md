@@ -87,6 +87,14 @@ have one already. The installer detects which one is present and uses it.
 | **Disk** | 10 GB free | 50 GB+ for the time-series database |
 | **Network** | Outbound HTTPS to `docker.io`, `ghcr.io`, `get.docker.com` (during install) | (same) |
 
+**FalconPulsar Gateway footprint:** the gateway image is ≈1.6 GB (Python +
+analytics dependencies) versus ≈330 MB for Core — it is the largest single
+component. It is installed by default because it powers Workspace commands
+and standing watches (not just the AI assistant). On disk- or RAM-
+constrained edge boxes you can decline it at install time (or `fp ai
+disable` later) at the cost of those features; FPQ queries keep working
+directly against Core.
+
 For air-gapped deployments, use `FP_REGISTRY` + `FP_REGISTRY_USER` +
 `FP_REGISTRY_PASS` env vars to point the installer at an internal
 OCI-compliant mirror that has the FalconPulsar images pre-pulled.

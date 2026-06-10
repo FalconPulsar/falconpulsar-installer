@@ -179,9 +179,8 @@ Source: "..\README.md";                                     DestDir: "{app}";   
 
 [Tasks]
 Name: "aigateway"; \
-    Description: "Install AI Capabilities (requires an LLM API key or local Ollama — can be enabled later with fp ai enable)"; \
-    GroupDescription: "AI Capabilities:"; \
-    Flags: unchecked
+    Description: "Install FalconPulsar Gateway (recommended) — powers Workspace commands, standing watches, and the AI assistant. No API key needed; AI models are configured later in ConfigHub. Skipping turns off commands and watches (enable later with fp ai enable)"; \
+    GroupDescription: "FalconPulsar Gateway:"
 
 ; Front-door HTTPS declaration. Drives the Secure flag and __Host- prefix
 ; on session cookies. Checked by default (recommended for any deployment

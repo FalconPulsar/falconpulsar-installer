@@ -489,9 +489,9 @@ struct CredentialsPage: View {
 
             Toggle(isOn: $state.aiGatewayEnabled) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Install AI Capabilities")
+                    Text("Install FalconPulsar Gateway (recommended)")
                         .font(.callout.bold())
-                    Text("Provides AI chat, natural-language queries, and LLM-powered analysis. Requires an LLM API key or local Ollama. You can enable this later with fp ai enable.")
+                    Text("Powers Workspace commands, standing watches, and the AI assistant. No API key needed — AI models are optional and configured later in ConfigHub. Skipping turns off commands and watches; enable later with fp ai enable.")
                         .font(.caption)
                         .foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)

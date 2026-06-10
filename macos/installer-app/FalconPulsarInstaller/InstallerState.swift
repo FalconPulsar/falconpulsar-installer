@@ -54,8 +54,10 @@ class InstallerState: ObservableObject {
     @Published var adminPassConfirm = ""
     @Published var passwordGenerated = false
 
-    // AI Gateway opt-in (disabled by default — users opt in)
-    @Published var aiGatewayEnabled = false
+    // FalconPulsar Gateway (enabled by default — it powers Workspace
+    // commands and standing watches, not just the AI assistant; AI models
+    // remain optional and are configured later in ConfigHub).
+    @Published var aiGatewayEnabled = true
 
     // Front-door HTTPS declaration (enabled by default — recommended).
     // Drives the Secure flag and `__Host-` prefix on session cookies.
