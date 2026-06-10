@@ -2,6 +2,7 @@
 package cli
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -364,11 +365,17 @@ func cmdAI() *cobra.Command {
 					}
 				}
 
+				// SEC-003: provider-key encryption secret (generated once;
+				// never rotated implicitly).
+				if err := actions.EnsureGatewaySecret(); err != nil {
+					return err
+				}
+
 				actions.EnsureGatewayConfig()
 				if err := actions.SetEnvValue("FP_AI_GATEWAY_ENABLED", "true"); err != nil {
 					return err
 				}
-				fmt.Fprintln(os.Stderr, "Enabling AI Capabilities…")
+				fmt.Fprintln(os.Stderr, "Enabling the FalconPulsar Gateway…")
 				// Snapshot image IDs before pull so any displaced AI Gateway
 				// image gets removed afterward. Re-enabling after a previous
 				// disable+upgrade cycle would otherwise leave the prior
@@ -398,13 +405,13 @@ func cmdAI() *cobra.Command {
 		},
 		&cobra.Command{
 			Use:   "disable",
-			Short: "Disable AI Capabilities (surgical: removes container, data dir, gateway.yaml, FP_API_KEY, and image)",
+			Short: "Disable the FalconPulsar Gateway (removes container + image; watches, conversations, and AI configuration are preserved)",
 			RunE: func(cmd *cobra.Command, args []string) error {
 				ctx := context.Background()
 
 				// Admin auth required every time (matches macOS / Windows).
 				if _, _, _, err := auth.PromptAdminWithRetry(ctx,
-					"Admin credentials are required to disable AI Capabilities.", 3); err != nil {
+					"Admin credentials are required to disable the FalconPulsar Gateway.", 3); err != nil {
 					return err
 				}
 
@@ -412,14 +419,51 @@ func cmdAI() *cobra.Command {
 					return err
 				}
 
-				fmt.Fprintln(os.Stderr, "Disabling AI Capabilities…")
-				// Surgical teardown: container + bind-mount data dir +
-				// gateway.yaml + FP_API_KEY + image. Core/UI untouched.
+				fmt.Fprintln(os.Stderr, "Disabling the FalconPulsar Gateway…")
+				fmt.Fprintln(os.Stderr, "Note: this also turns off Workspace commands and standing watches.")
+				// Non-destructive teardown: container + image only. Data,
+				// gateway.yaml, and credentials are preserved (`fp ai purge`
+				// is the destructive path). Core/UI untouched.
 				if err := actions.SurgicalDisableAI(ctx, os.Stderr); err != nil {
 					return err
 				}
 				fmt.Fprintln(os.Stderr, "")
-				fmt.Fprintln(os.Stderr, "AI Capabilities disabled and removed.")
+				fmt.Fprintln(os.Stderr, "Gateway disabled. Your watches, conversations, and AI configuration were preserved and will return when re-enabled (fp ai enable).")
+				return nil
+			},
+		},
+		&cobra.Command{
+			Use:   "purge",
+			Short: "PERMANENTLY delete all gateway data (watches, conversations, AI configuration incl. encrypted provider keys)",
+			RunE: func(cmd *cobra.Command, args []string) error {
+				ctx := context.Background()
+
+				fmt.Fprintln(os.Stderr, "This PERMANENTLY deletes:")
+				fmt.Fprintln(os.Stderr, "  - all standing watches")
+				fmt.Fprintln(os.Stderr, "  - all conversation history")
+				fmt.Fprintln(os.Stderr, "  - AI configuration, including encrypted provider keys")
+				fmt.Fprintln(os.Stderr, "  - gateway.yaml and the gateway service credential")
+				fmt.Fprint(os.Stderr, "Type 'purge' to confirm: ")
+				answer, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+				if strings.TrimSpace(answer) != "purge" {
+					fmt.Fprintln(os.Stderr, "Aborted — nothing was deleted.")
+					return nil
+				}
+
+				// Admin auth required (destructive).
+				if _, _, _, err := auth.PromptAdminWithRetry(ctx,
+					"Admin credentials are required to purge gateway data.", 3); err != nil {
+					return err
+				}
+
+				if err := actions.SetEnvValue("FP_AI_GATEWAY_ENABLED", "false"); err != nil {
+					return err
+				}
+				if err := actions.PurgeAIData(ctx, os.Stderr); err != nil {
+					return err
+				}
+				fmt.Fprintln(os.Stderr, "")
+				fmt.Fprintln(os.Stderr, "Gateway data purged.")
 				return nil
 			},
 		},

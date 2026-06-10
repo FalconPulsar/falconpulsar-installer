@@ -171,10 +171,25 @@ fp_bootstrap_gateway_token() {
         *) env_mode="600" ;;
     esac
 
+    # SEC-003: generate the provider-key encryption secret alongside the
+    # service token (only when absent — never rotate implicitly, since
+    # rotating orphans previously-encrypted provider keys).
+    local gateway_secret=""
+    if ! grep -q '^FP_GATEWAY_SECRET=.' "$env_file" 2>/dev/null; then
+        if command -v openssl >/dev/null 2>&1; then
+            gateway_secret=$(openssl rand -hex 32)
+        else
+            gateway_secret=$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')
+        fi
+    fi
+
     umask 077
     {
         cat "$env_file"
         printf 'FP_API_KEY=%s\n' "$token"
+        if [ -n "$gateway_secret" ]; then
+            printf 'FP_GATEWAY_SECRET=%s\n' "$gateway_secret"
+        fi
     } > "${env_file}.new"
 
     if [ -n "$env_owner" ] && [ -n "$env_group" ]; then

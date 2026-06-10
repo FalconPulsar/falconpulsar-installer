@@ -434,7 +434,7 @@ namespace FalconPulsar.Tray
         {
             if (_aiToggleItem == null) return;
             var enabled = IsAIGatewayEnabled();
-            _aiToggleItem.Text = enabled ? "Disable AI Capabilities" : "Enable AI Capabilities";
+            _aiToggleItem.Text = enabled ? "Disable FalconPulsar Gateway" : "Enable FalconPulsar Gateway";
             // Clear any prior handlers, then attach the right one.
             foreach (var prior in _aiToggleHandlers)
                 _aiToggleItem.Click -= prior;
@@ -1631,6 +1631,20 @@ namespace FalconPulsar.Tray
                 }
             }
 
+            // SEC-003: ensure the provider-key encryption secret exists in the
+            // WSL .env. Generated once; never rotated implicitly (rotation
+            // would orphan previously-encrypted provider keys). Mirrors
+            // actions.EnsureGatewaySecret in Go and bootstrap.sh.
+            {
+                var secret = Convert.ToHexString(
+                    System.Security.Cryptography.RandomNumberGenerator.GetBytes(32))
+                    .ToLowerInvariant();
+                var ensureSecretScript =
+                    $"grep -q '^FP_GATEWAY_SECRET=.' '{_wslHome}/.env' 2>/dev/null || " +
+                    $"echo \"FP_GATEWAY_SECRET={secret}\" >> '{_wslHome}/.env'";
+                _ = await RunWslBashCaptureAsync(ensureSecretScript);
+            }
+
             // Mirror the flag to the Windows side so the tray/fp.exe can read it.
             SetEnvValue("FP_AI_GATEWAY_ENABLED", "true");
 
@@ -1754,18 +1768,26 @@ namespace FalconPulsar.Tray
             if (authed == null) return;
 
             var result = MessageBox.Show(
-                "This will stop and remove the AI gateway container, delete its data directory and gateway.yaml, clear the service token, and delete the AI gateway image (re-enabling later will re-download it).\n\n" +
-                "Core and UI stay running and untouched. Your time-series data is unaffected.\n\n" +
-                "Disable and Remove AI Capabilities?",
-                "Disable AI Capabilities",
+                "This stops and removes the gateway container and image (re-enabling later re-downloads it).\n\n" +
+                "It also turns off Workspace commands and standing watches. Your watches, conversations, AI configuration, and credentials are PRESERVED and return when re-enabled.\n\n" +
+                "Core and UI stay running and untouched.\n\n" +
+                "Disable the FalconPulsar Gateway?",
+                "Disable FalconPulsar Gateway",
                 MessageBoxButtons.OKCancel, MessageBoxIcon.Warning);
             if (result != DialogResult.OK) return;
 
             SetEnvValue("FP_AI_GATEWAY_ENABLED", "false");
 
-            // Surgical: act only on the ai-gateway service and its host bind-mount
-            // data dir inside WSL. Never uses `down -v` because that would also
-            // stop core/ui (they have no compose profile → always-active).
+            // NOTE: deliberately NON-DESTRUCTIVE (matches `fp ai disable` and
+            // the macOS menu-bar). The gateway data dir now holds watches.db,
+            // conversations.db, and ai_config.db (encrypted provider keys) —
+            // FP_API_KEY, gateway.yaml, and the data dir are all preserved so
+            // re-enabling restores everything. Destructive cleanup is
+            // `fp ai purge` (console, behind an explicit confirmation).
+            //
+            // Surgical: act only on the ai-gateway service inside WSL. Never
+            // uses `down -v` because that would also stop core/ui (they have
+            // no compose profile → always-active).
             var script =
                 $"cd '{_wslHome}' || exit 1\n" +
                 "echo '[disable-ai] loading environment from .env…'\n" +
@@ -1773,26 +1795,17 @@ namespace FalconPulsar.Tray
                 $". '{_wslHome}/.env' 2>/dev/null || true\n" +
                 "set +a\n" +
                 "IMAGE_REF=\"${FP_REGISTRY:-falconpulsar}/ai-gateway:${FP_VERSION:-latest}\"\n" +
-                "GATEWAY_DATA=\"${FP_GATEWAY_DATA_DIR:-${FP_DATA_DIR}/../ai-gateway-data}\"\n" +
                 "echo '[disable-ai] stopping and removing ai-gateway container (core/ui untouched)…'\n" +
-                "docker compose --profile ai rm -f -s -v ai-gateway 2>&1\n" +
-                "if [ -n \"$GATEWAY_DATA\" ] && [ \"$GATEWAY_DATA\" != / ] && [ -d \"$GATEWAY_DATA\" ]; then\n" +
-                "  echo \"[disable-ai] removing AI gateway data directory: $GATEWAY_DATA\"\n" +
-                "  rm -rf \"$GATEWAY_DATA\"\n" +
-                "fi\n" +
-                "echo '[disable-ai] removing gateway.yaml…'\n" +
-                $"rm -f '{_wslHome}/gateway.yaml'\n" +
-                "echo '[disable-ai] clearing FP_API_KEY from .env…'\n" +
-                $"grep -v '^FP_API_KEY=' '{_wslHome}/.env' > /tmp/fp_env.new 2>/dev/null && mv /tmp/fp_env.new '{_wslHome}/.env'\n" +
+                "docker compose --profile ai rm -f -s ai-gateway 2>&1\n" +
                 "echo \"[disable-ai] removing AI gateway image: $IMAGE_REF\"\n" +
                 "docker rmi -f \"$IMAGE_REF\" 2>&1 || true\n" +
-                "echo '[disable-ai] cleanup complete. Core and UI were not touched.'\n";
+                "echo '[disable-ai] done. Watches, conversations, AI configuration, and credentials were preserved. Core and UI were not touched.'\n";
 
             await RunWslStreamingActionAsync(
-                "Disabling AI Capabilities…",
+                "Disabling the FalconPulsar Gateway…",
                 "disable-ai",
                 script,
-                "AI Capabilities disabled and removed.");
+                "Gateway disabled. Your watches, conversations, and AI configuration were preserved and will return when re-enabled.");
         }
 
         // ────────────────────────── Configuration Backup ──────────────────────────

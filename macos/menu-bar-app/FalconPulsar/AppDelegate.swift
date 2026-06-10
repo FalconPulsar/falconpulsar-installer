@@ -156,13 +156,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         backupItem.submenu = backupMenu
         menu.addItem(backupItem)
 
-        // AI Capabilities — single toggle
+        // FalconPulsar Gateway — single toggle (powers Workspace commands,
+        // standing watches, and the AI assistant)
         if isAIGatewayEnabled() {
-            let aiToggle = NSMenuItem(title: "Disable AI Capabilities", action: #selector(disableAIGateway), keyEquivalent: "")
+            let aiToggle = NSMenuItem(title: "Disable FalconPulsar Gateway", action: #selector(disableAIGateway), keyEquivalent: "")
             aiToggle.target = self
             menu.addItem(aiToggle)
         } else {
-            let aiToggle = NSMenuItem(title: "Enable AI Capabilities", action: #selector(enableAIGateway), keyEquivalent: "")
+            let aiToggle = NSMenuItem(title: "Enable FalconPulsar Gateway", action: #selector(enableAIGateway), keyEquivalent: "")
             aiToggle.target = self
             menu.addItem(aiToggle)
         }
@@ -1062,12 +1063,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func hasGatewayToken() -> Bool {
+        return hasEnvValue("FP_API_KEY")
+    }
+
+    /// True when `key` exists in .env with a non-empty value.
+    private func hasEnvValue(_ key: String) -> Bool {
         let envPath = "\(homeDir)/.env"
         guard let data = try? String(contentsOfFile: envPath, encoding: .utf8) else { return false }
         for line in data.components(separatedBy: "\n") {
             let t = line.trimmingCharacters(in: .whitespaces)
-            if t.hasPrefix("FP_API_KEY=") {
-                return !t.replacingOccurrences(of: "FP_API_KEY=", with: "").isEmpty
+            if t.hasPrefix("\(key)=") {
+                return !t.replacingOccurrences(of: "\(key)=", with: "").isEmpty
             }
         }
         return false
@@ -1101,6 +1107,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             } catch {
                 showError(error, title: "Enable AI Capabilities")
                 return
+            }
+        }
+
+        // SEC-003: ensure the provider-key encryption secret exists.
+        // Generated once; never rotated implicitly (rotation would orphan
+        // previously-encrypted provider keys). Mirrors
+        // actions.EnsureGatewaySecret in Go and bootstrap.sh.
+        if !hasEnvValue("FP_GATEWAY_SECRET") {
+            var bytes = [UInt8](repeating: 0, count: 32)
+            if SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess {
+                let secret = bytes.map { String(format: "%02x", $0) }.joined()
+                setEnvValue("FP_GATEWAY_SECRET", secret)
             }
         }
 
@@ -1206,20 +1224,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         ) != nil else { return }
 
         let alert = NSAlert()
-        alert.messageText = "Disable AI Capabilities?"
-        alert.informativeText = "This will stop and remove the AI gateway container, delete its data directory and gateway.yaml, clear the service token, and delete the AI gateway image (re-enabling later will re-download it). Core and UI stay running and untouched. Your time-series data is unaffected."
+        alert.messageText = "Disable the FalconPulsar Gateway?"
+        alert.informativeText = "This stops and removes the gateway container and image (re-enabling later re-downloads it). It also turns off Workspace commands and standing watches. Your watches, conversations, AI configuration, and credentials are PRESERVED and return when re-enabled. Core and UI stay running and untouched."
         alert.alertStyle = .warning
-        alert.addButton(withTitle: "Disable and Remove")
+        alert.addButton(withTitle: "Disable")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
         setEnvValue("FP_AI_GATEWAY_ENABLED", "false")
-        removeEnvValue("FP_API_KEY")
-        try? FileManager.default.removeItem(atPath: "\(homeDir)/gateway.yaml")
+        // NOTE: deliberately NON-DESTRUCTIVE (matches `fp ai disable` and the
+        // Windows tray). The gateway data dir now holds watches.db,
+        // conversations.db, and ai_config.db (encrypted provider keys) —
+        // FP_API_KEY, gateway.yaml, and the data dir are all preserved so
+        // re-enabling restores everything. Destructive cleanup is
+        // `fp ai purge` (console, behind an explicit confirmation).
 
-        // Surgical: act only on the ai-gateway service and its host bind-mount data dir.
-        // Never uses `down -v` because that would also stop core/ui (they have no profile
-        // so compose treats them as always-active).
+        // Surgical: act only on the ai-gateway service. Never uses `down -v`
+        // because that would also stop core/ui (they have no profile so
+        // compose treats them as always-active).
         let command = """
         export PATH='/Applications/Docker.app/Contents/Resources/bin:/usr/local/bin:/opt/homebrew/bin':"$PATH"
         cd '\(homeDir)' || exit 1
@@ -1229,27 +1251,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         . '\(homeDir)/.env' 2>/dev/null || true
         set +a
         IMAGE_REF="${FP_REGISTRY:-falconpulsar}/ai-gateway:${FP_VERSION:-latest}"
-        GATEWAY_DATA="${FP_GATEWAY_DATA_DIR:-${FP_DATA_DIR}/../ai-gateway-data}"
 
         echo '[disable-ai] stopping and removing ai-gateway container (core/ui untouched)…'
-        docker compose --profile ai rm -f -s -v ai-gateway 2>&1
-
-        if [ -n "$GATEWAY_DATA" ] && [ "$GATEWAY_DATA" != "/" ] && [ -d "$GATEWAY_DATA" ]; then
-          echo "[disable-ai] removing AI gateway data directory: $GATEWAY_DATA"
-          rm -rf "$GATEWAY_DATA"
-        fi
+        docker compose --profile ai rm -f -s ai-gateway 2>&1
 
         echo "[disable-ai] removing AI gateway image: $IMAGE_REF"
         docker rmi -f "$IMAGE_REF" 2>&1 || true
 
-        echo '[disable-ai] cleanup complete. Core and UI were not touched.'
+        echo '[disable-ai] done. Watches, conversations, AI configuration, and credentials were preserved. Core and UI were not touched.'
         """
 
         runDockerActionPanel(
-            title: "Disabling AI Capabilities…",
+            title: "Disabling the FalconPulsar Gateway…",
             marker: "disable-ai",
             command: command,
-            successMessage: "AI Capabilities disabled and removed."
+            successMessage: "Gateway disabled. Your watches, conversations, and AI configuration were preserved and will return when re-enabled."
         )
     }
 

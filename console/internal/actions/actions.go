@@ -4,6 +4,8 @@ package actions
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
@@ -134,6 +136,28 @@ func HasGatewayToken() bool {
 		}
 	}
 	return false
+}
+
+// EnsureGatewaySecret makes sure FP_GATEWAY_SECRET exists in .env (SEC-003:
+// the key the gateway uses to encrypt LLM provider API keys at rest). It is
+// generated once and NEVER rotated implicitly — rotating would orphan
+// previously-encrypted provider keys. Returns nil if already present.
+func EnsureGatewaySecret() error {
+	data, err := os.ReadFile(filepath.Join(HomeDir(), ".env"))
+	if err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "FP_GATEWAY_SECRET=") &&
+				strings.TrimPrefix(line, "FP_GATEWAY_SECRET=") != "" {
+				return nil // present — never overwrite
+			}
+		}
+	}
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return fmt.Errorf("generate gateway secret: %w", err)
+	}
+	return SetEnvValue("FP_GATEWAY_SECRET", hex.EncodeToString(buf))
 }
 
 // AIGatewayEnabled reads FP_AI_GATEWAY_ENABLED from ~/falconpulsar/.env.
@@ -360,9 +384,16 @@ func GetComposeVersion(ctx context.Context) string {
 	return "v" + v
 }
 
-// SurgicalDisableAI removes only the AI gateway service + its host bind-mount
-// data dir, gateway.yaml, image, and FP_API_KEY from .env. NEVER runs
-// `compose down -v` because that would stop core + ui too.
+// SurgicalDisableAI stops and removes the AI gateway container + image ONLY.
+// NEVER runs `compose down -v` because that would stop core + ui too.
+//
+// IMPORTANT: deliberately NON-DESTRUCTIVE. The gateway data directory now
+// holds far more than AI chat artifacts — watches.db (standing monitoring),
+// conversations.db (incl. persisted FPQ/command history), ai_config.db
+// (encrypted provider keys), and user memory. The data dir, gateway.yaml,
+// and FP_API_KEY are all preserved so a later re-enable restores
+// everything. Destructive cleanup lives in PurgeAIData (exposed as
+// `fp ai purge`) behind an explicit confirmation.
 //
 // Matches the macOS menu-bar and Windows tray surgical flow exactly.
 func SurgicalDisableAI(ctx context.Context, out io.Writer) error {
@@ -375,6 +406,48 @@ func SurgicalDisableAI(ctx context.Context, out io.Writer) error {
 	}
 
 	write("[disable-ai] stopping and removing ai-gateway container (core/ui untouched)…\n")
+	cmd := exec.CommandContext(ctx, dockerPath(), "compose", "--profile", "ai",
+		"rm", "-f", "-s", "ai-gateway")
+	cmd.Dir = HomeDir()
+	cmd.Stdout = out
+	cmd.Stderr = out
+	_ = cmd.Run()
+
+	// Image (disk reclaim — safe, re-pulled on enable)
+	registry := env["FP_REGISTRY"]
+	if registry == "" {
+		registry = "falconpulsar"
+	}
+	version := env["FP_VERSION"]
+	if version == "" {
+		version = "latest"
+	}
+	imageRef := fmt.Sprintf("%s/ai-gateway:%s", registry, version)
+	write(fmt.Sprintf("[disable-ai] removing AI gateway image: %s\n", imageRef))
+	rmi := exec.CommandContext(ctx, dockerPath(), "rmi", "-f", imageRef)
+	rmi.Stdout = out
+	rmi.Stderr = out
+	_ = rmi.Run()
+
+	write("[disable-ai] done. Watches, conversations, AI configuration, and credentials were preserved and will return on re-enable. Core and UI were not touched.\n")
+	return nil
+}
+
+// PurgeAIData performs the DESTRUCTIVE gateway cleanup that disable used to
+// do implicitly: removes the bind-mount data directory (standing watches,
+// conversation history, AI configuration incl. encrypted provider keys,
+// user memory), gateway.yaml, and FP_API_KEY from .env. Callers MUST get
+// explicit user confirmation first (`fp ai purge` does).
+func PurgeAIData(ctx context.Context, out io.Writer) error {
+	env := parseEnvFile()
+
+	write := func(s string) {
+		if out != nil {
+			_, _ = io.WriteString(out, s)
+		}
+	}
+
+	// Make sure the container is gone first (it holds the bind-mount open).
 	cmd := exec.CommandContext(ctx, dockerPath(), "compose", "--profile", "ai",
 		"rm", "-f", "-s", "-v", "ai-gateway")
 	cmd.Dir = HomeDir()
@@ -393,36 +466,18 @@ func SurgicalDisableAI(ctx context.Context, out io.Writer) error {
 	}
 	if dataDir != "" && dataDir != "/" {
 		if st, err := os.Stat(dataDir); err == nil && st.IsDir() {
-			write(fmt.Sprintf("[disable-ai] removing AI gateway data directory: %s\n", dataDir))
+			write(fmt.Sprintf("[purge-ai] removing AI gateway data directory: %s\n", dataDir))
 			_ = os.RemoveAll(dataDir)
 		}
 	}
 
-	// gateway.yaml
-	write("[disable-ai] removing gateway.yaml…\n")
+	write("[purge-ai] removing gateway.yaml…\n")
 	_ = os.Remove(filepath.Join(HomeDir(), "gateway.yaml"))
 
-	// FP_API_KEY from .env
-	write("[disable-ai] clearing FP_API_KEY from .env…\n")
+	write("[purge-ai] clearing FP_API_KEY from .env…\n")
 	_ = RemoveEnvValue("FP_API_KEY")
 
-	// Image
-	registry := env["FP_REGISTRY"]
-	if registry == "" {
-		registry = "falconpulsar"
-	}
-	version := env["FP_VERSION"]
-	if version == "" {
-		version = "latest"
-	}
-	imageRef := fmt.Sprintf("%s/ai-gateway:%s", registry, version)
-	write(fmt.Sprintf("[disable-ai] removing AI gateway image: %s\n", imageRef))
-	rmi := exec.CommandContext(ctx, dockerPath(), "rmi", "-f", imageRef)
-	rmi.Stdout = out
-	rmi.Stderr = out
-	_ = rmi.Run()
-
-	write("[disable-ai] cleanup complete. Core and UI were not touched.\n")
+	write("[purge-ai] purge complete. Core and UI were not touched.\n")
 	return nil
 }
 
