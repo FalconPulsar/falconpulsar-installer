@@ -115,11 +115,10 @@ if [ "$PLATFORM" != "linux-uninstall" ]; then
 fi
 
 # ── Embed shared/gateway.yaml (install flavors only) ────────────────────────
-# install.sh references it conditionally (only when AI Gateway is enabled),
-# but always embed it -- it's ~1 KB and the check at the call site is
-# `[ -f "${REPO_ROOT}/shared/gateway.yaml" ]`, so a missing file just
-# silently skips the copy. Embedding makes the AI-enabled path Just Work
-# without an extra runtime download.
+# gateway.yaml is a required stack file: install.sh copies it into
+# $FP_HOME unconditionally (the AI Gateway is a mandatory service, same
+# as compose.yml and nginx.conf above). Without this embed the bundled
+# installer would have nothing to copy.
 if [ "$PLATFORM" != "linux-uninstall" ]; then
     [ -f "$GATEWAY_YAML" ] || { echo "ERROR: missing $GATEWAY_YAML" >&2; exit 1; }
     printf 'cat >"${__FP_BUNDLE_DIR}/shared/gateway.yaml" <<'\''__FP_EOF_GATEWAY__'\''\n'

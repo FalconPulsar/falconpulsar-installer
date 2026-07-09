@@ -163,6 +163,8 @@ echo "[info] === cleanup pass: `$HOME_DIR (purge=`$PURGE) ==="
 if ! command -v docker >/dev/null 2>&1; then
     echo '[info] docker not installed in distro -- skipping container/image cleanup'
 else
+    # --profile ai: legacy compose compat (pre-mandatory-gateway installs
+    # gated the ai-gateway behind an 'ai' profile); no-op on current stacks.
     COMPOSE_FLAGS='--profile ai down --remove-orphans'
     [ "`$PURGE" = "1" ] && COMPOSE_FLAGS="`$COMPOSE_FLAGS --volumes"
 

@@ -20,7 +20,11 @@ server:
   port: 7436
 
 falconpulsar:
-  url: "http://localhost:7433"
+  # Core's DNS name on the compose network. Note: the standard install
+  # also injects FALCONPULSAR_URL via compose.yml, and that environment
+  # variable takes precedence over this field — repoint Core there (or
+  # in the environment), not here.
+  url: "http://core:7433"
   # Authentication is provided exclusively via environment variables:
   #   FP_API_KEY                   — bearer/API token (preferred)
   #   FP_USERNAME + FP_PASSWORD    — username/password fallback
@@ -36,7 +40,6 @@ context:
 
 # Knowledge base (RAG)
 knowledge:
-  enabled: true
   path: "./knowledge"
   embedding_model: "snowflake/snowflake-arctic-embed-l"
   vector_store: "chroma"
@@ -44,13 +47,11 @@ knowledge:
 
 # Conversation memory
 memory:
-  enabled: true
   db_path: "./data/conversations.db"
   max_messages: 100
 
 # User adaptive memory (per-user learning)
 user_memory:
-  enabled: true
   db_path: "./data/user_memory.db"
   score_half_life_hours: 168
   max_context_series: 8

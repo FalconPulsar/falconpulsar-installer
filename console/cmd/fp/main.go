@@ -8,6 +8,9 @@
 //	fp config edit [core|gateway|compose]
 //	fp config export <file>
 //	fp config import <file>
+//	fp config inspect <file>
+//	fp update [--apply|--json]  Check for / apply component updates
+//	fp update mode [manual|auto]
 //	fp about | docs | request-feature | uninstall
 //	fp tui              Explicit TUI launch
 //

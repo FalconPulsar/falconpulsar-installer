@@ -89,11 +89,10 @@ have one already. The installer detects which one is present and uses it.
 
 **FalconPulsar Gateway footprint:** the gateway image is ≈1.6 GB (Python +
 analytics dependencies) versus ≈330 MB for Core — it is the largest single
-component. It is installed by default because it powers Workspace commands
-and standing watches (not just the AI assistant). On disk- or RAM-
-constrained edge boxes you can decline it at install time (or `fp ai
-disable` later) at the cost of those features; FPQ queries keep working
-directly against Core.
+component. It is a required component on all platforms: it powers Workspace
+commands and standing watches (not just the AI assistant). The 10 GB disk
+minimum above accounts for the gateway image. LLM providers and models are
+optional and configured post-install in the Web UI (ConfigHub).
 
 For air-gapped deployments, use `FP_REGISTRY` + `FP_REGISTRY_USER` +
 `FP_REGISTRY_PASS` env vars to point the installer at an internal

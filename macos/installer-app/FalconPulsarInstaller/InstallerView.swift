@@ -487,17 +487,14 @@ struct CredentialsPage: View {
 
             Divider().padding(.vertical, 4)
 
-            Toggle(isOn: $state.aiGatewayEnabled) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Install FalconPulsar Gateway (recommended)")
-                        .font(.callout.bold())
-                    Text("Powers Workspace commands, standing watches, and the AI assistant. No API key needed — AI models are optional and configured later in ConfigHub. Skipping turns off commands and watches; enable later with fp ai enable.")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+            VStack(alignment: .leading, spacing: 2) {
+                Text("AI Capabilities")
+                    .font(.callout.bold())
+                Text("Installed with every FalconPulsar stack — powers Workspace commands, standing watches, and the AI assistant. No API key needed; AI models are configured later in ConfigHub.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            .toggleStyle(.checkbox)
 
             Toggle(isOn: $state.cookieSecure) {
                 VStack(alignment: .leading, spacing: 2) {

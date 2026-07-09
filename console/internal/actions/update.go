@@ -17,9 +17,9 @@
 //     fastpath). Reusing it means a single tested code path.
 //
 // What this file does NOT do:
-//   - Refresh compose.yml / nginx.conf / .env (full install.sh in
-//     upgrade mode handles those when they change). Tray-driven update
-//     is for the routine image-only refresh case.
+//   - Refresh compose.yml / nginx.conf (full install.sh in upgrade
+//     mode handles those when they change). Tray-driven update is
+//     for the routine image-only refresh case.
 //   - Self-update the `fp` CLI binary (handled by install.sh's
 //     fp_install_cli step on the next full upgrade).
 //   - Image-signature verification (out of scope for v1; on roadmap).
@@ -32,9 +32,14 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // ComponentUpdateStatus is one row in the "Check for updates" result.
@@ -61,7 +66,7 @@ type ComponentUpdateStatus struct {
 
 // UpdateCheckResult is the full result of `fp update --check`.
 type UpdateCheckResult struct {
-	// Components inspected. Always 2 (core, ui) plus ai-gateway if enabled.
+	// Components inspected. Always 3 (core, ui, ai-gateway).
 	Components []ComponentUpdateStatus `json:"components"`
 	// True iff any component has an update available.
 	Any bool `json:"any_update_available"`
@@ -83,20 +88,13 @@ type componentSpec struct {
 }
 
 // componentsForCheck returns the components whose update status the
-// operator cares about, honoring the AI-gateway enabled flag.
+// operator cares about.
 func componentsForCheck() []componentSpec {
-	specs := []componentSpec{
+	return []componentSpec{
 		{displayName: "Core", containerName: "falconpulsar-core", imageBaseName: "core"},
 		{displayName: "Web UI", containerName: "falconpulsar-ui", imageBaseName: "ui"},
+		{displayName: "AI Capabilities", containerName: "falconpulsar-ai-gateway", imageBaseName: "ai-gateway"},
 	}
-	if AIGatewayEnabled() {
-		specs = append(specs, componentSpec{
-			displayName:   "AI Capabilities",
-			containerName: "falconpulsar-ai-gateway",
-			imageBaseName: "ai-gateway",
-		})
-	}
-	return specs
 }
 
 // CheckUpdates inspects each component, returning a populated
@@ -363,6 +361,29 @@ func ApplyUpdates(ctx context.Context, stdout, stderr io.Writer) error {
 	// may have on the same image ID.
 	prevImageIDs := SnapshotComposeImageIDs(ctx)
 
+	// Gateway prerequisites (mandatory component). FP_GATEWAY_SECRET and
+	// gateway.yaml are created only when missing — the secret is NEVER
+	// regenerated, since rotating it would orphan provider keys encrypted
+	// under the old value.
+	if err := EnsureGatewaySecret(); err != nil {
+		return err
+	}
+	EnsureGatewayConfig()
+	if err := ensureGatewayDataDir(); err != nil {
+		return err
+	}
+	// Legacy .env compat (pre-mandatory-gateway installs): nothing reads
+	// FP_AI_GATEWAY_ENABLED anymore, but older fp/tray binaries do — force
+	// it true so they never see the stack as AI-disabled.
+	_ = SetEnvValue("FP_AI_GATEWAY_ENABLED", "true")
+	// Anchor the gateway.yaml mount to the stack dir — compose's default
+	// resolves relative to FP_DATA_DIR, which breaks with a custom
+	// --data-dir (Docker would create a directory at the missing source).
+	// Only set when absent so an operator-pinned value is preserved.
+	if envFromDotEnv("FP_GATEWAY_CONFIG") == "" {
+		_ = SetEnvValue("FP_GATEWAY_CONFIG", filepath.Join(HomeDir(), "gateway.yaml"))
+	}
+
 	fmt.Fprintln(stdout, "Pulling latest images…")
 	if err := Compose(ctx, stdout, stderr, "pull"); err != nil {
 		return fmt.Errorf("docker compose pull failed: %w", err)
@@ -379,21 +400,99 @@ func ApplyUpdates(ctx context.Context, stdout, stderr io.Writer) error {
 		fmt.Fprintf(stdout, "Removed %d previous image(s).\n", removed)
 	}
 
-	fmt.Fprintln(stdout, "Update complete.")
-
-	// Legacy opt-out installs: the Workspace now ships commands and standing
-	// watches that REQUIRE the gateway. Surface a one-screen offer here —
-	// this output also streams through the macOS menu-bar and Windows tray
-	// update panels, so every surface sees it.
-	if !AIGatewayEnabled() {
+	// Health-gate the gateway like the platform installers do. Runs
+	// unconditionally: gateway liveness does not require FP_API_KEY
+	// (compose passes `FP_API_KEY: ${FP_API_KEY:-}`), and a crash-looping
+	// gateway must fail the update rather than pass silently. 180s matches
+	// fp_wait_for_gateway_ready's contract in shared/lib/bootstrap.sh.
+	fmt.Fprintln(stdout, "Waiting for the AI gateway to become healthy…")
+	if !waitGatewayHealthy(ctx, 180) {
+		return fmt.Errorf("AI gateway did not report healthy — check `docker logs falconpulsar-ai-gateway`")
+	}
+	if !HasGatewayToken() {
+		// Minting the service credential needs admin credentials, which
+		// this non-interactive path cannot prompt for — the platform
+		// installer owns that bootstrap.
 		fmt.Fprintln(stdout, "")
-		fmt.Fprintln(stdout, "NEW IN THIS RELEASE")
-		fmt.Fprintln(stdout, "  Workspace commands and standing watches require the FalconPulsar")
-		fmt.Fprintln(stdout, "  Gateway, which is currently disabled on this install.")
-		fmt.Fprintln(stdout, "  Enable it with:  fp ai enable")
-		fmt.Fprintln(stdout, "  (No API key needed — AI models stay optional in ConfigHub.)")
+		fmt.Fprintln(stdout, "The AI gateway service credential (FP_API_KEY) is missing from this")
+		fmt.Fprintln(stdout, "install's .env. Re-run the FalconPulsar installer for your platform")
+		fmt.Fprintln(stdout, "to complete the AI setup.")
+	}
+
+	fmt.Fprintln(stdout, "Update complete.")
+	return nil
+}
+
+// ensureGatewayDataDir makes sure the gateway's bind-mounted data directory
+// exists before `docker compose up -d`. When the mount source is missing the
+// Docker engine auto-creates it root-owned, and the gateway (running as
+// FP_UID:FP_GID) cannot write its databases and crash-loops. Mirrors the
+// data-dir provisioning in fp_try_upgrade_fastpath (shared/lib/existing.sh):
+// resolve compose.yml's default when .env has no explicit
+// FP_GATEWAY_DATA_DIR, create the directory when missing, and best-effort
+// chown it to FP_UID:FP_GID from .env.
+func ensureGatewayDataDir() error {
+	env := parseEnvFile()
+	dir := env["FP_GATEWAY_DATA_DIR"]
+	if dir == "" {
+		if dataDir := env["FP_DATA_DIR"]; dataDir != "" {
+			dir = filepath.Join(dataDir, "..", "ai-gateway-data")
+		}
+	}
+	if dir == "" {
+		return nil
+	}
+	if fi, err := os.Stat(dir); err == nil && fi.IsDir() {
+		return nil
+	}
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("create AI gateway data directory %s: %w", dir, err)
+	}
+	if uid, err := strconv.Atoi(env["FP_UID"]); err == nil {
+		if gid, err := strconv.Atoi(env["FP_GID"]); err == nil {
+			_ = os.Chown(dir, uid, gid)
+		}
 	}
 	return nil
+}
+
+// waitGatewayHealthy polls the AI gateway's /health endpoint at
+// FP_GATEWAY_BIND:FP_GATEWAY_PORT (defaults 127.0.0.1:7436, honoring .env
+// overrides) until it answers 200 or maxSeconds elapse. Mirrors
+// fp_wait_for_gateway_ready in shared/lib/bootstrap.sh so `fp update
+// --apply` gates on the same signal as the platform installers.
+func waitGatewayHealthy(ctx context.Context, maxSeconds int) bool {
+	port := strings.TrimSpace(envFromDotEnv("FP_GATEWAY_PORT"))
+	if _, err := strconv.Atoi(port); err != nil {
+		port = "7436"
+	}
+	// Compose publishes on ${FP_GATEWAY_BIND:-127.0.0.1}; a wildcard bind
+	// is still reachable via loopback, so probe it there.
+	host := strings.TrimSpace(envFromDotEnv("FP_GATEWAY_BIND"))
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = "127.0.0.1"
+	}
+	healthURL := fmt.Sprintf("http://%s/health", net.JoinHostPort(host, port))
+	deadline := time.Now().Add(time.Duration(maxSeconds) * time.Second)
+	client := &http.Client{Timeout: 3 * time.Second}
+	for time.Now().Before(deadline) {
+		req, err := http.NewRequestWithContext(ctx, "GET", healthURL, nil)
+		if err != nil {
+			return false
+		}
+		if resp, err := client.Do(req); err == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode == 200 {
+				return true
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(2 * time.Second):
+		}
+	}
+	return false
 }
 
 // SnapshotComposeImageIDs returns the image ID each compose service

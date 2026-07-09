@@ -54,22 +54,13 @@ SITES=(
   # Go: "falconpulsar_version": "X.Y.Z",
   "console/internal/configbackup/backup.go|(\"falconpulsar_version\": +\")[^\"]+(\")|\\1${VERSION}\\2"
 
-  # Swift: NSMenuItem(title: "FalconPulsar vX.Y.Z", ...) and
-  #        NSAttributedString(string: "FalconPulsar vX.Y.Z", ...)
-  "macos/menu-bar-app/FalconPulsar/AppDelegate.swift|(FalconPulsar v)[0-9][^\"]*|\\1${VERSION}"
-
-  # Swift: "falconpulsar_version": "X.Y.Z",
-  "macos/menu-bar-app/FalconPulsar/ConfigBackup.swift|(\"falconpulsar_version\": +\")[^\"]+(\")|\\1${VERSION}\\2"
-
-  # C#: ToolStripMenuItem("FalconPulsar vX.Y.Z")
-  "windows/tray-app/TrayApp.cs|(FalconPulsar v)[0-9][^\"]*|\\1${VERSION}"
-
-  # C#: falconpulsar_version = "X.Y.Z",
-  "windows/tray-app/ConfigBackup.cs|(falconpulsar_version += +\")[^\"]+(\")|\\1${VERSION}\\2"
-
   # Inno Setup: #define MyAppVersion     "X.Y.Z"
   "windows/installer.iss|(#define +MyAppVersion +\")[^\"]+(\")|\\1${VERSION}\\2"
 )
+# The macOS menu-bar app (AppDelegate.swift + ConfigBackup.swift) and the
+# Windows tray app (TrayApp.cs + ConfigBackup.cs) are NOT listed: they read
+# their version at runtime from build-time stamping (CFBundleShortVersionString
+# / assembly version), so there is no hardcoded literal to rewrite.
 
 drift=0
 changed=()
@@ -81,6 +72,15 @@ for entry in "${SITES[@]}"; do
 
   if [[ ! -f "${abs}" ]]; then
     echo "ERROR: missing file ${abs}" >&2
+    exit 2
+  fi
+
+  # A site whose pattern matches nothing leaves the file byte-identical —
+  # indistinguishable from "already in sync". Fail loudly instead, so a
+  # refactor that removes a hardcoded literal surfaces as a stale SITES
+  # entry rather than a silent no-op.
+  if ! grep -Eq "${regex}" "${abs}"; then
+    echo "ERROR: pattern for ${relpath} matched nothing — stale SITES entry?" >&2
     exit 2
   fi
 

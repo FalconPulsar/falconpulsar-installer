@@ -8,7 +8,7 @@
 #
 #   Windows-side:
 #     - Inno Setup uninstall registry keys
-#     - %USERPROFILE%\falconpulsar\.env mirror
+#     - %USERPROFILE%\falconpulsar\.env mirror (written by older builds only)
 #     - %LOCALAPPDATA%\falconpulsar\bin\fp.exe
 #     - HKCU\...\Run\FalconPulsar auto-start entry
 #     - C:\Program Files\FalconPulsar directory
@@ -78,6 +78,8 @@ $r['InnoKey'] = if ((Test-Path $innoKey1) -or (Test-Path $innoKey2)) { 'yes' } e
 
 $winHome = Join-Path $env:USERPROFILE 'falconpulsar'
 $r['WinHome']       = if (Test-Path $winHome) { 'yes' } else { 'no' }
+# The .env mirror was only written by older installer builds; probing it
+# keeps installs from those builds detectable as prior state.
 $r['WinEnv']        = if (Test-Path (Join-Path $winHome '.env')) { 'yes' } else { 'no' }
 $r['FpExe']         = if (Test-Path (Join-Path $env:LOCALAPPDATA 'falconpulsar\bin\fp.exe')) { 'yes' } else { 'no' }
 $r['ProgFiles']     = if (Test-Path 'C:\Program Files\FalconPulsar') { 'yes' } else { 'no' }

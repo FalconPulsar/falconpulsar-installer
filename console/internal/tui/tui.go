@@ -77,15 +77,6 @@ func buildSections() []menuSection {
 			{label: "Export configuration…", accel: "F7", action: func(a *App) { a.doExport() }},
 			{label: "Import configuration…", accel: "F8", action: func(a *App) { a.doImport() }},
 		}},
-		{"AI", []menuItem{
-			{label: aiToggleLabel(), action: func(a *App) {
-				if actions.AIGatewayEnabled() {
-					a.disableAIGateway()
-				} else {
-					a.enableAIGateway()
-				}
-			}},
-		}},
 		{"Help", []menuItem{
 			{label: "Keyboard shortcuts", accel: "F1", action: func(a *App) { a.showHelp() }},
 			{label: "About FalconPulsar", action: func(a *App) { a.showAbout() }},
@@ -227,19 +218,13 @@ func (a *App) refreshServices() {
 		dotColor             tcell.Color
 		stateColor           tcell.Color
 	}
-	aiEnabled := actions.AIGatewayEnabled()
 	var rows []svcRow
 	rows = append(rows, svcRow{"Core", "time-series engine",
 		stateLabel(a.status.Core), dotColor(a.status.Core), stateColor(a.status.Core)})
 	rows = append(rows, svcRow{"Web UI", "http://localhost:8080",
 		stateLabel(a.status.UI), dotColor(a.status.UI), stateColor(a.status.UI)})
-	if aiEnabled {
-		rows = append(rows, svcRow{"AI Capabilities", "http://localhost:7436",
-			stateLabel(a.status.Gateway), dotColor(a.status.Gateway), stateColor(a.status.Gateway)})
-	} else {
-		rows = append(rows, svcRow{"AI Capabilities", "(disabled)",
-			"[#9CA3AF]disabled[-]", theme.TextMuted, theme.TextMuted})
-	}
+	rows = append(rows, svcRow{"AI Capabilities", "http://localhost:7436",
+		stateLabel(a.status.Gateway), dotColor(a.status.Gateway), stateColor(a.status.Gateway)})
 	rows = append(rows, svcRow{"REST API", "http://localhost:7433",
 		stateLabel(a.status.APIHealthy), dotColor(a.status.APIHealthy), stateColor(a.status.APIHealthy)})
 
@@ -637,98 +622,6 @@ func truncate(s string, n int) string {
 	return s[:n] + "\n…(truncated)"
 }
 
-func aiToggleLabel() string {
-	if actions.AIGatewayEnabled() {
-		return "Disable AI Capabilities"
-	}
-	return "Enable AI Capabilities"
-}
-
-func (a *App) enableAIGateway() {
-	// Admin auth required every time (matches macOS menu bar + Windows tray).
-	// askAdminThen already prompts for credentials; on first-time enable the
-	// resulting client is used to mint the gateway service token.
-	a.askAdminThen("Enable AI Capabilities", func(cli *api.Client, user, pass string) {
-		ctx := context.Background()
-		// First-time bootstrap: create the gateway service token via REST.
-		if !actions.HasGatewayToken() {
-			token, err := cli.CreateGatewayToken(ctx)
-			if err != nil {
-				a.showMessage("Token setup failed", err.Error(), true)
-				return
-			}
-			if err := actions.SetEnvValue("FP_API_KEY", token); err != nil {
-				a.showMessage("Token setup failed", err.Error(), true)
-				return
-			}
-		}
-		actions.EnsureGatewayConfig()
-		_ = actions.SetEnvValue("FP_AI_GATEWAY_ENABLED", "true")
-		a.showMessage("Enabling AI Capabilities…",
-			"Pulling image and starting the AI gateway container. This may take a moment.", false)
-		go func() {
-			// Target ai-gateway service explicitly — never touch core/ui.
-			if err := actions.Compose(ctx, nil, nil, "--profile", "ai", "pull", "ai-gateway"); err != nil {
-				a.tv.QueueUpdateDraw(func() {
-					a.pages.RemovePage("modal")
-					a.showMessage("Pull failed", err.Error(), true)
-				})
-				return
-			}
-			err := actions.Compose(ctx, nil, nil, "--profile", "ai", "up", "-d", "ai-gateway")
-			if err == nil {
-				// Wipe the gateway's self-seeded provider/model catalog
-				// so the user lands on a clean AI configuration. See
-				// actions.WipeGatewaySeedDefaults for the rationale.
-				_ = actions.WipeGatewaySeedDefaults(ctx, nil)
-			}
-			a.tv.QueueUpdateDraw(func() {
-				a.pages.RemovePage("modal")
-				a.sections = buildSections()
-				a.status = actions.Poll(ctx)
-				a.refreshServices()
-				if err != nil {
-					a.showMessage("Error", err.Error(), true)
-				} else {
-					a.showMessage("AI Capabilities enabled",
-						"Close any open FalconPulsar Web UI sessions and sign in again to see the AI features, then configure LLM providers in Settings > AI Configuration.", true)
-				}
-			})
-		}()
-	})
-}
-
-func (a *App) disableAIGateway() {
-	// Admin auth required every time, then the destructive confirmation.
-	a.askAdminThen("Disable AI Capabilities", func(cli *api.Client, user, pass string) {
-		m := tview.NewModal().
-			SetText("Disable AI Capabilities?\n\nThis will stop and remove the AI gateway container, delete its data directory and gateway.yaml, clear the service token, and delete the AI gateway image. Core and UI stay running. Re-enabling later will re-download the image.").
-			AddButtons([]string{"Disable and Remove", "Cancel"}).
-			SetDoneFunc(func(idx int, label string) {
-				a.pages.RemovePage("modal")
-				if label != "Disable and Remove" {
-					return
-				}
-				_ = actions.SetEnvValue("FP_AI_GATEWAY_ENABLED", "false")
-				a.showMessage("Disabling AI Capabilities…",
-					"Removing AI gateway container, data, config, token, and image.", false)
-				go func() {
-					_ = actions.SurgicalDisableAI(context.Background(), nil)
-					a.tv.QueueUpdateDraw(func() {
-						a.pages.RemovePage("modal")
-						a.sections = buildSections()
-						a.status = actions.Poll(context.Background())
-						a.refreshServices()
-						a.showMessage("AI Capabilities disabled",
-							"AI Capabilities disabled and removed. Core and UI are unaffected.", true)
-					})
-				}()
-			})
-		m.SetBackgroundColor(theme.Panel)
-		a.pages.AddPage("modal", m, true, true)
-	})
-}
-
 func (a *App) doExport() {
 	a.askAdminThen("Export Configuration", func(cli *api.Client, user, pass string) {
 		a.askPathThen("Save backup as…", "falconpulsar-config.fpconfig", func(path string) {
@@ -905,7 +798,10 @@ func (a *App) showHelp() {
 			"  fp open\n" +
 			"  fp config edit [core|gateway|compose]\n" +
 			"  fp config export <file>\n" +
-			"  fp config import <file>\n\n" +
+			"  fp config import <file>\n" +
+			"  fp config inspect <file>\n" +
+			"  fp update [--apply|--json]\n" +
+			"  fp update mode [manual|auto]\n\n" +
 			"  https://falconpulsar.com/docs\n\n" +
 			"[#6B7280]Press Esc or Enter to close.[-]")
 	tv.SetInputCapture(func(ev *tcell.EventKey) *tcell.EventKey {
@@ -915,7 +811,7 @@ func (a *App) showHelp() {
 		}
 		return ev
 	})
-	a.pushModal("Keyboard Shortcuts", tv, 64, 24)
+	a.pushModal("Keyboard Shortcuts", tv, 64, 27)
 }
 
 // checkForUpdates probes the configured registry (FP_REGISTRY) for newer
@@ -924,12 +820,12 @@ func (a *App) showHelp() {
 // TUI affordance.
 //
 // Modal lifecycle:
-//   1. Show "Checking…" placeholder while the goroutine runs.
-//   2. Replace with results: ✓/↑/?/– per component, plus a footer
-//      action depending on what came back.
-//   3. If updates available + the operator's mode is "auto", apply
-//      after a 30-second cancellable countdown (see applyUpdates).
-//      In "manual" mode, the operator clicks "Apply now" or dismisses.
+//  1. Show "Checking…" placeholder while the goroutine runs.
+//  2. Replace with results: ✓/↑/?/– per component, plus a footer
+//     action depending on what came back.
+//  3. If updates available + the operator's mode is "auto", apply
+//     after a 30-second cancellable countdown (see applyUpdates).
+//     In "manual" mode, the operator clicks "Apply now" or dismisses.
 func (a *App) checkForUpdates() {
 	a.showMessage("Check for updates", "Checking registry…", false)
 	go func() {
@@ -1066,11 +962,6 @@ func (a *App) showAbout() {
 	gwInfo := actions.GetContainerInfo(ctx, "falconpulsar-ai-gateway")
 	composeVer := actions.GetComposeVersion(ctx)
 
-	aiLine := gwInfo.DisplayString()
-	if !actions.AIGatewayEnabled() {
-		aiLine = "[#A78400](disabled)[-]"
-	}
-
 	tv := tview.NewTextView().SetDynamicColors(true).SetWrap(false)
 	tv.SetBackgroundColor(theme.Panel)
 	tv.SetText(fmt.Sprintf(
@@ -1095,7 +986,7 @@ func (a *App) showAbout() {
 		actions.HomeDir(),
 		coreInfo.DisplayString(),
 		uiInfo.DisplayString(),
-		aiLine,
+		gwInfo.DisplayString(),
 		composeVer))
 	tv.SetInputCapture(func(ev *tcell.EventKey) *tcell.EventKey {
 		if ev.Key() == tcell.KeyEscape || ev.Key() == tcell.KeyEnter {

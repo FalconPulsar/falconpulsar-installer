@@ -116,6 +116,29 @@ jobs:
               FP_ASSUME_YES=1 \
               FP_ADMIN_PASS="ci-test-password-123" \
               bash /installer/linux/install.sh --mode docker --yes
+
+              # The AI Gateway is a mandatory component — assert the
+              # installer actually produced a running container and a
+              # gateway that answers its /health endpoint (bound to
+              # 127.0.0.1:7436 by default), independent of the health
+              # gate inside the installer itself.
+              docker ps --format "{{.Names}}" | grep -qx "falconpulsar-ai-gateway" \
+                || { echo "ERROR: falconpulsar-ai-gateway container is not running"; docker ps; exit 1; }
+
+              # The installer can exit 0 while the gateway is still
+              # rebooting from the non-fatal seed-wipe restart
+              # (fp_wipe_gateway_seed_defaults only waits 60s before
+              # giving up with a warning), so poll /health with a
+              # bounded retry instead of a single-shot curl.
+              ok=0
+              for i in $(seq 1 60); do
+                if curl -fsS http://127.0.0.1:7436/health >/dev/null 2>&1; then ok=1; break; fi
+                sleep 2
+              done
+              [ "$ok" = 1 ] \
+                || { echo "ERROR: AI Gateway /health probe failed"; docker logs falconpulsar-ai-gateway; exit 1; }
+              echo "AI Gateway container running and /health responding"
             '
         # The installer's own healthcheck loop fails the job if the stack
-        # doesn't come up, which is the assertion.
+        # doesn't come up; the explicit checks above additionally pin the
+        # mandatory AI Gateway (running container + passing /health).

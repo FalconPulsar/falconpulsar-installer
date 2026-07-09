@@ -178,10 +178,6 @@ Source: "..\REQUIREMENTS.md";                               DestDir: "{app}";   
 Source: "..\README.md";                                     DestDir: "{app}";                Flags: ignoreversion
 
 [Tasks]
-Name: "aigateway"; \
-    Description: "Install FalconPulsar Gateway (recommended) — powers Workspace commands, standing watches, and the AI assistant. No API key needed; AI models are configured later in ConfigHub. Skipping turns off commands and watches (enable later with fp ai enable)"; \
-    GroupDescription: "FalconPulsar Gateway:"
-
 ; Front-door HTTPS declaration. Drives the Secure flag and __Host- prefix
 ; on session cookies. Checked by default (recommended for any deployment
 ; reachable via HTTPS, including localhost on a TLS-fronted setup).
@@ -722,7 +718,6 @@ var
   RegistryUserArg: String;
   RegistryPassArg: String;
   RegistrySkipArg: String;
-  AIGatewayArg: String;
   CookieSecureArg: String;
   Distro: String;
   DistroArg: String;
@@ -745,12 +740,6 @@ begin
       LogInfo('Mode: upgrade')
     else
       LogInfo('Mode: fresh install');
-
-    // AI Gateway checkbox
-    if WizardIsTaskSelected('aigateway') then
-      AIGatewayArg := '-AIGateway "true"'
-    else
-      AIGatewayArg := '-AIGateway "false"';
 
     // Front-door HTTPS checkbox. Drives the Secure flag + __Host-
     // prefix on session cookies. Default checked — see [Tasks] above.
@@ -887,7 +876,7 @@ begin
         AdminUserArg + ' ' + AdminPassArg + ' ' +
         RegistryArg + ' ' + RegistryUserArg + ' ' +
         RegistryPassArg + ' ' + RegistrySkipArg + ' ' +
-        AIGatewayArg + ' ' + CookieSecureArg + ' ' +
+        CookieSecureArg + ' ' +
         '-InstallAction "' + InstallAction + '"',
         'Installing FalconPulsar inside WSL (this may take 5-10 minutes)...') then begin UpdateStep(4, 'fail'); Abort; end;
     UpdateStep(4, 'done');

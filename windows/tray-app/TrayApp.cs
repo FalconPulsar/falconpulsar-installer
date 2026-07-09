@@ -5,7 +5,6 @@ using System.Drawing.Drawing2D;
 using System.Drawing.Text;
 using System.Collections.Generic;
 using System.IO;
-using System.Linq;
 using System.Net.Http;
 using System.Text.Json;
 using System.Threading;
@@ -47,12 +46,6 @@ namespace FalconPulsar.Tray
         private ToolStripMenuItem _stopItem;
         private ToolStripMenuItem _restartItem;
         private ToolStripMenuItem _autoStartItem;
-        // The "Enable/Disable AI Capabilities" toggle. We rebuild the
-        // text + click handler on every PollHealth tick so the menu stays
-        // in sync with the WSL .env -- which can change behind our back
-        // when the user toggles AI from `fp ai enable`/`fp ai disable`
-        // inside the TUI rather than through this tray.
-        private ToolStripMenuItem _aiToggleItem;
 
         // WSL stack location, resolved once at tray startup. The installer
         // writes `falconpulsar-home.txt` next to the distro sentinel; if
@@ -70,6 +63,11 @@ namespace FalconPulsar.Tray
             // Convert /home/<user>/falconpulsar to \\wsl.localhost\<distro>\home\<user>\falconpulsar
             _wslHomeUnc = $@"\\wsl.localhost\{_distro}" + _wslHome.Replace('/', '\\');
             _composePath = _wslHome + "/compose.yml";
+
+            // Config Backup must export/import the real stack files inside
+            // WSL — the same directory the Config Files menu opens — not the
+            // legacy %USERPROFILE%\falconpulsar mirror.
+            ConfigBackup.FalconPulsarHomeDir = _wslHomeUnc;
 
             _http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
 
@@ -164,12 +162,22 @@ namespace FalconPulsar.Tray
             return "/home/falconpulsar";
         }
 
+        // Our own version, read from the assembly. Set at build time by
+        // <Version> in FalconPulsarTray.csproj, and overridable from CI
+        // via `dotnet publish -p:Version=$VER`. Falls back to "dev" on
+        // unbundled debug builds where AssemblyVersion is not set.
+        private static string AssemblyVersion =>
+            System.Reflection.Assembly
+                .GetExecutingAssembly()
+                .GetName()
+                .Version?.ToString(3) ?? "dev";
+
         private ContextMenuStrip BuildMenu()
         {
             var menu = new ContextMenuStrip();
 
-            // Header
-            var header = new ToolStripMenuItem("FalconPulsar v0.1.3")
+            // Header — same assembly-version source as the About panel.
+            var header = new ToolStripMenuItem($"FalconPulsar v{AssemblyVersion}")
             { Enabled = false };
             header.Font = new Font(header.Font, FontStyle.Bold);
             menu.Items.Add(header);
@@ -241,7 +249,7 @@ namespace FalconPulsar.Tray
 
             // Order below matches the macOS menu bar exactly so users on
             // both platforms find items in the same place:
-            //   Config Files → Configuration Backup → Disable/Enable AI
+            //   Config Files → Configuration Backup
 
             // Configuration Backup submenu (export / import)
             var backupMenu = new ToolStripMenuItem("Configuration Backup");
@@ -250,15 +258,6 @@ namespace FalconPulsar.Tray
             backupMenu.DropDownItems.Add(new ToolStripMenuItem("Import Configuration...", null,
                 async (s, e) => await ImportConfigurationAsync()));
             menu.Items.Add(backupMenu);
-
-            // AI Capabilities — single toggle (after Configuration Backup,
-            // matching macOS menu order). The text + click handler are
-            // (re)assigned by ApplyAiToggleState() on every PollHealth tick
-            // so external state changes (e.g. `fp ai enable` inside WSL)
-            // propagate to the menu within one poll interval.
-            _aiToggleItem = new ToolStripMenuItem("AI Capabilities");
-            menu.Items.Add(_aiToggleItem);
-            ApplyAiToggleState();
 
             menu.Items.Add(new ToolStripSeparator());
 
@@ -315,17 +314,16 @@ namespace FalconPulsar.Tray
                 _apiHealthy = false;
             }
 
-            // Determine overall status — exclude disabled gateway from aggregate
+            // Determine overall status
             var prev = _status;
-            var aiEnabled = IsAIGatewayEnabled();
             if (!_dockerDaemonUp)
             {
                 _status = StackStatus.Error;   // Docker Desktop / WSL docker is down
             }
             else
             {
-                var allExpected = _coreRunning && _uiRunning && (!aiEnabled || _gatewayRunning);
-                var anyRunning = _coreRunning || _uiRunning || (aiEnabled && _gatewayRunning);
+                var allExpected = _coreRunning && _uiRunning && _gatewayRunning;
+                var anyRunning = _coreRunning || _uiRunning || _gatewayRunning;
                 if (allExpected && _apiHealthy)
                     _status = StackStatus.Running;
                 else if (anyRunning)
@@ -402,16 +400,8 @@ namespace FalconPulsar.Tray
                 _coreItem.Image = CreateDot(_coreRunning ? Color.Green : Color.Red);
                 _uiItem.Text = _uiRunning ? "Web UI: Running" : "Web UI: Stopped";
                 _uiItem.Image = CreateDot(_uiRunning ? Color.Green : Color.Red);
-                if (IsAIGatewayEnabled())
-                {
-                    _gatewayItem.Text = _gatewayRunning ? "AI Capabilities: Running" : "AI Capabilities: Stopped";
-                    _gatewayItem.Image = CreateDot(_gatewayRunning ? Color.Green : Color.Red);
-                }
-                else
-                {
-                    _gatewayItem.Text = "AI Capabilities: Disabled";
-                    _gatewayItem.Image = CreateDot(Color.Gray);
-                }
+                _gatewayItem.Text = _gatewayRunning ? "AI Capabilities: Running" : "AI Capabilities: Stopped";
+                _gatewayItem.Image = CreateDot(_gatewayRunning ? Color.Green : Color.Red);
                 _apiItem.Text = _apiHealthy ? "REST API: Healthy" : "REST API: Not responding";
                 _apiItem.Image = CreateDot(_apiHealthy ? Color.Green : Color.Gray);
             }
@@ -420,32 +410,7 @@ namespace FalconPulsar.Tray
             _startItem.Enabled = _status != StackStatus.Running;
             _stopItem.Enabled = _status != StackStatus.Stopped;
             _restartItem.Enabled = _status != StackStatus.Stopped;
-
-            // Refresh the AI toggle so the menu reflects whatever changed
-            // outside the tray (fp ai enable/disable, .env hand-edits, etc.).
-            ApplyAiToggleState();
         }
-
-        // Re-bind the AI toggle's label and click handler from the current
-        // value of FP_AI_GATEWAY_ENABLED in the WSL .env. Cheap; safe to
-        // call on every poll. Removing then re-adding the Click handler
-        // avoids stacking handlers that fire once per refresh.
-        private void ApplyAiToggleState()
-        {
-            if (_aiToggleItem == null) return;
-            var enabled = IsAIGatewayEnabled();
-            _aiToggleItem.Text = enabled ? "Disable FalconPulsar Gateway" : "Enable FalconPulsar Gateway";
-            // Clear any prior handlers, then attach the right one.
-            foreach (var prior in _aiToggleHandlers)
-                _aiToggleItem.Click -= prior;
-            _aiToggleHandlers.Clear();
-            EventHandler handler = enabled
-                ? (async (s, e) => await DisableAIGatewayAsync())
-                : (async (s, e) => await EnableAIGatewayAsync());
-            _aiToggleItem.Click += handler;
-            _aiToggleHandlers.Add(handler);
-        }
-        private readonly List<EventHandler> _aiToggleHandlers = new();
 
         // Probe the Docker daemon (via WSL) before asking about individual
         // containers. Returns false when Docker Desktop is off, when WSL
@@ -741,10 +706,13 @@ namespace FalconPulsar.Tray
 
             try
             {
+                // --profile ai: legacy compose compat (pre-mandatory-gateway
+                // installs put ai-gateway behind a profile); no-op on
+                // current stacks.
                 var psi = new ProcessStartInfo
                 {
                     FileName = "wsl.exe",
-                    Arguments = $"-d {_distro} -- docker compose -f {_composePath} {command}",
+                    Arguments = $"-d {_distro} -- docker compose -f {_composePath} --profile ai {command}",
                     UseShellExecute = false,
                     CreateNoWindow = true
                 };
@@ -770,10 +738,13 @@ namespace FalconPulsar.Tray
 
         private void ViewLogs()
         {
+            // --profile ai: legacy compose compat (pre-mandatory-gateway
+            // installs put ai-gateway behind a profile); no-op on
+            // current stacks.
             Process.Start(new ProcessStartInfo
             {
                 FileName = "wsl.exe",
-                Arguments = $"-d {_distro} -- docker compose -f {_composePath} logs -f --tail 100",
+                Arguments = $"-d {_distro} -- docker compose -f {_composePath} --profile ai logs -f --tail 100",
                 UseShellExecute = true
             });
         }
@@ -986,17 +957,9 @@ namespace FalconPulsar.Tray
                 e.Graphics.FillRectangle(brush, 0, 0, 150, 26);
             };
             panel.Controls.Add(verPanel);
-            // Read our own version from the assembly. Set at build time by
-            // <Version> in FalconPulsarTray.csproj, and overridable from CI
-            // via `dotnet publish -p:Version=$VER`. Falls back to "dev" on
-            // unbundled debug builds where AssemblyVersion is not set.
-            var asmVersion = System.Reflection.Assembly
-                .GetExecutingAssembly()
-                .GetName()
-                .Version?.ToString(3) ?? "dev";
             verPanel.Controls.Add(new Label
             {
-                Text = $"Installer  v{asmVersion}",
+                Text = $"Installer  v{AssemblyVersion}",
                 Font = new Font("Consolas", 10),
                 ForeColor = Color.FromArgb(200, 200, 200),
                 BackColor = Color.Transparent,
@@ -1168,114 +1131,6 @@ namespace FalconPulsar.Tray
             Application.Exit();
         }
 
-        // ────────────────────────── AI Gateway Toggle ────────────────────────────
-
-        // Read AI-gateway state from the WSL .env (the single source of
-        // truth that docker compose actually loads). The previous Windows
-        // mirror at %USERPROFILE%\falconpulsar\.env was set once at install
-        // time and went stale the moment the user toggled AI from anywhere
-        // (fp ai enable, the TUI, this tray, etc.), so the menu would show
-        // "Disabled" while the gateway container was actually running.
-        private bool IsAIGatewayEnabled()
-        {
-            var envPath = Path.Combine(_wslHomeUnc, ".env");
-            if (!File.Exists(envPath)) return true;
-            try
-            {
-                foreach (var line in File.ReadLines(envPath))
-                {
-                    var trimmed = line.Trim();
-                    if (trimmed.StartsWith("FP_AI_GATEWAY_ENABLED="))
-                    {
-                        var val = trimmed["FP_AI_GATEWAY_ENABLED=".Length..];
-                        return val is "true" or "1" or "yes";
-                    }
-                }
-            }
-            catch (IOException) { /* WSL distro may be stopped -- assume enabled */ }
-            return true;
-        }
-
-        // Write the AI-gateway flag to the WSL .env (same source of truth
-        // as IsAIGatewayEnabled). The Linux fp CLI uses an O_TRUNC write
-        // that resets to 0640 -- here we mirror that and let the WSL VFS
-        // preserve the file's UNIX owner/group via Plan 9 forwarding.
-        private void SetEnvValue(string key, string value)
-        {
-            var envPath = Path.Combine(_wslHomeUnc, ".env");
-            var lines = File.Exists(envPath)
-                ? File.ReadAllLines(envPath).ToList()
-                : new List<string>();
-            bool found = false;
-            for (int i = 0; i < lines.Count; i++)
-            {
-                if (lines[i].TrimStart().StartsWith(key + "="))
-                {
-                    lines[i] = key + "=" + value;
-                    found = true;
-                    break;
-                }
-            }
-            if (!found) lines.Add(key + "=" + value);
-            File.WriteAllLines(envPath, lines);
-        }
-
-        // ── Install log tee (shared with installer: %TEMP%\falconpulsar-install.log)
-
-        private static readonly string InstallLogPath =
-            Path.Combine(Path.GetTempPath(), "falconpulsar-install.log");
-
-        private static StreamWriter InstallLogBegin(string action)
-        {
-            try
-            {
-                // Rotate at 5 MiB, keep .1 .2 .3. Best-effort.
-                try
-                {
-                    var fi = new FileInfo(InstallLogPath);
-                    if (fi.Exists && fi.Length > 5 * 1024 * 1024)
-                    {
-                        for (int i = 2; i >= 1; i--)
-                        {
-                            var src = InstallLogPath + "." + i;
-                            var dst = InstallLogPath + "." + (i + 1);
-                            if (File.Exists(src))
-                            {
-                                if (File.Exists(dst)) File.Delete(dst);
-                                File.Move(src, dst);
-                            }
-                        }
-                        File.Move(InstallLogPath, InstallLogPath + ".1");
-                    }
-                }
-                catch { }
-
-                var stream = new FileStream(InstallLogPath, FileMode.Append,
-                    FileAccess.Write, FileShare.Read);
-                var w = new StreamWriter(stream) { AutoFlush = true };
-                w.Write($"\n=== {DateTime.UtcNow:O}  {action} (platform=windows-tray, pid={Environment.ProcessId}) ===\n");
-                return w;
-            }
-            catch { return null; }
-        }
-
-        private static void InstallLogAppend(StreamWriter w, string text)
-        {
-            if (w == null) return;
-            try { w.Write(text); } catch { }
-        }
-
-        private static void InstallLogEnd(StreamWriter w, int exitCode)
-        {
-            if (w == null) return;
-            try
-            {
-                w.Write($"=== end (exit {exitCode}) ===\n");
-                w.Dispose();
-            }
-            catch { }
-        }
-
         // ── WSL helpers (the real stack state lives inside WSL)
 
         // ── Per-container OCI metadata (About panel) ────────────────────
@@ -1381,11 +1236,10 @@ namespace FalconPulsar.Tray
                 RedirectStandardError = true,
                 // Force UTF-8 on stdin. Without this, .NET defaults to the
                 // Windows OEM codepage (CP1252 on en-US). Non-ASCII bytes
-                // in the piped bash script (e.g. the em-dash in the inline
-                // gateway.yaml heredoc) get transliterated to single CP1252
-                // bytes (0x97 for em-dash) and bash writes those verbatim.
-                // Python's yaml.safe_load then crashes:
-                //   UnicodeDecodeError: 'utf-8' codec can't decode byte 0x97
+                // in the piped bash script (e.g. em-dashes in progress
+                // messages) get transliterated to single CP1252 bytes
+                // (0x97 for em-dash) and bash writes those verbatim,
+                // corrupting anything the script echoes into a file.
                 StandardInputEncoding = new System.Text.UTF8Encoding(false),
             };
             using var proc = Process.Start(psi);
@@ -1395,417 +1249,6 @@ namespace FalconPulsar.Tray
             var stdout = await proc.StandardOutput.ReadToEndAsync();
             await proc.WaitForExitAsync();
             return (proc.ExitCode, stdout);
-        }
-
-        private async Task<bool> WslGatewayTokenExistsAsync()
-        {
-            var (rc, _) = await RunWslBashCaptureAsync(
-                $"grep -q '^FP_API_KEY=.' '{_wslHome}/.env'");
-            return rc == 0;
-        }
-
-        private async Task<int> WslWriteTokenAsync(string token)
-        {
-            var safe = token.Replace("'", "'\"'\"'");
-            var script =
-                $"TOKEN='{safe}'\n" +
-                $"grep -v '^FP_API_KEY=' '{_wslHome}/.env' > /tmp/fp_env.new 2>/dev/null || true\n" +
-                "echo \"FP_API_KEY=$TOKEN\" >> /tmp/fp_env.new\n" +
-                $"mv /tmp/fp_env.new '{_wslHome}/.env'\n";
-            var (rc, _) = await RunWslBashCaptureAsync(script);
-            return rc;
-        }
-
-        // ── Service token creation (mirrors fp_bootstrap_gateway_token)
-
-        private async Task<string> CreateGatewayServiceTokenAsync(string jwt)
-        {
-            using var req = new HttpRequestMessage(HttpMethod.Post,
-                $"{ConfigBackup.CoreBaseUrl}/api/v1/tokens");
-            req.Headers.Authorization =
-                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", jwt);
-            var body = JsonSerializer.Serialize(new Dictionary<string, object>
-            {
-                ["name"] = "ai-gateway-token",
-                ["expires_days"] = 0,
-                ["permissions"] = new[] { "read", "query" }
-            });
-            req.Content = new StringContent(body, System.Text.Encoding.UTF8, "application/json");
-
-            using var resp = await _http.SendAsync(req);
-            var respBody = await resp.Content.ReadAsStringAsync();
-            if (!resp.IsSuccessStatusCode)
-                throw new Exception(
-                    $"Could not create AI gateway service token (HTTP {(int)resp.StatusCode}).");
-            using var doc = JsonDocument.Parse(respBody);
-            if (!doc.RootElement.TryGetProperty("token", out var tok) ||
-                string.IsNullOrEmpty(tok.GetString()))
-                throw new Exception("Service token response missing 'token' field.");
-            return tok.GetString();
-        }
-
-        // ── Streaming docker-action form (used by enable/disable AI)
-
-        private async Task RunWslStreamingActionAsync(string title, string marker,
-                                                     string bashScript, string successMessage)
-        {
-            using var form = new Form
-            {
-                Text = title,
-                Width = 620,
-                Height = 420,
-                FormBorderStyle = FormBorderStyle.FixedDialog,
-                StartPosition = FormStartPosition.CenterScreen,
-                MinimizeBox = false,
-                MaximizeBox = false,
-                // TopMost so the streaming log stays visible — the tray app
-                // lives in the notification area and doesn't own the
-                // foreground, so without this the Form can be buried behind
-                // whatever window the user was last interacting with.
-                TopMost = true,
-            };
-            var output = new RichTextBox
-            {
-                ReadOnly = true,
-                Dock = DockStyle.Top,
-                Width = 600,
-                Height = 330,
-                BackColor = Color.FromArgb(25, 25, 25),
-                ForeColor = Color.White,
-                Font = new Font(FontFamily.GenericMonospace, 9),
-                ScrollBars = RichTextBoxScrollBars.Vertical,
-            };
-            var closeBtn = new Button
-            {
-                Text = "Close",
-                DialogResult = DialogResult.OK,
-                Width = 90,
-                Top = 345,
-                Left = 500,
-                Enabled = false,
-            };
-            form.Controls.Add(output);
-            form.Controls.Add(closeBtn);
-
-            var log = InstallLogBegin(marker);
-
-            void OnLine(string line)
-            {
-                if (line == null) return;
-                var text = line + Environment.NewLine;
-                InstallLogAppend(log, text);
-                if (form.IsHandleCreated)
-                {
-                    try
-                    {
-                        form.BeginInvoke(new Action(() =>
-                        {
-                            output.AppendText(text);
-                            output.ScrollToCaret();
-                        }));
-                    }
-                    catch { }
-                }
-            }
-
-            _ = Task.Run(async () =>
-            {
-                var psi = new ProcessStartInfo
-                {
-                    FileName = "wsl.exe",
-                    Arguments = $"-d {_distro} -- bash",
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                    RedirectStandardInput = true,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    // Force UTF-8 on stdin -- see RunWslBashCaptureAsync for
-                    // the full explanation. Same bug, same fix.
-                    StandardInputEncoding = new System.Text.UTF8Encoding(false),
-                };
-                using var proc = new Process { StartInfo = psi };
-                proc.OutputDataReceived += (s, e) => OnLine(e.Data);
-                proc.ErrorDataReceived += (s, e) => OnLine(e.Data);
-                proc.Start();
-                proc.BeginOutputReadLine();
-                proc.BeginErrorReadLine();
-                await proc.StandardInput.WriteAsync(bashScript);
-                proc.StandardInput.Close();
-                await proc.WaitForExitAsync();
-                int code = proc.ExitCode;
-                InstallLogEnd(log, code);
-                if (form.IsHandleCreated)
-                {
-                    try
-                    {
-                        form.BeginInvoke(new Action(() =>
-                        {
-                            output.AppendText(
-                                $"{Environment.NewLine}--- Done (exit {code}) ---{Environment.NewLine}");
-                            output.AppendText((code == 0
-                                ? successMessage
-                                : "Action may have failed. Check the log above.") + Environment.NewLine);
-                            closeBtn.Enabled = true;
-
-                            // On success show a prominent confirmation dialog
-                            // so the user doesn't have to read the streaming
-                            // log, with a one-click shortcut to the Web UI.
-                            //
-                            // Two things to get the dialog actually visible:
-                            //   * Pass the streaming Form as owner so the
-                            //     MessageBox stacks as a child of it (modal,
-                            //     always on top of its parent).
-                            //   * Drop the Form's TopMost flag first — a
-                            //     TopMost owner still renders the MessageBox
-                            //     below it on Windows 11 in some cases.
-                            //     After the user dismisses the dialog the
-                            //     log Form returns to normal Z-order so it
-                            //     can be alt-tabbed like any window.
-                            if (code == 0)
-                            {
-                                form.TopMost = false;
-                                var choice = MessageBox.Show(
-                                    form,
-                                    successMessage + Environment.NewLine + Environment.NewLine +
-                                    "Open the Web UI now?",
-                                    "FalconPulsar",
-                                    MessageBoxButtons.YesNo,
-                                    MessageBoxIcon.Information);
-                                if (choice == DialogResult.Yes)
-                                {
-                                    try
-                                    {
-                                        Process.Start(new ProcessStartInfo(
-                                            "http://localhost:8080")
-                                        { UseShellExecute = true });
-                                    }
-                                    catch { }
-                                }
-                            }
-                        }));
-                    }
-                    catch { }
-                }
-            });
-
-            form.ShowDialog();
-            await PollHealth();
-            _trayIcon.ContextMenuStrip = BuildMenu();
-        }
-
-        private async Task EnableAIGatewayAsync()
-        {
-            // Core must be running so we can authenticate against its REST API.
-            if (!_coreRunning)
-            {
-                MessageBox.Show(
-                    "FalconPulsar Core must be running before AI Capabilities can be enabled. Start the stack first, then try again.",
-                    "Core service not running",
-                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return;
-            }
-
-            // Admin authentication gate — every enable operation requires admin
-            // credentials, matching the uninstall flow.
-            var authed = await AuthenticateWithRetryAsync(
-                "Enable AI Capabilities",
-                "Enter admin credentials to authorize enabling AI Capabilities.");
-            if (authed == null) return;   // cancelled or exhausted retries
-
-            // First-time setup only: create the service token now that we have
-            // an authenticated admin JWT in hand.
-            if (!await WslGatewayTokenExistsAsync())
-            {
-                try
-                {
-                    var token = await CreateGatewayServiceTokenAsync(authed.Token);
-                    var rc = await WslWriteTokenAsync(token);
-                    if (rc != 0)
-                        throw new Exception($"Failed to write FP_API_KEY to WSL {_wslHome}/.env");
-                }
-                catch (Exception ex)
-                {
-                    MessageBox.Show(ex.Message, "Token setup failed",
-                        MessageBoxButtons.OK, MessageBoxIcon.Error);
-                    return;
-                }
-            }
-
-            // SEC-003: ensure the provider-key encryption secret exists in the
-            // WSL .env. Generated once; never rotated implicitly (rotation
-            // would orphan previously-encrypted provider keys). Mirrors
-            // actions.EnsureGatewaySecret in Go and bootstrap.sh.
-            {
-                var secret = Convert.ToHexString(
-                    System.Security.Cryptography.RandomNumberGenerator.GetBytes(32))
-                    .ToLowerInvariant();
-                var ensureSecretScript =
-                    $"grep -q '^FP_GATEWAY_SECRET=.' '{_wslHome}/.env' 2>/dev/null || " +
-                    $"echo \"FP_GATEWAY_SECRET={secret}\" >> '{_wslHome}/.env'";
-                _ = await RunWslBashCaptureAsync(ensureSecretScript);
-            }
-
-            // Mirror the flag to the Windows side so the tray/fp.exe can read it.
-            SetEnvValue("FP_AI_GATEWAY_ENABLED", "true");
-
-            // Target the ai-gateway service explicitly so core/ui are never touched.
-            var script =
-                "export BUILDKIT_PROGRESS=plain\n" +
-                "export DOCKER_CLI_HINTS=false\n" +
-                $"cd '{_wslHome}' || exit 1\n" +
-                // Self-heal: if a prior (pre-UTF-8-fix) tray build left a
-                // gateway.yaml containing a CP1252-encoded em-dash (byte
-                // 0x97) it's not valid UTF-8 and yaml.safe_load will crash
-                // the container on startup. Delete it here so the heredoc
-                // below rewrites it cleanly.
-                "if [ -f gateway.yaml ] && LC_ALL=C grep -q $'\\x97' gateway.yaml 2>/dev/null; then\n" +
-                "    echo '[enable-ai] stale CP1252-encoded gateway.yaml detected -- rewriting'\n" +
-                "    rm -f gateway.yaml\n" +
-                "fi\n" +
-                "if [ ! -f gateway.yaml ]; then\n" +
-                "  cat > gateway.yaml <<'EOF'\n" +
-                "# FalconPulsar AI Gateway -- default configuration.\n" +
-                "# Providers and models are managed via the Web UI.\n" +
-                "server:\n  host: \"0.0.0.0\"\n  port: 7436\n" +
-                "falconpulsar:\n  url: \"http://localhost:7433\"\n  timeout: 30\n" +
-                "context:\n  schema_cache_ttl: 300\n  max_conversation_tokens: 100000\n" +
-                "logging:\n  level: \"INFO\"\n" +
-                "EOF\n" +
-                "fi\n" +
-                // Defensive: strip CRLF + UTF-8 BOM from gateway.yaml. The\n" +
-                // heredoc above is written via a C#->stdin->bash pipeline; on\n" +
-                // Windows the encoding can be translated mid-flight and a\n" +
-                // stray \\r or BOM makes Python's yaml.safe_load raise a\n" +
-                // ReaderError, crashing the ai-gateway container on start.\n" +
-                "sed -i '1s/^\\xef\\xbb\\xbf//; s/\\r$//' gateway.yaml 2>/dev/null || true\n" +
-                // Snapshot current image IDs BEFORE pulling. After `up -d`,
-                // any captured ID that's now untagged was displaced by the
-                // pull and gets removed. Stops orphaned <none> images
-                // accumulating across disable/re-enable cycles. Mirrors
-                // fp_try_upgrade_fastpath (shared/lib/existing.sh) and
-                // SnapshotComposeImageIDs/RemoveOrphanedImages in Go +
-                // the same pattern in macOS AppDelegate.swift.
-                "prev_image_ids=''\n" +
-                "for svc in `docker compose --profile ai config --services 2>/dev/null`; do\n" +
-                "    id=`docker compose --profile ai images -q \"$svc\" 2>/dev/null | head -1`\n" +
-                "    [ -n \"$id\" ] && prev_image_ids=\"$prev_image_ids $id\"\n" +
-                "done\n" +
-                "echo '[enable-ai] pulling AI gateway image…'\n" +
-                "docker compose --profile ai pull ai-gateway 2>&1\n" +
-                "echo '[enable-ai] starting ai-gateway container…'\n" +
-                "docker compose --profile ai up -d ai-gateway 2>&1\n" +
-                // Best-effort cleanup. Errors swallowed — the enable
-                // succeeded; cleanup is cosmetic.
-                "for id in $prev_image_ids; do\n" +
-                "    tag_count=`docker image inspect \"$id\" --format '{{len .RepoTags}}' 2>/dev/null || echo ''`\n" +
-                "    if [ \"$tag_count\" = '0' ]; then\n" +
-                "        docker image rm \"$id\" >/dev/null 2>&1 || true\n" +
-                "    fi\n" +
-                "done\n" +
-
-                // ── Wipe self-seeded providers + models ─────────────────
-                // The AI gateway image inserts 3 default providers + 6
-                // default models into its SQLite on first boot from the
-                // separate falconpulsar/ai-gateway repo. On a clean
-                // install this is misleading — the user sees 6 "Offline"
-                // models they never configured. DELETE them after the
-                // gateway has finished init so post-enable state is
-                // identical to the bash + Go + Swift implementations
-                // (shared/lib/bootstrap.sh: fp_wipe_gateway_seed_defaults,
-                // actions.WipeGatewaySeedDefaults, AppDelegate.swift).
-                // TODO(falconpulsar/ai-gateway): land the upstream fix
-                // (gate seeding behind an env var or stop seeding) and
-                // remove this block plus its 4 sibling implementations.
-                "echo '[wipe-seed] waiting for AI Gateway to finish init…'\n" +
-                "deadline=$(( $(date +%s) + 90 ))\n" +
-                "while [ \"$(date +%s)\" -lt \"$deadline\" ]; do\n" +
-                "    if curl -fsS -o /dev/null http://127.0.0.1:7436/health 2>/dev/null; then break; fi\n" +
-                "    sleep 2\n" +
-                "done\n" +
-                "if curl -fsS -o /dev/null http://127.0.0.1:7436/health 2>/dev/null; then\n" +
-                "    echo '[wipe-seed] removing self-seeded providers and models…'\n" +
-                "    docker exec falconpulsar-ai-gateway sqlite3 /app/data/ai_config.db \\\n" +
-                "        'DELETE FROM model_definitions; DELETE FROM provider_configs;' \\\n" +
-                "        >/dev/null 2>&1 || echo '[wipe-seed] WARN: sqlite3 wipe failed -- continuing'\n" +
-                "    echo '[wipe-seed] restarting AI Gateway so in-memory state matches DB…'\n" +
-                "    docker restart falconpulsar-ai-gateway >/dev/null 2>&1 || true\n" +
-                "    deadline=$(( $(date +%s) + 60 ))\n" +
-                "    while [ \"$(date +%s)\" -lt \"$deadline\" ]; do\n" +
-                "        if curl -fsS -o /dev/null http://127.0.0.1:7436/health 2>/dev/null; then\n" +
-                "            echo '[wipe-seed] AI Gateway clean: 0 providers, 0 models'\n" +
-                "            break\n" +
-                "        fi\n" +
-                "        sleep 2\n" +
-                "    done\n" +
-                "else\n" +
-                "    echo '[wipe-seed] WARN: gateway not healthy in 90s -- leaving seed defaults in place'\n" +
-                "fi\n";
-
-            await RunWslStreamingActionAsync(
-                "Enabling AI Capabilities…",
-                "enable-ai",
-                script,
-                "AI Capabilities enabled.\r\n\r\nClose any open FalconPulsar Web UI sessions and sign in again to see the AI features, then configure LLM providers.");
-        }
-
-        private async Task DisableAIGatewayAsync()
-        {
-            // Core must be running so we can authenticate the admin password.
-            if (!_coreRunning)
-            {
-                MessageBox.Show(
-                    "FalconPulsar Core must be running to authorize disabling AI Capabilities. Start the stack first, then try again.",
-                    "Core service not running",
-                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return;
-            }
-
-            // Admin authentication gate — every disable operation requires
-            // admin credentials, matching the uninstall flow.
-            var authed = await AuthenticateWithRetryAsync(
-                "Disable AI Capabilities",
-                "Enter admin credentials to authorize disabling AI Capabilities.");
-            if (authed == null) return;
-
-            var result = MessageBox.Show(
-                "This stops and removes the gateway container and image (re-enabling later re-downloads it).\n\n" +
-                "It also turns off Workspace commands and standing watches. Your watches, conversations, AI configuration, and credentials are PRESERVED and return when re-enabled.\n\n" +
-                "Core and UI stay running and untouched.\n\n" +
-                "Disable the FalconPulsar Gateway?",
-                "Disable FalconPulsar Gateway",
-                MessageBoxButtons.OKCancel, MessageBoxIcon.Warning);
-            if (result != DialogResult.OK) return;
-
-            SetEnvValue("FP_AI_GATEWAY_ENABLED", "false");
-
-            // NOTE: deliberately NON-DESTRUCTIVE (matches `fp ai disable` and
-            // the macOS menu-bar). The gateway data dir now holds watches.db,
-            // conversations.db, and ai_config.db (encrypted provider keys) —
-            // FP_API_KEY, gateway.yaml, and the data dir are all preserved so
-            // re-enabling restores everything. Destructive cleanup is
-            // `fp ai purge` (console, behind an explicit confirmation).
-            //
-            // Surgical: act only on the ai-gateway service inside WSL. Never
-            // uses `down -v` because that would also stop core/ui (they have
-            // no compose profile → always-active).
-            var script =
-                $"cd '{_wslHome}' || exit 1\n" +
-                "echo '[disable-ai] loading environment from .env…'\n" +
-                "set -a\n" +
-                $". '{_wslHome}/.env' 2>/dev/null || true\n" +
-                "set +a\n" +
-                "IMAGE_REF=\"${FP_REGISTRY:-falconpulsar}/ai-gateway:${FP_VERSION:-latest}\"\n" +
-                "echo '[disable-ai] stopping and removing ai-gateway container (core/ui untouched)…'\n" +
-                "docker compose --profile ai rm -f -s ai-gateway 2>&1\n" +
-                "echo \"[disable-ai] removing AI gateway image: $IMAGE_REF\"\n" +
-                "docker rmi -f \"$IMAGE_REF\" 2>&1 || true\n" +
-                "echo '[disable-ai] done. Watches, conversations, AI configuration, and credentials were preserved. Core and UI were not touched.'\n";
-
-            await RunWslStreamingActionAsync(
-                "Disabling the FalconPulsar Gateway…",
-                "disable-ai",
-                script,
-                "Gateway disabled. Your watches, conversations, and AI configuration were preserved and will return when re-enabled.");
         }
 
         // ────────────────────────── Configuration Backup ──────────────────────────

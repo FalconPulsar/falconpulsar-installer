@@ -91,8 +91,9 @@ jobs:
         # On tag pushes, inject the release version into cli.Version
         # via ldflags -X so the binary's `fp about` reports the real
         # tag. On non-tag pushes (PR / branch validation builds) the
-        # cli.go default ("dev") is the right thing -- those binaries
-        # are CI validation, not distribution.
+        # cli.go fallback (a literal kept in sync with the VERSION
+        # file by scripts/sync-version.sh) is the right thing -- those
+        # binaries are CI validation, not distribution.
         shell: bash
         env:
           GOOS: linux
@@ -158,7 +159,8 @@ jobs:
           # On tag pushes, inject MyAppVersion from the git tag so the
           # output filename, AppVersion, and About-dialog version line up
           # with the release. On non-tag pushes (PR / branch validation
-          # builds) the installer.iss default ("dev") is appropriate --
+          # builds) the installer.iss #define fallback (kept in sync with
+          # the VERSION file by scripts/sync-version.sh) is appropriate --
           # those binaries are CI validation, not distribution.
           $defines = @()
           if ("${env:GITHUB_REF}" -match '^refs/tags/v') {

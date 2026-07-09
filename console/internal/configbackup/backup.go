@@ -55,6 +55,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/falconpulsar/falconpulsar-installer/console/internal/actions"
 	"github.com/falconpulsar/falconpulsar-installer/console/internal/api"
 	"golang.org/x/crypto/pbkdf2"
 )
@@ -96,9 +97,9 @@ type ImportSummary struct {
 // SectionStats describes the outcome of importing one section of the backup.
 type SectionStats struct {
 	Created      int      `json:"created"`
-	Skipped      int      `json:"skipped"`        // 409 Conflict
-	Errors       int      `json:"errors"`         // other failures
-	ErrorDetails []string `json:"error_details"`  // first 5 error messages
+	Skipped      int      `json:"skipped"`       // 409 Conflict
+	Errors       int      `json:"errors"`        // other failures
+	ErrorDetails []string `json:"error_details"` // first 5 error messages
 }
 
 func (s ImportSummary) HumanReadable() string {
@@ -190,19 +191,14 @@ func decrypt(data []byte, user, pass string) ([]byte, error) {
 	return plain, nil
 }
 
-// HomeDir resolves the FalconPulsar stack directory (~/falconpulsar).
-func HomeDir() string {
-	if h, err := os.UserHomeDir(); err == nil {
-		return filepath.Join(h, "falconpulsar")
-	}
-	return "/root/falconpulsar"
-}
-
 // Export reads config + API data, zips, encrypts, writes to output.
 func Export(ctx context.Context, output string, cli *api.Client, user, pass string) error {
 	var zipBuf bytes.Buffer
 	zw := zip.NewWriter(&zipBuf)
-	home := HomeDir()
+	// actions.HomeDir honors the FP_HOME override and probes the legacy
+	// /home/falconpulsar service-user path — the stack files must come
+	// from the real install dir, not blindly from ~/falconpulsar.
+	home := actions.HomeDir()
 
 	// manifest.json
 	manifest := map[string]any{
@@ -294,7 +290,7 @@ func Import(ctx context.Context, input string, cli *api.Client, user, pass strin
 	if err != nil {
 		return summary, fmt.Errorf("invalid archive inside backup: %w", err)
 	}
-	home := HomeDir()
+	home := actions.HomeDir()
 	_ = os.MkdirAll(home, 0755)
 
 	// Index zip entries by path for easy lookup
@@ -313,6 +309,11 @@ func Import(ctx context.Context, input string, cli *api.Client, user, pass strin
 			}
 		}
 	}
+	// Legacy back-compat: a backup taken on a pre-mandatory-gateway install
+	// may carry FP_AI_GATEWAY_ENABLED=false. AI is a required component —
+	// force the key to true so older fp/tray binaries that still read it
+	// never see the stack as AI-disabled.
+	sanitizeRestoredEnv(filepath.Join(home, ".env"))
 
 	// Push API data in dependency order. Each section is applied with
 	// per-item retry/skip handling so one bad record doesn't abort the
@@ -399,11 +400,11 @@ func Import(ctx context.Context, input string, cli *api.Client, user, pass strin
 //
 // Behaviour by response shape:
 //
-//   1. {"<key>":[...], "has_more": true, "next_offset": N}  ← paginate
-//   2. {"<key>":[...], "has_more": false}                    ← single page, done
-//   3. {"<key>":[...]} with no has_more field                ← single page, done
-//   4. {"items":[...]}                                       ← single page, done
-//   5. [...]                                                 ← bare array, done
+//  1. {"<key>":[...], "has_more": true, "next_offset": N}  ← paginate
+//  2. {"<key>":[...], "has_more": false}                    ← single page, done
+//  3. {"<key>":[...]} with no has_more field                ← single page, done
+//  4. {"items":[...]}                                       ← single page, done
+//  5. [...]                                                 ← bare array, done
 //
 // Per-page size is set to `pageLimit` (we use 1000, the server's default
 // cap). If the server allows higher, the offset arithmetic still works.
@@ -549,17 +550,17 @@ type InspectSection struct {
 // so MappingsCount can exceed SeriesWithMapping. Likewise SeriesCount can
 // exceed MappedSeriesCount because non-external series don't need mappings.
 type Coverage struct {
-	SeriesCount        int    `json:"series_count"`
-	MappingsCount      int    `json:"mappings_count"`
-	SeriesWithMapping  int    `json:"series_with_mapping"`   // distinct series paths referenced by ≥1 mapping
-	SeriesNoMapping    int    `json:"series_no_mapping"`     // series with zero mappings
-	SystemTelemetry    int    `json:"system_telemetry"`      // _system.*  (no mapping expected)
-	SourceCalculated   int    `json:"source_calculated"`     // source_type=calculated (no mapping expected)
-	SourceManual       int    `json:"source_manual"`         // source_type=manual (no mapping expected)
-	SourceSimulated    int    `json:"source_simulated"`      // source_type=simulated (no mapping expected)
-	ExternalOrphans    int    `json:"external_orphans"`      // source_type=external AND no mapping → cleanup candidates
-	OrphanExamples     []string `json:"orphan_examples"`     // up to 10 example paths
-	RedundantMappings  int    `json:"redundant_mappings"`    // total mappings - distinct mapped series (excess due to N:1 redundancy)
+	SeriesCount       int      `json:"series_count"`
+	MappingsCount     int      `json:"mappings_count"`
+	SeriesWithMapping int      `json:"series_with_mapping"` // distinct series paths referenced by ≥1 mapping
+	SeriesNoMapping   int      `json:"series_no_mapping"`   // series with zero mappings
+	SystemTelemetry   int      `json:"system_telemetry"`    // _system.*  (no mapping expected)
+	SourceCalculated  int      `json:"source_calculated"`   // source_type=calculated (no mapping expected)
+	SourceManual      int      `json:"source_manual"`       // source_type=manual (no mapping expected)
+	SourceSimulated   int      `json:"source_simulated"`    // source_type=simulated (no mapping expected)
+	ExternalOrphans   int      `json:"external_orphans"`    // source_type=external AND no mapping → cleanup candidates
+	OrphanExamples    []string `json:"orphan_examples"`     // up to 10 example paths
+	RedundantMappings int      `json:"redundant_mappings"`  // total mappings - distinct mapped series (excess due to N:1 redundancy)
 }
 
 // extractStringField pulls a string from a JSON object, returning "" if
@@ -816,10 +817,10 @@ func (r InspectResult) HumanReadable() string {
 				count int
 				note  string
 			}{
-				{"_system telemetry",     c.SystemTelemetry,  "(internal — no mapping expected)"},
-				{"source=calculated",     c.SourceCalculated, "(derived from FPQ — no mapping expected)"},
-				{"source=manual",         c.SourceManual,     "(user-entered — no mapping expected)"},
-				{"source=simulated",      c.SourceSimulated,  "(twin output — no mapping expected)"},
+				{"_system telemetry", c.SystemTelemetry, "(internal — no mapping expected)"},
+				{"source=calculated", c.SourceCalculated, "(derived from FPQ — no mapping expected)"},
+				{"source=manual", c.SourceManual, "(user-entered — no mapping expected)"},
+				{"source=simulated", c.SourceSimulated, "(twin output — no mapping expected)"},
 				{"source=external (ORPHANS)", c.ExternalOrphans,
 					"← cleanup candidates"},
 			}
@@ -954,6 +955,30 @@ func readZipFile(f *zip.File) ([]byte, error) {
 	}
 	defer rc.Close()
 	return io.ReadAll(rc)
+}
+
+// sanitizeRestoredEnv rewrites any FP_AI_GATEWAY_ENABLED line in a restored
+// .env to =true. The key is a legacy-compat artifact (pre-mandatory-gateway
+// installs); nothing may ever set it false. No-op when the file is absent
+// or already clean.
+func sanitizeRestoredEnv(path string) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	lines := strings.Split(string(data), "\n")
+	changed := false
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "FP_AI_GATEWAY_ENABLED=") &&
+			trimmed != "FP_AI_GATEWAY_ENABLED=true" {
+			lines[i] = "FP_AI_GATEWAY_ENABLED=true"
+			changed = true
+		}
+	}
+	if changed {
+		_ = os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0600)
+	}
 }
 
 func extractTo(f *zip.File, dst string) error {

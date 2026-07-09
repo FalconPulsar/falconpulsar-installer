@@ -124,8 +124,8 @@ jobs:
       - name: Build fp
         # -X cli.Version injection mirrors what build-fp.yml does on
         # tag pushes — the in-binary version string reports the tag
-        # (minus the leading 'v') instead of the literal "dev"
-        # default in cli.go.
+        # (minus the leading 'v') instead of the VERSION-synced
+        # literal baked into cli.go.
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
@@ -189,9 +189,9 @@ jobs:
         #
         # ldflags -X injects the release version into cli.Version at
         # link time so `fp --version`, `fp about`, and the TUI About
-        # modal show the actual release tag instead of the literal
-        # "dev" default in cli.go. Strip the leading "v" so the
-        # in-binary string matches the bare semver convention.
+        # modal show the actual release tag instead of the
+        # VERSION-synced literal baked into cli.go. Strip the leading
+        # "v" so the in-binary string matches the bare semver convention.
         shell: bash
         env:
           GOOS: linux

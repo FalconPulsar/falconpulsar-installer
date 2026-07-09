@@ -135,7 +135,8 @@ services:
     volumes:
       # Override the built-in nginx.conf so AI Gateway DNS is resolved lazily.
       # Without this mount, the image's default upstream{} block crashes
-      # nginx when the gateway container is disabled (compose profile off).
+      # nginx if it starts before the ai-gateway container is resolvable
+      # on the compose network.
       - "${FP_HOME:-.}/nginx.conf:/etc/nginx/nginx.conf:ro"
     depends_on:
       core:
@@ -144,14 +145,13 @@ services:
       - falconpulsar
 
   # ── AI Gateway: FastAPI service brokering LLM tool calls ────────────────
-  # Optional — only starts when FP_AI_GATEWAY_ENABLED=true (installers pass
-  # --profile ai accordingly). Users can enable/disable post-install via
-  # `fp ai enable` / `fp ai disable` or the tray's AI Gateway menu.
+  # Mandatory component — installed and started on every deployment, same
+  # as core and ui. LLM providers/models are configured post-install via
+  # the Web UI (Settings > AI Configuration).
   ai-gateway:
     image: ${FP_REGISTRY:-falconpulsar}/ai-gateway:${FP_VERSION:-latest}
     container_name: falconpulsar-ai-gateway
     restart: unless-stopped
-    profiles: ["ai"]
     user: "${FP_UID}:${FP_GID}"
     ports:
       # SEC-001: bind to ${FP_GATEWAY_BIND:-127.0.0.1} by default so the
@@ -198,6 +198,17 @@ services:
       # runtime (Settings > AI Configuration in the Web UI). Do NOT inject
       # ANTHROPIC_API_KEY / XAI_API_KEY here — they would bypass the DB
       # and create a stale, hard-to-rotate secret path.
+    healthcheck:
+      # Bash /dev/tcp port-open check, same pattern as core. The gateway
+      # image deliberately ships without curl (it pulled a CVE-flagged
+      # libnghttp2 into the image), so this mirrors the bash-built-in
+      # probe the image's own HEALTHCHECK uses. start_period is generous
+      # to cover first-boot knowledge-base seeding.
+      test: ["CMD-SHELL", "bash -c '< /dev/tcp/localhost/7436' 2>/dev/null"]
+      interval: 15s
+      timeout: 5s
+      start_period: 90s
+      retries: 5
     networks:
       - falconpulsar
 

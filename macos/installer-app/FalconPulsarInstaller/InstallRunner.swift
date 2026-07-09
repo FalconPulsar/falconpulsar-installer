@@ -168,24 +168,99 @@ enum InstallRunner {
             }
         }
 
-        // Fast path: upgrade-in-place (existing stack dir is intact) — just pull + up -d.
-        if state.installAction == .upgrade && FileManager.default.fileExists(atPath: "\(NSHomeDirectory())/falconpulsar/compose.yml") {
-            log("[info] Running: docker compose pull && up -d")
-            let home = "\(NSHomeDirectory())/falconpulsar"
-            let (out1, _) = ShellRunner.run("cd '\(home)' && \(dockerPath) compose pull 2>&1", timeout: 600)
-            log(out1)
-            let (out2, code) = ShellRunner.run("cd '\(home)' && \(dockerPath) compose up -d 2>&1", timeout: 180)
-            log(out2)
-            if code == 0 {
-                for i in 3...6 { updateStep(i, .passed) }
-                log("[info] Installing menu bar app...")
-                installMenuBarApp(log: log)
-                log("[info] Installing fp console CLI...")
-                installFpCli(log: log)
-                finish(state: state, success: true, error: "")
-            } else {
-                finish(state: state, success: false, error: "docker compose up failed (exit \(code)). See /tmp/falconpulsar-install.log.")
+        // Fast path: upgrade-in-place (existing stack dir is intact) — refresh
+        // the product-managed stack files, pull, up -d, and health-gate.
+        // Stacks that were never provisioned for the AI-Gateway (no service
+        // token in .env, or a compose.yml without the service) need the full
+        // bash installer to bootstrap it, so they fall through to that path.
+        let stackHome = "\(NSHomeDirectory())/falconpulsar"
+        var upgradeFastPath = state.installAction == .upgrade
+            && FileManager.default.fileExists(atPath: "\(stackHome)/compose.yml")
+        if upgradeFastPath {
+            let envText = (try? String(contentsOfFile: "\(stackHome)/.env", encoding: .utf8)) ?? ""
+            let composeText = (try? String(contentsOfFile: "\(stackHome)/compose.yml", encoding: .utf8)) ?? ""
+            let hasApiKey = envText.split(separator: "\n")
+                .contains { $0.hasPrefix("FP_API_KEY=") && $0.count > "FP_API_KEY=".count }
+            let hasGatewayService = composeText.split(separator: "\n")
+                .contains { $0.trimmingCharacters(in: .whitespaces) == "ai-gateway:" }
+            if !hasApiKey || !hasGatewayService {
+                log("[info] Existing stack lacks AI-Gateway provisioning — running the full installer to migrate")
+                upgradeFastPath = false
             }
+        }
+        if upgradeFastPath {
+            updateStep(3, .running)
+
+            // Refresh the product-managed stack files from the installer
+            // payload so upgrades pick up compose/nginx changes. User-managed
+            // files (.env, gateway.yaml) are left alone; gateway.yaml is only
+            // created if it went missing.
+            if let sharedDir = findSharedDir() {
+                for name in ["compose.yml", "nginx.conf"] {
+                    let src = "\(sharedDir)/\(name)"
+                    guard FileManager.default.fileExists(atPath: src) else { continue }
+                    do {
+                        let dest = "\(stackHome)/\(name)"
+                        if FileManager.default.fileExists(atPath: dest) {
+                            try FileManager.default.removeItem(atPath: dest)
+                        }
+                        try FileManager.default.copyItem(atPath: src, toPath: dest)
+                        log("[info] Updated \(name) from installer bundle")
+                    } catch {
+                        log("[warn] Could not update \(name): \(error)")
+                    }
+                }
+                let gatewayCfg = "\(stackHome)/gateway.yaml"
+                if !FileManager.default.fileExists(atPath: gatewayCfg),
+                   FileManager.default.fileExists(atPath: "\(sharedDir)/gateway.yaml") {
+                    try? FileManager.default.copyItem(atPath: "\(sharedDir)/gateway.yaml", toPath: gatewayCfg)
+                    log("[info] Restored missing gateway.yaml")
+                }
+            } else {
+                log("[warn] Bundled stack files not found — keeping the existing compose.yml")
+            }
+
+            // AI capabilities are mandatory: normalize any legacy opt-out
+            // left in .env (older fp/tray binaries still read this key).
+            scrubAIGatewayFlag(envPath: "\(stackHome)/.env", log: log)
+            updateStep(3, .passed)
+
+            // "--profile ai" is legacy compose compat (pre-mandatory-gateway
+            // installs gate ai-gateway behind that profile); it is a no-op on
+            // current compose files.
+            updateStep(4, .running)
+            log("[info] Running: docker compose --profile ai pull")
+            let (out1, pullCode) = ShellRunner.run("cd '\(stackHome)' && \(dockerPath) compose --profile ai pull 2>&1", timeout: 600)
+            log(out1)
+            if pullCode != 0 {
+                log("[warn] docker compose pull exited \(pullCode) — continuing with cached images")
+            }
+            updateStep(4, .passed)
+
+            updateStep(5, .running)
+            log("[info] Running: docker compose --profile ai up -d")
+            let (out2, code) = ShellRunner.run("cd '\(stackHome)' && \(dockerPath) compose --profile ai up -d 2>&1", timeout: 180)
+            log(out2)
+            if code != 0 {
+                updateStep(5, .failed)
+                finish(state: state, success: false, error: "docker compose up failed (exit \(code)). See /tmp/falconpulsar-install.log.")
+                return
+            }
+            updateStep(5, .passed)
+
+            updateStep(6, .running)
+            if let healthError = waitForStackHealthy(dockerPath: dockerPath, home: stackHome, log: log) {
+                updateStep(6, .failed)
+                finish(state: state, success: false, error: healthError)
+                return
+            }
+            updateStep(6, .passed)
+
+            log("[info] Installing menu bar app...")
+            installMenuBarApp(log: log)
+            log("[info] Installing fp console CLI...")
+            installFpCli(log: log)
+            finish(state: state, success: true, error: "")
             return
         }
 
@@ -214,7 +289,10 @@ enum InstallRunner {
         guard let scriptPath = installScript else {
             log("[error] install.sh not found in any expected location")
             updateStep(3, .failed)
-            finish(state: state, success: false, error: "Installer scripts not found. Run from the installer directory.")
+            finish(state: state, success: false, error:
+                "Installer scripts not found in the app bundle. " +
+                "Re-download FalconPulsar-Setup.dmg and try again, or install from Terminal: " +
+                "curl -fsSL https://get.falconpulsar.com/macos | bash")
             return
         }
 
@@ -247,7 +325,10 @@ enum InstallRunner {
             "export FP_REGISTRY_USER='\(sh(state.registryUser))'",
             "export FP_REGISTRY_PASS='\(sh(state.registryPass))'",
             state.registrySkip ? "export FP_REGISTRY_SKIP=1" : "",
-            "export FP_AI_GATEWAY_ENABLED=\(state.aiGatewayEnabled ? "true" : "false")",
+            // Back-compat for older fp/tray binaries that read this key from
+            // .env. The installer itself no longer branches on it — AI
+            // capabilities are always installed.
+            "export FP_AI_GATEWAY_ENABLED=true",
             // Front-door HTTPS declaration. Drives the Secure flag and
             // __Host- prefix on session cookies. The bash installer's
             // `prompt_transport_mode` reads this and skips the prompt.
@@ -303,21 +384,22 @@ enum InstallRunner {
             if let line = String(data: data, encoding: .utf8) {
                 log(line.trimmingCharacters(in: .newlines))
 
-                // Update step status based on output
+                // Update step status based on output. Tokens track the
+                // log_step/log_info lines macos/install.sh actually emits.
                 DispatchQueue.main.async {
                     let l = line.lowercased()
-                    if l.contains("step 3/") || l.contains("system user") {
+                    if l.contains("step 4/") {          // "step 4/6 — stack files"
+                        updateStep(3, .passed)
+                    }
+                    if l.contains("step 5/") || l.contains("pulling") {
                         updateStep(3, .passed)
                         updateStep(4, .running)
                     }
-                    if l.contains("docker compose pull") || l.contains("pulling") {
-                        updateStep(4, .running)
-                    }
-                    if l.contains("step 7/") || l.contains("docker compose up") || l.contains("starting") {
+                    if l.contains("starting core") {    // pull done, stack coming up
                         updateStep(4, .passed)
                         updateStep(5, .running)
                     }
-                    if l.contains("is up and running") || l.contains("health") {
+                    if l.contains("verifying installation health") {
                         updateStep(5, .passed)
                         updateStep(6, .running)
                     }
@@ -368,6 +450,117 @@ enum InstallRunner {
             }
             finish(state: state, success: false, error: "Installation failed (exit code \(exitCode)). Check /tmp/falconpulsar-install.log for details.")
         }
+    }
+
+    /// Locates the shared/ directory of the installer payload (sibling of
+    /// macos/), trying the same candidate roots used to find install.sh.
+    private static func findSharedDir() -> String? {
+        let bundlePath = Bundle.main.bundlePath
+        let candidates = [
+            "\(bundlePath)/../shared",
+            "\(bundlePath)/Contents/Resources/shared",
+            "\(NSHomeDirectory())/dev/falconpulsar-workspace/falconpulsar-installer/shared",
+            "/tmp/falconpulsar-installer/shared"
+        ]
+        for p in candidates {
+            let resolved = (p as NSString).standardizingPath
+            if FileManager.default.fileExists(atPath: "\(resolved)/compose.yml") {
+                return resolved
+            }
+        }
+        return nil
+    }
+
+    /// Forces FP_AI_GATEWAY_ENABLED=true in an existing .env. The installer
+    /// no longer reads this key, but older fp/tray binaries still do —
+    /// normalizing a legacy `false` keeps them from treating the mandatory
+    /// AI-Gateway as switched off.
+    private static func scrubAIGatewayFlag(envPath: String, log: (String) -> Void) {
+        guard let envText = try? String(contentsOfFile: envPath, encoding: .utf8),
+              envText.contains("FP_AI_GATEWAY_ENABLED=") else { return }
+        let lines = envText.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        let fixed = lines.map { $0.hasPrefix("FP_AI_GATEWAY_ENABLED=") ? "FP_AI_GATEWAY_ENABLED=true" : $0 }
+        guard fixed != lines else { return }
+        do {
+            try fixed.joined(separator: "\n").write(toFile: envPath, atomically: true, encoding: .utf8)
+            // The atomic write recreates the inode — restore the 0600 mode
+            // the installer gives .env (it holds the service token).
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: envPath)
+            log("[info] Normalized FP_AI_GATEWAY_ENABLED=true in .env")
+        } catch {
+            log("[warn] Could not update .env: \(error)")
+        }
+    }
+
+    /// Polls service health after an upgrade's `compose up`, mirroring the
+    /// checks macos/install.sh performs on fresh installs: core's Docker
+    /// healthcheck, the AI-Gateway /health endpoint, and a running ui
+    /// container. Returns nil on success or a user-facing error message.
+    private static func waitForStackHealthy(dockerPath: String, home: String,
+                                            log: (String) -> Void) -> String? {
+        log("[info] Waiting for core to become healthy...")
+        var coreHealthy = false
+        var deadline = Date().addingTimeInterval(180)
+        while Date() < deadline {
+            let (out, _) = ShellRunner.run("\(dockerPath) inspect -f '{{.State.Health.Status}}' falconpulsar-core 2>/dev/null")
+            let status = out.trimmingCharacters(in: .whitespacesAndNewlines)
+            if status == "healthy" { coreHealthy = true; break }
+            if status == "unhealthy" { break }
+            Thread.sleep(forTimeInterval: 3)
+        }
+        guard coreHealthy else {
+            return "falconpulsar-core did not become healthy. Check: docker logs falconpulsar-core"
+        }
+        log("[info] core is healthy")
+
+        // AI-Gateway health endpoint — honor a custom FP_GATEWAY_PORT and
+        // FP_GATEWAY_BIND from .env; only accept safe values before
+        // interpolating into a shell command. A 0.0.0.0 (all-interfaces)
+        // bind is reachable on loopback, so probe 127.0.0.1 for it; a
+        // specific address must be probed directly.
+        var gatewayPort = "7436"
+        var gatewayHost = "127.0.0.1"
+        if let env = try? String(contentsOfFile: "\(home)/.env", encoding: .utf8) {
+            for line in env.split(separator: "\n") {
+                if line.hasPrefix("FP_GATEWAY_PORT=") {
+                    let v = line.dropFirst("FP_GATEWAY_PORT=".count)
+                        .trimmingCharacters(in: .whitespaces)
+                    if v.range(of: #"^[0-9]+$"#, options: .regularExpression) != nil {
+                        gatewayPort = v
+                    }
+                } else if line.hasPrefix("FP_GATEWAY_BIND=") {
+                    let v = line.dropFirst("FP_GATEWAY_BIND=".count)
+                        .trimmingCharacters(in: .whitespaces)
+                    if !v.isEmpty, v != "0.0.0.0",
+                       v.range(of: #"^[A-Za-z0-9._-]+$"#, options: .regularExpression) != nil {
+                        gatewayHost = v
+                    }
+                }
+            }
+        }
+        log("[info] Waiting for the AI-Gateway to become healthy...")
+        var gatewayHealthy = false
+        // 180 s matches the bash fp_wait_for_gateway_ready gate — a first
+        // boot can spend the compose healthcheck's full 90 s start_period
+        // on knowledge-base seeding.
+        deadline = Date().addingTimeInterval(180)
+        while Date() < deadline {
+            let (_, code) = ShellRunner.run("/usr/bin/curl -fsS -m 2 -o /dev/null 'http://\(gatewayHost):\(gatewayPort)/health' 2>/dev/null")
+            if code == 0 { gatewayHealthy = true; break }
+            Thread.sleep(forTimeInterval: 3)
+        }
+        guard gatewayHealthy else {
+            return "AI-Gateway did not become healthy at \(gatewayHost):\(gatewayPort). Check: docker logs falconpulsar-ai-gateway"
+        }
+        log("[info] AI-Gateway is healthy")
+
+        // The ui container has no healthcheck — running is the bar.
+        let (uiOut, _) = ShellRunner.run("\(dockerPath) ps --filter name=falconpulsar-ui --filter status=running -q 2>/dev/null")
+        guard !uiOut.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return "falconpulsar-ui is not running. Check: docker logs falconpulsar-ui"
+        }
+        log("[info] ui is running")
+        return nil
     }
 
     private static func installMenuBarApp(log: (String) -> Void) {

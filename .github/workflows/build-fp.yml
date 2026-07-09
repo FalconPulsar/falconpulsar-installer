@@ -55,9 +55,10 @@ jobs:
       - name: Build
         # On tag pushes, inject the release version into cli.Version
         # via ldflags -X so `fp about` reports the real tag. On non-tag
-        # pushes (PR / branch validation builds) the cli.go default
-        # ("dev") is appropriate -- those binaries are CI validation,
-        # not distribution.
+        # pushes (PR / branch validation builds) the cli.go fallback
+        # (a literal kept in sync with the VERSION file by
+        # scripts/sync-version.sh) is appropriate -- those binaries
+        # are CI validation, not distribution.
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}

@@ -2,7 +2,6 @@
 package cli
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -23,7 +22,7 @@ import (
 // Declared as a `var` (not `const`) so that build pipelines can inject
 // the actual git tag at link time:
 //
-//   go build -ldflags="-X github.com/falconpulsar/falconpulsar-installer/console/internal/cli.Version=0.1.4-alpha.5" ...
+//	go build -ldflags="-X github.com/falconpulsar/falconpulsar-installer/console/internal/cli.Version=0.1.4-alpha.5" ...
 //
 // The literal default is kept in sync with the repo-root VERSION file
 // by scripts/sync-version.sh (CI lint enforces no drift). CI release
@@ -60,7 +59,6 @@ func Root(runTUI func() error) *cobra.Command {
 		cmdLogs(),
 		cmdOpen(),
 		cmdConfig(),
-		cmdAI(),
 		cmdUpdate(),
 		cmdAbout(),
 		cmdDocs(),
@@ -91,11 +89,11 @@ func cmdStatus() *cobra.Command {
 				enc := json.NewEncoder(os.Stdout)
 				enc.SetIndent("", "  ")
 				return enc.Encode(map[string]any{
-					"core":       st.Core,
-					"ui":         st.UI,
-					"gateway":    st.Gateway,
-					"api":        st.APIHealthy,
-					"aggregate":  st.Aggregate(),
+					"core":      st.Core,
+					"ui":        st.UI,
+					"gateway":   st.Gateway,
+					"api":       st.APIHealthy,
+					"aggregate": st.Aggregate(),
 				})
 			}
 			printRow := func(name string, ok bool, note string) {
@@ -110,13 +108,7 @@ func cmdStatus() *cobra.Command {
 			fmt.Println("FalconPulsar status:")
 			printRow("Core", st.Core, "")
 			printRow("Web UI", st.UI, "http://localhost:8080")
-			if actions.AIGatewayEnabled() {
-				printRow("AI Capabilities", st.Gateway, "")
-			} else {
-				fmt.Printf("  %s  %-12s %s\n",
-					colorText("–", colorYellow), "AI Capabilities",
-					colorText("disabled", colorYellow))
-			}
+			printRow("AI Capabilities", st.Gateway, "")
 			printRow("REST API", st.APIHealthy, "http://localhost:7433")
 			fmt.Printf("\nAggregate: %s\n", st.Aggregate())
 			// Exit code tells scripts the overall state
@@ -318,159 +310,6 @@ func cmdConfigImport() *cobra.Command {
 	}
 }
 
-func cmdAI() *cobra.Command {
-	c := &cobra.Command{
-		Use:   "ai",
-		Short: "Enable, disable, or check AI Capabilities status",
-	}
-	c.AddCommand(
-		&cobra.Command{
-			Use:   "status",
-			Short: "Show whether AI Capabilities is enabled",
-			RunE: func(cmd *cobra.Command, args []string) error {
-				if actions.AIGatewayEnabled() {
-					fmt.Println(colorText("AI Capabilities: enabled", colorGreen))
-				} else {
-					fmt.Println(colorText("AI Capabilities: disabled", colorYellow))
-				}
-				return nil
-			},
-		},
-		&cobra.Command{
-			Use:   "enable",
-			Short: "Enable AI Capabilities and start the gateway container",
-			RunE: func(cmd *cobra.Command, args []string) error {
-				ctx := context.Background()
-
-				// Admin auth required every time (matches macOS menu bar
-				// and Windows tray behaviour). On first enable this call
-				// also provides the JWT needed to bootstrap the gateway
-				// service token.
-				reason := "Admin credentials are required to enable AI Capabilities."
-				if !actions.HasGatewayToken() {
-					reason = "First-time setup: admin credentials are needed to create the AI service token."
-				}
-				cli, _, _, err := auth.PromptAdminWithRetry(ctx, reason, 3)
-				if err != nil {
-					return err
-				}
-
-				if !actions.HasGatewayToken() {
-					token, err := cli.CreateGatewayToken(ctx)
-					if err != nil {
-						return fmt.Errorf("create gateway service token: %w", err)
-					}
-					if err := actions.SetEnvValue("FP_API_KEY", token); err != nil {
-						return fmt.Errorf("write FP_API_KEY: %w", err)
-					}
-				}
-
-				// SEC-003: provider-key encryption secret (generated once;
-				// never rotated implicitly).
-				if err := actions.EnsureGatewaySecret(); err != nil {
-					return err
-				}
-
-				actions.EnsureGatewayConfig()
-				if err := actions.SetEnvValue("FP_AI_GATEWAY_ENABLED", "true"); err != nil {
-					return err
-				}
-				fmt.Fprintln(os.Stderr, "Enabling the FalconPulsar Gateway…")
-				// Snapshot image IDs before pull so any displaced AI Gateway
-				// image gets removed afterward. Re-enabling after a previous
-				// disable+upgrade cycle would otherwise leave the prior
-				// gateway image as a dangling <none>. Same snapshot-then-
-				// cleanup pattern used by ApplyUpdates — see update.go.
-				prevImageIDs := actions.SnapshotComposeImageIDs(ctx)
-				if err := actions.Compose(ctx, os.Stdout, os.Stderr, "--profile", "ai",
-					"pull", "ai-gateway"); err != nil {
-					return err
-				}
-				if err := actions.Compose(ctx, os.Stdout, os.Stderr, "--profile", "ai",
-					"up", "-d", "ai-gateway"); err != nil {
-					return err
-				}
-				// Best-effort: remove any captured ID that is now fully
-				// untagged (= was displaced by the pull). Errors swallowed.
-				_ = actions.RemoveOrphanedImages(ctx, prevImageIDs)
-				// Wipe the gateway's self-seeded provider/model catalog so
-				// the user lands on a clean AI configuration. See
-				// actions.WipeGatewaySeedDefaults for the rationale.
-				_ = actions.WipeGatewaySeedDefaults(ctx, os.Stderr)
-				fmt.Fprintln(os.Stderr, "")
-				fmt.Fprintln(os.Stderr, "AI Capabilities enabled.")
-				fmt.Fprintln(os.Stderr, "Close any open FalconPulsar Web UI sessions and sign in again to see the AI features, then configure LLM providers in Settings > AI Configuration.")
-				return nil
-			},
-		},
-		&cobra.Command{
-			Use:   "disable",
-			Short: "Disable the FalconPulsar Gateway (removes container + image; watches, conversations, and AI configuration are preserved)",
-			RunE: func(cmd *cobra.Command, args []string) error {
-				ctx := context.Background()
-
-				// Admin auth required every time (matches macOS / Windows).
-				if _, _, _, err := auth.PromptAdminWithRetry(ctx,
-					"Admin credentials are required to disable the FalconPulsar Gateway.", 3); err != nil {
-					return err
-				}
-
-				if err := actions.SetEnvValue("FP_AI_GATEWAY_ENABLED", "false"); err != nil {
-					return err
-				}
-
-				fmt.Fprintln(os.Stderr, "Disabling the FalconPulsar Gateway…")
-				fmt.Fprintln(os.Stderr, "Note: this also turns off Workspace commands and standing watches.")
-				// Non-destructive teardown: container + image only. Data,
-				// gateway.yaml, and credentials are preserved (`fp ai purge`
-				// is the destructive path). Core/UI untouched.
-				if err := actions.SurgicalDisableAI(ctx, os.Stderr); err != nil {
-					return err
-				}
-				fmt.Fprintln(os.Stderr, "")
-				fmt.Fprintln(os.Stderr, "Gateway disabled. Your watches, conversations, and AI configuration were preserved and will return when re-enabled (fp ai enable).")
-				return nil
-			},
-		},
-		&cobra.Command{
-			Use:   "purge",
-			Short: "PERMANENTLY delete all gateway data (watches, conversations, AI configuration incl. encrypted provider keys)",
-			RunE: func(cmd *cobra.Command, args []string) error {
-				ctx := context.Background()
-
-				fmt.Fprintln(os.Stderr, "This PERMANENTLY deletes:")
-				fmt.Fprintln(os.Stderr, "  - all standing watches")
-				fmt.Fprintln(os.Stderr, "  - all conversation history")
-				fmt.Fprintln(os.Stderr, "  - AI configuration, including encrypted provider keys")
-				fmt.Fprintln(os.Stderr, "  - gateway.yaml and the gateway service credential")
-				fmt.Fprint(os.Stderr, "Type 'purge' to confirm: ")
-				answer, _ := bufio.NewReader(os.Stdin).ReadString('\n')
-				if strings.TrimSpace(answer) != "purge" {
-					fmt.Fprintln(os.Stderr, "Aborted — nothing was deleted.")
-					return nil
-				}
-
-				// Admin auth required (destructive).
-				if _, _, _, err := auth.PromptAdminWithRetry(ctx,
-					"Admin credentials are required to purge gateway data.", 3); err != nil {
-					return err
-				}
-
-				if err := actions.SetEnvValue("FP_AI_GATEWAY_ENABLED", "false"); err != nil {
-					return err
-				}
-				if err := actions.PurgeAIData(ctx, os.Stderr); err != nil {
-					return err
-				}
-				fmt.Fprintln(os.Stderr, "")
-				fmt.Fprintln(os.Stderr, "Gateway data purged.")
-				return nil
-			},
-		},
-	)
-	return c
-}
-
 // cmdUpdate exposes the "Check for updates" / "Apply updates" workflow
 // to scripts and tray apps. The tray apps shell out to `fp update --check
 // --json` for a status snapshot and `fp update --apply` to perform the
@@ -613,11 +452,7 @@ func cmdAbout() *cobra.Command {
 			fmt.Println("Components:")
 			fmt.Printf("  Core Engine     %s\n", actions.GetContainerInfo(ctx, "falconpulsar-core").DisplayString())
 			fmt.Printf("  Web UI          %s\n", actions.GetContainerInfo(ctx, "falconpulsar-ui").DisplayString())
-			if actions.AIGatewayEnabled() {
-				fmt.Printf("  AI Capabilities %s\n", actions.GetContainerInfo(ctx, "falconpulsar-ai-gateway").DisplayString())
-			} else {
-				fmt.Printf("  AI Capabilities %s\n", colorText("(disabled)", colorYellow))
-			}
+			fmt.Printf("  AI Capabilities %s\n", actions.GetContainerInfo(ctx, "falconpulsar-ai-gateway").DisplayString())
 			fmt.Printf("  Compose         %s\n", actions.GetComposeVersion(ctx))
 			fmt.Println()
 
@@ -753,7 +588,7 @@ func isWSL() bool {
 // Setup [Code] block can skip its interactive Yes/No/Cancel MsgBox
 // when the user already said --purge or default-keep on the fp CLI.
 func runWindowsUninstaller(purge, yes bool) error {
-	const uninst = "/mnt/c/Program Files/FalconPulsar/unins000.exe"
+	uninst := resolveWindowsUninstaller()
 	if _, err := os.Stat(uninst); err != nil {
 		return fmt.Errorf("Windows uninstaller not found at %s\n"+
 			"Open 'Settings > Apps > FalconPulsar > Uninstall' instead, or run the bash\n"+
@@ -821,6 +656,44 @@ func runWindowsUninstaller(purge, yes bool) error {
 		fmt.Fprintln(os.Stderr, "  Install log is at "+tempVar+`\falconpulsar-install.log on Windows.`)
 	}
 	return runErr
+}
+
+// resolveWindowsUninstaller locates unins000.exe. The Inno Setup wizard has
+// a standard installation-location page, so users may have installed
+// somewhere other than C:\Program Files\FalconPulsar. The authoritative
+// source is the uninstall registry key Inno Setup writes at install time
+// (UninstallString), queried via reg.exe interop — HKLM, because the
+// installer requires admin. Falls back to the default Program Files path
+// when the query fails (e.g. reg.exe interop unavailable).
+func resolveWindowsUninstaller() string {
+	const defaultPath = "/mnt/c/Program Files/FalconPulsar/unins000.exe"
+	// "<AppId>_is1" — the GUID must match AppId in windows/installer.iss.
+	const uninstallKey = `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\` +
+		`{8E0B7C2F-3F4D-4B9E-9C6A-1D5F8A2B9C71}_is1`
+
+	out, err := exec.Command("/mnt/c/Windows/System32/reg.exe",
+		"query", uninstallKey, "/v", "UninstallString").Output()
+	if err != nil {
+		return defaultPath
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(strings.TrimRight(line, "\r"))
+		if !strings.Contains(line, "UninstallString") {
+			continue
+		}
+		// Line shape: `UninstallString    REG_SZ    "C:\...\unins000.exe"`
+		i := strings.Index(line, "REG_SZ")
+		if i < 0 {
+			continue
+		}
+		winPath := strings.Trim(strings.TrimSpace(line[i+len("REG_SZ"):]), `"`)
+		if p := winPathToWslPath(winPath); p != "" {
+			if _, err := os.Stat(p); err == nil {
+				return p
+			}
+		}
+	}
+	return defaultPath
 }
 
 // winTempDir returns the Windows TEMP path, queried via cmd.exe interop.

@@ -66,13 +66,13 @@ invoking human.
 ### Supporting components shipped alongside the bash installers
 
 - **`console/`** — the `fp` CLI (Go). A TUI + subcommand interface for
-  stack lifecycle (`fp status`, `fp start`, `fp ai enable`, `fp uninstall`),
+  stack lifecycle (`fp status`, `fp start`, `fp update`, `fp uninstall`),
   shipped by every installer.
 - **`windows/fp-wrapper/`** — a tiny Go shim that becomes `fp.exe` on
   Windows. Reads a `%TEMP%\falconpulsar-home.txt` sentinel and execs the
   real Linux `fp` inside WSL.
 - **`windows/tray-app/`** — a C# / .NET 8 Windows system tray app that
-  surfaces stack status, Start/Stop/Restart, AI toggle, uninstall.
+  surfaces stack status, Start/Stop/Restart, uninstall.
 - **`macos/installer-app/`** — a SwiftUI GUI installer (ships inside the
   signed `.dmg`); it invokes `macos/install.sh` under the hood.
 - **`macos/menu-bar-app/`** — an AppKit menu-bar manager equivalent to
@@ -119,8 +119,14 @@ From `linux/install.sh` main block:
    the chosen action (stop containers on reinstall; wipe everything on
    fresh; no-op on upgrade).
 9. `fp_try_upgrade_fastpath` — when action is "upgrade" and
-   `${FP_HOME}/compose.yml` already exists, short-circuit to
-   `docker compose pull && docker compose up -d` and exit.
+   `${FP_HOME}/compose.yml` is intact, skip the full reinstall flow:
+   re-verify registry access, re-copy the bundled `compose.yml` +
+   `nginx.conf` (product-managed files), provision `gateway.yaml` and
+   the gateway secrets when missing (existing `FP_API_KEY` /
+   `FP_GATEWAY_SECRET` / `FP_BRIDGE_TOKEN` always carried forward,
+   never regenerated), scrub any legacy `FP_AI_GATEWAY_ENABLED=false`
+   to `true`, `docker compose pull && docker compose up -d`, hard-gate
+   the AI Gateway `/health` endpoint, and exit.
 10. `fp_registry_ensure_access` — registry probe + interactive login if
     needed (see `registry_auth.sh`).
 11. **User + home directory** — service-user mode: `useradd --system`;
@@ -130,19 +136,20 @@ From `linux/install.sh` main block:
 12. `prompt_admin_credentials` → `FP_ADMIN_USER` / `FP_ADMIN_PASS`
     (generated or prompted; never persisted to disk).
 13. **Stack files** — write `compose.yml`, `nginx.conf`, `.env`, and
-    `gateway.yaml` (only when `FP_AI_GATEWAY_ENABLED=true`) into
-    `$FP_HOME`. Mode `.env` = `0640`, owner `$FP_USER:docker` (readable
-    by any docker-group user; writable by the owner).
+    `gateway.yaml` into `$FP_HOME`. Mode `.env` = `0640`, owner
+    `$FP_USER:docker` (readable by any docker-group user; writable by
+    the owner).
 14. `fp_compose_pull_with_retry` — 3 retries with backoff, runs as
     `$FP_USER` via `sg docker`.
 15. **Start core** — `docker compose up -d core` with `FP_ADMIN_PASS`
     injected only into this one process's env (never written to `.env`).
     Wait for the `core` healthcheck.
-16. `fp_bootstrap_gateway_token` — only when AI is enabled. Logs in
-    with the admin password, creates a service token, appends
-    `FP_API_KEY=<token>` to `.env` preserving file mode.
-17. **Start the rest** — `docker compose --profile ai up -d` (with AI)
-    or `docker compose up -d` (without).
+16. `fp_bootstrap_gateway_token` — logs in with the admin password,
+    creates a service token, appends `FP_API_KEY=<token>` to `.env`
+    preserving file mode.
+17. **Start the rest** — `docker compose up -d`, then
+    `fp_wait_for_gateway_ready` as a hard gate on the AI Gateway
+    `/health` endpoint (failure points at the container logs).
 18. `fp_install_cli` — install `fp` to `$FP_HOME/bin/fp`; chmod 0755.
 19. **PATH integration** — `fp_offer_path_append` to the invoking
     human's shell rc, plus a system-wide `/etc/profile.d/falconpulsar.sh`
@@ -205,7 +212,7 @@ macOS ships two entry points that end up running the same bash installer:
 
 An AppKit application installed to `/Applications/FalconPulsar Menu Bar.app`
 by the installer. Shows stack status in the system menu bar, surfaces
-Start/Stop/Restart, AI toggle, config backup, and uninstall. Authenticates
+Start/Stop/Restart, config backup, and uninstall. Authenticates
 admin operations against Core's REST API using the same admin password
 the install captured. Mirrors the Windows tray app feature-for-feature.
 
@@ -279,8 +286,7 @@ Post-install, the user interacts with the stack through:
   real Linux `fp` binary inside WSL via `wsl.exe`.
 - **`FalconPulsarTray.exe`** (`windows/tray-app/`) — a C# / .NET 8
   system tray app installed to `Program Files\FalconPulsar\`. Polls
-  container status, surfaces Start/Stop/Restart, AI toggle (reads/writes
-  the WSL `.env` via `\\wsl.localhost` UNC), admin-authenticated
+  container status, surfaces Start/Stop/Restart, admin-authenticated
   uninstall.
 - **Start Menu shortcuts** — created by `50-register-shortcuts.ps1`,
   launch `wsl.exe` bash commands against the stack directory.
@@ -577,8 +583,10 @@ installer does the `docker login --password-stdin` for you.
 | Function | Purpose |
 |---|---|
 | `fp_wait_for_api_ready` | Loop on `curl /api/v1/health` until 200 or 180 s timeout |
+| `fp_wait_for_gateway_ready` | Loop on the AI Gateway `/health` endpoint (`127.0.0.1:${FP_GATEWAY_PORT}`, default 7436) until 200 or 180 s timeout. Returns non-zero instead of dying so the caller can point at the container logs. Used by both installers as a hard gate after `docker compose up -d`. |
 | `_fp_json_str` | Tiny grep-based JSON field extractor (not a real parser — avoid complex payloads) |
 | `fp_bootstrap_gateway_token` | POST `/api/v1/auth/login` → JWT → POST `/api/v1/tokens` → service token for AI Gateway → append `FP_API_KEY=<token>` to `.env`. **Preserves the existing file mode** (stat + chmod) so the 0640 / 0600 chosen by the installer survives — do not hard-code a mode here. |
+| `fp_wipe_gateway_seed_defaults` | Delete the LLM providers/models the gateway image self-seeds on first boot, so a clean install starts with an empty AI configuration. Runs after the health gate; non-fatal on failure. |
 
 ### `auth.sh` — admin-password authentication gate
 
@@ -609,7 +617,7 @@ emergency uninstall when Core is completely broken.
 | `fp_print_existing_inventory` | Pretty-print what the detection found (coloured, sized). Shown before the action prompt. |
 | `fp_prompt_existing_action` | Interactive Upgrade / Reinstall / Fresh / Cancel menu. Honours `FP_INSTALL_ACTION` env var (non-interactive). On "Fresh" requires type-to-confirm (`DELETE` uppercase) to guard against accidents. |
 | `fp_apply_existing_action` | Execute the pre-install mutation: upgrade = no-op (keep everything); reinstall = `docker compose down` + remove stack files, preserve data; fresh = stop containers, remove images, volumes, `rm -rf "$FP_HOME"`. |
-| `fp_try_upgrade_fastpath` | When action is "upgrade" and a valid `compose.yml` is present, skip the full reinstall flow: just `docker compose pull && docker compose up -d` and exit 0. |
+| `fp_try_upgrade_fastpath` | When action is "upgrade" and a valid `compose.yml` is present, skip the full reinstall flow: re-copy the bundled `compose.yml` + `nginx.conf` (product-managed files), copy `gateway.yaml` if missing, carry secrets (`FP_API_KEY` / `FP_GATEWAY_SECRET` / `FP_BRIDGE_TOKEN`) forward in `.env`, `docker compose pull && docker compose up -d`, health-gate the gateway, and exit 0. |
 
 ### `shared/compose.yml`
 
@@ -622,6 +630,7 @@ Three services on a single user-defined bridge network `falconpulsar`:
 | `ai-gateway` | `falconpulsar/ai-gateway:latest` | 7436 | `core` (healthy) |
 
 - The `core` service has a `bash /dev/tcp/localhost/7433` healthcheck (5 retries × 15 s interval, 90 s start period)
+- The `ai-gateway` service has the same `bash /dev/tcp/localhost/7436` healthcheck shape (the image ships without curl)
 - All services use `user: ${FP_UID}:${FP_GID}` for bind-mount ownership
 - All services are `restart: unless-stopped`
 - Volumes: `${FP_DATA_DIR}:/data` bind-mount for `core` (database)
@@ -641,7 +650,7 @@ bold.
 | **`FP_REGISTRY_PASS`** | unset | `registry_auth.sh` | Optional password / token for registry login. |
 | **`FP_REGISTRY_SKIP`** | `0` | `registry_auth.sh` | Set to `1` to bypass the registry probe entirely (air-gapped or pre-pulled images). |
 | `FP_API_KEY` | empty until first run | `bootstrap.sh`, `compose.yml` | AI Gateway service token (written to `.env` after bootstrap) |
-| **`FP_AI_GATEWAY_ENABLED`** | `false` | `install.sh`, `tray-app`, `menu-bar-app`, `fp ai enable/disable` | Whether the `ai-gateway` service should be in the running stack. Toggled by `fp ai enable` and by the tray / menu-bar UI. Backed by the `ai` compose profile. |
+| `FP_AI_GATEWAY_ENABLED` | `true` (always) | nothing (legacy compat) | Written to `.env` as `true` so pre-mandatory-gateway `fp` / tray binaries that still read the key keep working; upgrades scrub any legacy `false` to `true`. Never read by current code and not user-settable — the AI Gateway is a mandatory service. |
 | **`FP_ASSUME_YES`** | `0` | `common.sh`, `prompts.sh`, `checks.sh` | Skip all interactive prompts (CI / unattended mode) |
 | **`FP_LEGAL_ACCEPTED`** | `0` | `prompts.sh` | Pre-accept legal documents (set to `1`) |
 | **`FP_DEBUG`** | `0` | `common.sh`, both installers | Verbose debug logging (also via `--debug` flag) |
@@ -650,7 +659,6 @@ bold.
 | `FP_INSTALL_MODEL` | auto-detected by `is_wsl` | `linux/install.sh`, `linux/uninstall.sh` | `service-user` (native Linux) or `per-user` (WSL). Controls useradd/userdel, root-requirement, PATH integration strategy. |
 | `FP_INVOKING_USER` | unset (passed by PowerShell on Windows) | `linux/install.sh` | Name of the human user the Windows orchestrator resolved. When set, install.sh uses this for `FP_USER` instead of `SUDO_USER`. |
 | `FP_INSTALL_ACTION` | prompted via `fp_prompt_existing_action` | `linux/install.sh`, `40-run-fp-installer.ps1` | `upgrade` / `reinstall` / `fresh` — pre-decided by the Windows wizard or set for non-interactive installs. |
-| `FP_SKIP_COMPOSE_WRITE` | `0` | `linux/install.sh` | Internal flag set by `fp_apply_existing_action` in upgrade mode to skip overwriting the user's `compose.yml`. |
 | `FP_FORCE` | `0` | `linux/uninstall.sh`, `windows/helpers/uninstall.ps1`, `auth.sh` | Skip admin-password authentication (emergency use only — broken Core). |
 | `FP_DATA_DIR` | `$FP_HOME/data` | both installers, `compose.yml` | Database bind-mount source |
 | `FP_GATEWAY_DATA_DIR` | `$FP_HOME/ai-gateway-data` | both installers, `compose.yml` | AI-gateway data bind-mount (knowledge base, conversations). |
@@ -899,12 +907,13 @@ of leaving us guessing.
 
 ### 13. C# `ProcessStartInfo.StandardInput` defaults to CP1252 on Windows
 
-**Symptom:** After enabling AI from the tray, `ai-gateway` crash-loops
-with `UnicodeDecodeError: 'utf-8' codec can't decode byte 0x97 in position 26`
-from Python's `yaml.safe_load` reading `gateway.yaml`.
+**Symptom:** `ai-gateway` crash-loops with `UnicodeDecodeError: 'utf-8'
+codec can't decode byte 0x97 in position 26` from Python's
+`yaml.safe_load` reading `gateway.yaml`, after the file was (re)written
+by a bash script piped from the Windows side.
 
-**Cause:** The tray pipes a bash script (containing a heredoc with
-`gateway.yaml` content) to `wsl.exe -- bash` via
+**Cause:** Piping a bash script (e.g. a heredoc carrying `gateway.yaml`
+content) to `wsl.exe -- bash` via
 `proc.StandardInput.WriteAsync(script)`. .NET's `StandardInput` defaults
 its encoding to `Console.InputEncoding`, which on Windows is the OEM
 codepage — CP1252 on en-US. `U+2014` em-dash in the C# string literal

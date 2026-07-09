@@ -5,8 +5,8 @@
 # using exit codes (not temp file parsing).
 #
 # Exit codes:
-#   0 -- core container is running
-#   1 -- core container not running after retries
+#   0 -- all required containers are running
+#   1 -- a required container not running after retries
 # =============================================================================
 
 [CmdletBinding()]
@@ -43,8 +43,8 @@ if (-not (Test-WslDistroPresent -Name $Distro)) {
 # Check each container using exit codes -- no temp file parsing.
 $containers = @(
     @{ Name = 'falconpulsar-core';       Label = 'Core (database + REST API)'; Required = $true },
-    @{ Name = 'falconpulsar-ui';         Label = 'Web UI';                     Required = $false },
-    @{ Name = 'falconpulsar-ai-gateway'; Label = 'AI Gateway';                 Required = $false }
+    @{ Name = 'falconpulsar-ui';         Label = 'Web UI';                     Required = $true },
+    @{ Name = 'falconpulsar-ai-gateway'; Label = 'AI Gateway';                 Required = $true }
 )
 
 $maxRetries = 6
@@ -104,6 +104,16 @@ if ($uiRc -eq 0) {
     Write-Info '  Web UI: responding on port 8080'
 } else {
     Write-Warn '  Web UI: not responding yet (may still be starting)'
+}
+
+# Check AI Gateway health endpoint
+Write-Info 'Checking AI Gateway health...'
+$gwScript = 'curl -sf http://localhost:7436/health >/dev/null 2>&1'
+$gwRc = Invoke-WslBash -Distro $Distro -Script $gwScript -User root
+if ($gwRc -eq 0) {
+    Write-Info '  AI Gateway: responding on port 7436'
+} else {
+    Write-Warn '  AI Gateway: not responding yet (may still be starting)'
 }
 
 Write-Step 'Health check summary'

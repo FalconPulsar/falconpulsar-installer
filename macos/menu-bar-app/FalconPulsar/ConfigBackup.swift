@@ -325,8 +325,8 @@ enum ConfigBackup {
         let hostName = Host.current().localizedName ?? "unknown"
         let df = ISO8601DateFormatter()
         let manifest: [String: Any] = [
-            "format_version": 1,
-            "falconpulsar_version": "0.1.3",
+            "format_version": Int(formatVersion),
+            "falconpulsar_version": (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "dev",
             "exported_at": df.string(from: Date()),
             "source_host": hostName,
             "source_platform": "macOS"
@@ -370,6 +370,7 @@ enum ConfigBackup {
                     try fm.copyItem(atPath: src, toPath: dst)
                 }
             }
+            sanitizeRestoredEnv()
         }
 
         // Push API data back in dependency order. v2-aware: handles the new
@@ -409,6 +410,28 @@ enum ConfigBackup {
                 req.httpBody = try? JSONSerialization.data(withJSONObject: item)
                 _ = try? syncRequest(req)   // best-effort; ignore individual failures
             }
+        }
+    }
+
+    /// Backups taken before the AI gateway became a mandatory component may
+    /// carry FP_AI_GATEWAY_ENABLED=false in files/.env. The key itself is
+    /// legacy-only (kept for older fp/tray binaries that still read it), so
+    /// rewrite any restored value to "true" — nothing may re-persist a
+    /// disabled state.
+    static func sanitizeRestoredEnv() {
+        let envPath = "\(homeDir)/.env"
+        guard let content = try? String(contentsOfFile: envPath, encoding: .utf8) else { return }
+        var mutated = false
+        let lines = content.components(separatedBy: "\n").map { line -> String in
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("FP_AI_GATEWAY_ENABLED="), trimmed != "FP_AI_GATEWAY_ENABLED=true" {
+                mutated = true
+                return "FP_AI_GATEWAY_ENABLED=true"
+            }
+            return line
+        }
+        if mutated {
+            try? lines.joined(separator: "\n").write(toFile: envPath, atomically: true, encoding: .utf8)
         }
     }
 

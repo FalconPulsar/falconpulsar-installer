@@ -7,7 +7,8 @@
 #
 #   - Stops and removes the docker containers + the falconpulsar bridge network
 #   - Disables the systemd user unit (if installed) and disables linger
-#   - Optionally deletes ${FP_HOME} (compose.yml, .env, data/) — asks first
+#   - Optionally deletes ${FP_HOME} (compose.yml, .env, data/,
+#     ai-gateway-data/) — asks first
 #   - Optionally removes the falconpulsar system user — asks first
 #
 # Does NOT touch:
@@ -225,6 +226,8 @@ FP_UID="$(id -u "$FP_USER")"
 cd / 2>/dev/null
 
 log_step "stopping the stack"
+# --profile ai: legacy compose compat (pre-mandatory-gateway installs gated
+# ai-gateway behind the "ai" profile); no-op on current stacks.
 if [ -f "${FP_HOME}/compose.yml" ]; then
     if [ "$FP_PURGE" -eq 1 ]; then
         # --volumes removes named Docker volumes declared in compose.yml
@@ -243,7 +246,10 @@ log_step "removing Docker images"
 # whole script. GNU xargs does have -r but we use `while read` for parity.
 set +e
 if [ -f "${FP_HOME}/compose.yml" ]; then
-    IMAGES="$(run_as_fp_user "cd '${FP_HOME}' && docker compose config --images" 2>/dev/null | sort -u)"
+    # --profile ai: legacy compose compat — without it, a pre-mandatory-
+    # gateway compose.yml hides the ai-gateway image (~1.6 GB) from the
+    # query and it survives the uninstall. No-op on current stacks.
+    IMAGES="$(run_as_fp_user "cd '${FP_HOME}' && docker compose --profile ai config --images" 2>/dev/null | sort -u)"
     if [ -n "$IMAGES" ]; then
         echo "$IMAGES" | while IFS= read -r img; do
             [ -n "$img" ] && run_as_fp_user "docker rmi -f '$img'" >/dev/null 2>&1
@@ -307,7 +313,7 @@ fi
 # IMPORTANT: rm -rf $FP_HOME is the LAST filesystem operation below.
 # This script may live at $FP_HOME/uninstall.sh; removing $FP_HOME while
 # bash is reading it line-by-line would cause premature EOF.
-if [ "$FP_PURGE" -eq 1 ] || confirm "delete ${FP_HOME} (including the time-series database)?" default-no; then
+if [ "$FP_PURGE" -eq 1 ] || confirm "delete ${FP_HOME} (including the time-series database and AI Gateway data)?" default-no; then
     log_step "removing ${FP_HOME}"
     # Remove child directories first to shrink what the final rm has to do.
     # :? guards against FP_HOME being unset/empty — would otherwise rm /bin.

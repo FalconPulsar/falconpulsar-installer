@@ -8,9 +8,13 @@
 #   Keep data (default):
 #     - Stop and remove containers
 #     - Remove Docker images
-#     - Remove compose.yml and .env
+#     - Remove compose.yml
 #     - Remove the menu bar app + LaunchAgent
 #     - KEEP ~/falconpulsar/data (database preserved)
+#     - KEEP ~/falconpulsar/ai-gateway-data + gateway.yaml (AI conversations,
+#       memory, and gateway config preserved)
+#     - KEEP ~/falconpulsar/.env — FP_GATEWAY_SECRET must outlive the
+#       ai_config.db it encrypts; the installer reuses it on reinstall
 #
 #   Full removal (--purge):
 #     - Everything above, plus:
@@ -161,8 +165,11 @@ if [ -z "$FP_PURGE" ]; then
 What would you like to remove?
 
   1) Keep data — remove containers, images, and app files but
-     KEEP your database at ~/falconpulsar/data. You can reinstall
-     later and your data will be preserved.
+     KEEP your database at ~/falconpulsar/data, your AI data
+     (conversations, memory, gateway config) at
+     ~/falconpulsar/ai-gateway-data, and the credentials in
+     ~/falconpulsar/.env that unlock it. You can reinstall later
+     and your data will be preserved.
 
   2) Remove everything — delete containers, images, database,
      configuration, and all files. This cannot be undone.
@@ -216,6 +223,8 @@ if [ -f "${FP_HOME}/compose.yml" ]; then
     # NB: stderr is INTENTIONALLY surfaced here. Previous versions had
     # `2>/dev/null` which hid the actual error when docker compose failed,
     # so the user saw "Containers stopped" but nothing was actually removed.
+    # --profile ai: legacy compose compat (pre-mandatory-gateway installs
+    # kept ai-gateway behind the "ai" profile); no-op on current stacks.
     if [ "$FP_PURGE" = "1" ]; then
         if ( cd "$FP_HOME" && docker compose --profile ai down --remove-orphans --volumes ); then
             log_info "Containers and named volumes removed"
@@ -241,7 +250,10 @@ log_step "Removing Docker images"
 # after the block so later steps still abort on real errors.
 set +e
 if [ -f "${FP_HOME}/compose.yml" ]; then
-    IMAGES="$( cd "$FP_HOME" && docker compose config --images 2>/dev/null | sort -u )"
+    # --profile ai: legacy compose compat (pre-mandatory-gateway installs);
+    # without it a legacy compose.yml omits the ai-gateway image from the
+    # list. No-op on current stacks.
+    IMAGES="$( cd "$FP_HOME" && docker compose --profile ai config --images 2>/dev/null | sort -u )"
     if [ -n "$IMAGES" ]; then
         echo "$IMAGES" | while IFS= read -r img; do
             [ -n "$img" ] && docker rmi -f "$img" >/dev/null 2>&1
@@ -303,9 +315,10 @@ else
     log_info "No LaunchAgent found"
 fi
 
-# Step 6: Remove installer staging
+# Step 6: Remove installer staging. The install log is NOT removed — it is
+# this very run's audit log ($FP_LOG_FILE), finalized and surfaced to the
+# user at the end of the script.
 rm -rf /tmp/falconpulsar-installer 2>/dev/null || true
-rm -f /tmp/falconpulsar-install.log 2>/dev/null || true
 
 # Step 7 (LAST): stack-directory removal. This deletes this script file
 # itself when running from ~/falconpulsar, so it MUST be the final step --
@@ -354,20 +367,30 @@ if [ "$FP_PURGE" = "1" ]; then
         log_info "Deleted ${FP_HOME} (database removed)"
     fi
 else
+    # ai-gateway-data (AI conversations, memory, knowledge embeddings) and
+    # gateway.yaml (operator-edited config) are user data on par with the
+    # core database — keep-data mode preserves all of them. .env is kept
+    # too (matching the Linux keep semantics): it is 0600, holds no admin
+    # password, and carries FP_GATEWAY_SECRET — the key that encrypts the
+    # provider API keys inside the preserved ai_config.db. Deleting it
+    # would make a reinstall mint a fresh secret and permanently orphan
+    # those keys; the installer carries the credentials forward instead.
     fp_rm_rf "${FP_HOME:?}/compose.yml"
-    fp_rm_rf "${FP_HOME:?}/.env"
     fp_rm_rf "${FP_HOME:?}/.docker"
-    fp_rm_rf "${FP_HOME:?}/ai-gateway-data"
-    fp_rm_rf "${FP_HOME:?}/gateway.yaml"
     fp_rm_rf "${FP_HOME:?}/bin"
     log_info "Application files removed"
     log_info "Database preserved at ${FP_HOME}/data"
+    log_info "AI data preserved at ${FP_HOME}/ai-gateway-data"
+    log_info "Gateway credentials preserved in ${FP_HOME}/.env"
 fi
 
 log_step "Uninstall complete"
 if [ "$FP_PURGE" = "0" ] && [ -d "${FP_HOME}/data" ]; then
     echo ""
     echo "  Your database is preserved at: ${FP_HOME}/data"
+    if [ -d "${FP_HOME}/ai-gateway-data" ]; then
+        echo "  Your AI data is preserved at:  ${FP_HOME}/ai-gateway-data"
+    fi
     echo "  Reinstall FalconPulsar to resume using your existing data."
     echo ""
 fi

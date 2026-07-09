@@ -213,7 +213,12 @@ namespace FalconPulsar.Tray
 
         // ---- Export / Import ----
 
-        public static string FalconPulsarHomeDir => Path.Combine(
+        // Stack directory holding compose.yml/.env/gateway.yaml. The real
+        // files live inside WSL; TrayApp points this at the resolved
+        // \\wsl.localhost\<distro>\<home>\falconpulsar UNC path at startup.
+        // The default below is the legacy Windows-side mirror, kept only as
+        // a fallback for callers that never set it.
+        public static string FalconPulsarHomeDir { get; set; } = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "falconpulsar");
 
         public static async Task ExportAsync(string outputPath, AdminCredentials creds)
@@ -270,10 +275,18 @@ namespace FalconPulsar.Tray
                     }
                 }
 
+                // falconpulsar_version mirrors the assembly version (set at
+                // build time via <Version> in FalconPulsarTray.csproj,
+                // overridden by CI with -p:Version=...), same as the About
+                // panel.
+                var asmVersion = System.Reflection.Assembly
+                    .GetExecutingAssembly()
+                    .GetName()
+                    .Version?.ToString(3) ?? "dev";
                 var manifest = new
                 {
                     format_version = (int)FormatVersion,
-                    falconpulsar_version = "0.1.3",
+                    falconpulsar_version = asmVersion,
                     exported_at = DateTime.UtcNow.ToString("o"),
                     source_host = Environment.MachineName,
                     source_platform = "Windows"
@@ -322,6 +335,33 @@ namespace FalconPulsar.Tray
                         var dst = Path.Combine(FalconPulsarHomeDir, name);
                         if (File.Exists(src))
                             File.Copy(src, dst, overwrite: true);
+                    }
+
+                    // Backups taken by older builds may carry
+                    // FP_AI_GATEWAY_ENABLED=false in their .env. AI
+                    // Capabilities are a mandatory component (the key itself
+                    // survives only for older fp/tray binaries that still
+                    // read it), so force any restored value to true.
+                    var envPath = Path.Combine(FalconPulsarHomeDir, ".env");
+                    if (File.Exists(envPath))
+                    {
+                        var lines = File.ReadAllLines(envPath);
+                        bool changed = false;
+                        for (int i = 0; i < lines.Length; i++)
+                        {
+                            var trimmed = lines[i].TrimStart();
+                            if (trimmed.StartsWith("FP_AI_GATEWAY_ENABLED=") &&
+                                trimmed != "FP_AI_GATEWAY_ENABLED=true")
+                            {
+                                lines[i] = "FP_AI_GATEWAY_ENABLED=true";
+                                changed = true;
+                            }
+                        }
+                        // Write with LF line endings: this .env lives inside
+                        // WSL and is sourced by bash, which would treat the
+                        // CR from WriteAllLines' CRLF as part of every value.
+                        if (changed)
+                            File.WriteAllText(envPath, string.Join("\n", lines) + "\n");
                     }
                 }
 

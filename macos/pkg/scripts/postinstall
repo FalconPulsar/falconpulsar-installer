@@ -15,15 +15,28 @@ set -e
 INSTALL_DIR="/tmp/falconpulsar-installer"
 LOG_FILE="/tmp/falconpulsar-install.log"
 
-# Initialize the log file
-cat > "$LOG_FILE" <<LOGHEADER
+# Initialize the log file fresh with owner-only permissions: install.sh
+# prints the generated admin password into the teed stream below, so the
+# log must be born 0600 (umask 077), never reuse or follow a file another
+# local user pre-planted in world-writable /tmp (noclobber => O_EXCL, which
+# also refuses symlinks), and never sit world-readable even briefly.
+# Ownership moves to the real user once resolved below, so "Open Install
+# Log" still shows the installing user their password.
+# __FP_VERSION__ is replaced with the real release version by build-pkg.sh
+# when it stages this script.
+rm -f "$LOG_FILE"
+(
+    umask 077
+    set -o noclobber
+    cat > "$LOG_FILE" <<LOGHEADER
 ================================================================
   FalconPulsar macOS Installer Log
-  Version: 0.1.0
+  Version: __FP_VERSION__
   Date: $(date '+%Y-%m-%d %H:%M:%S')
 ================================================================
 
 LOGHEADER
+)
 
 log_info() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [info] $1" >> "$LOG_FILE"; }
 log_error() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [error] $1" >> "$LOG_FILE"; }
@@ -38,6 +51,8 @@ REAL_USER="${SUDO_USER:-${USER}}"
 if [ "$REAL_USER" = "root" ]; then
     REAL_USER=$(stat -f '%Su' /dev/console 2>/dev/null || echo "$USER")
 fi
+# Hand the (0600) log to the installing user — it delivers their password.
+chown "$REAL_USER" "$LOG_FILE"
 log_info "Actual user: $REAL_USER"
 log_info "Home: $(eval echo ~$REAL_USER)"
 

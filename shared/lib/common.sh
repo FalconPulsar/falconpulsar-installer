@@ -218,24 +218,17 @@ fp_compose_pull_with_retry() {
     local run_as="${3:-}"
     local attempt=0
     local rc
-    # Honour the AI-gateway profile: without --profile ai, `compose pull`
-    # silently skips the ai-gateway image and the AI install ends up
-    # running against whatever was cached locally (or fails to start
-    # the container at all on a fresh box).
-    local profile=""
-    if grep -q '^FP_AI_GATEWAY_ENABLED=true' "${home}/.env" 2>/dev/null \
-       || [ "${FP_AI_GATEWAY_ENABLED:-}" = "true" ]; then
-        profile="--profile ai"
-    fi
     while [ "$attempt" -lt "$attempts" ]; do
         attempt=$((attempt + 1))
+        # `rc=0; ( ... ) || rc=$?` keeps a failed attempt from tripping
+        # errexit — callers run under `set -o errexit`, and a bare
+        # subshell exiting non-zero would abort the whole script before
+        # the retry loop ever gets a second attempt.
+        rc=0
         if [ -n "$run_as" ]; then
-            ( sudo -u "$run_as" -g docker -H bash -c "cd '${home}' && docker compose ${profile} pull" )
-            rc=$?
+            ( sudo -u "$run_as" -g docker -H bash -c "cd '${home}' && docker compose pull" ) || rc=$?
         else
-            # shellcheck disable=SC2086
-            ( cd "$home" && docker compose $profile pull )
-            rc=$?
+            ( cd "$home" && docker compose pull ) || rc=$?
         fi
         if [ "$rc" = 0 ]; then
             return 0

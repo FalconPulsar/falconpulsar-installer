@@ -8,7 +8,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -160,22 +159,6 @@ func EnsureGatewaySecret() error {
 	return SetEnvValue("FP_GATEWAY_SECRET", hex.EncodeToString(buf))
 }
 
-// AIGatewayEnabled reads FP_AI_GATEWAY_ENABLED from ~/falconpulsar/.env.
-func AIGatewayEnabled() bool {
-	data, err := os.ReadFile(filepath.Join(HomeDir(), ".env"))
-	if err != nil {
-		return false
-	}
-	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "FP_AI_GATEWAY_ENABLED=") {
-			val := strings.TrimPrefix(line, "FP_AI_GATEWAY_ENABLED=")
-			return val == "true" || val == "1" || val == "yes"
-		}
-	}
-	return true // default: enabled if flag is absent (backward compat)
-}
-
 // envFileMode returns the existing .env file mode, or 0600 if the file
 // doesn't exist / can't be stat'd. We preserve whatever the installer set
 // (Linux: 0640 falconpulsar:docker, macOS: 0600 user:staff) rather than
@@ -210,25 +193,9 @@ func SetEnvValue(key, value string) error {
 	return os.WriteFile(envPath, []byte(strings.Join(lines, "\n")), envFileMode(envPath))
 }
 
-// RemoveEnvValue strips the given key's line from ~/falconpulsar/.env.
-func RemoveEnvValue(key string) error {
-	envPath := filepath.Join(HomeDir(), ".env")
-	data, err := os.ReadFile(envPath)
-	if err != nil {
-		return err
-	}
-	var kept []string
-	for _, line := range strings.Split(string(data), "\n") {
-		if !strings.HasPrefix(strings.TrimSpace(line), key+"=") {
-			kept = append(kept, line)
-		}
-	}
-	return os.WriteFile(envPath, []byte(strings.Join(kept, "\n")), envFileMode(envPath))
-}
-
 // parseEnvFile reads .env into a map. Doesn't interpret quoting — good enough
-// for the few keys we care about in AI gateway teardown (FP_REGISTRY,
-// FP_VERSION, FP_DATA_DIR, FP_GATEWAY_DATA_DIR).
+// for the few keys we care about (FP_REGISTRY, FP_VERSION, FP_GATEWAY_PORT,
+// FP_UPDATE_MODE).
 func parseEnvFile() map[string]string {
 	result := make(map[string]string)
 	data, err := os.ReadFile(filepath.Join(HomeDir(), ".env"))
@@ -384,205 +351,20 @@ func GetComposeVersion(ctx context.Context) string {
 	return "v" + v
 }
 
-// SurgicalDisableAI stops and removes the AI gateway container + image ONLY.
-// NEVER runs `compose down -v` because that would stop core + ui too.
-//
-// IMPORTANT: deliberately NON-DESTRUCTIVE. The gateway data directory now
-// holds far more than AI chat artifacts — watches.db (standing monitoring),
-// conversations.db (incl. persisted FPQ/command history), ai_config.db
-// (encrypted provider keys), and user memory. The data dir, gateway.yaml,
-// and FP_API_KEY are all preserved so a later re-enable restores
-// everything. Destructive cleanup lives in PurgeAIData (exposed as
-// `fp ai purge`) behind an explicit confirmation.
-//
-// Matches the macOS menu-bar and Windows tray surgical flow exactly.
-func SurgicalDisableAI(ctx context.Context, out io.Writer) error {
-	env := parseEnvFile()
-
-	write := func(s string) {
-		if out != nil {
-			_, _ = io.WriteString(out, s)
-		}
-	}
-
-	write("[disable-ai] stopping and removing ai-gateway container (core/ui untouched)…\n")
-	cmd := exec.CommandContext(ctx, dockerPath(), "compose", "--profile", "ai",
-		"rm", "-f", "-s", "ai-gateway")
-	cmd.Dir = HomeDir()
-	cmd.Stdout = out
-	cmd.Stderr = out
-	_ = cmd.Run()
-
-	// Image (disk reclaim — safe, re-pulled on enable)
-	registry := env["FP_REGISTRY"]
-	if registry == "" {
-		registry = "falconpulsar"
-	}
-	version := env["FP_VERSION"]
-	if version == "" {
-		version = "latest"
-	}
-	imageRef := fmt.Sprintf("%s/ai-gateway:%s", registry, version)
-	write(fmt.Sprintf("[disable-ai] removing AI gateway image: %s\n", imageRef))
-	rmi := exec.CommandContext(ctx, dockerPath(), "rmi", "-f", imageRef)
-	rmi.Stdout = out
-	rmi.Stderr = out
-	_ = rmi.Run()
-
-	write("[disable-ai] done. Watches, conversations, AI configuration, and credentials were preserved and will return on re-enable. Core and UI were not touched.\n")
-	return nil
-}
-
-// PurgeAIData performs the DESTRUCTIVE gateway cleanup that disable used to
-// do implicitly: removes the bind-mount data directory (standing watches,
-// conversation history, AI configuration incl. encrypted provider keys,
-// user memory), gateway.yaml, and FP_API_KEY from .env. Callers MUST get
-// explicit user confirmation first (`fp ai purge` does).
-func PurgeAIData(ctx context.Context, out io.Writer) error {
-	env := parseEnvFile()
-
-	write := func(s string) {
-		if out != nil {
-			_, _ = io.WriteString(out, s)
-		}
-	}
-
-	// Make sure the container is gone first (it holds the bind-mount open).
-	cmd := exec.CommandContext(ctx, dockerPath(), "compose", "--profile", "ai",
-		"rm", "-f", "-s", "-v", "ai-gateway")
-	cmd.Dir = HomeDir()
-	cmd.Stdout = out
-	cmd.Stderr = out
-	_ = cmd.Run()
-
-	// Bind-mount data directory — respect .env overrides.
-	dataDir := env["FP_GATEWAY_DATA_DIR"]
-	if dataDir == "" {
-		base := env["FP_DATA_DIR"]
-		if base == "" {
-			base = filepath.Join(HomeDir(), "data")
-		}
-		dataDir = filepath.Join(base, "..", "ai-gateway-data")
-	}
-	if dataDir != "" && dataDir != "/" {
-		if st, err := os.Stat(dataDir); err == nil && st.IsDir() {
-			write(fmt.Sprintf("[purge-ai] removing AI gateway data directory: %s\n", dataDir))
-			_ = os.RemoveAll(dataDir)
-		}
-	}
-
-	write("[purge-ai] removing gateway.yaml…\n")
-	_ = os.Remove(filepath.Join(HomeDir(), "gateway.yaml"))
-
-	write("[purge-ai] clearing FP_API_KEY from .env…\n")
-	_ = RemoveEnvValue("FP_API_KEY")
-
-	write("[purge-ai] purge complete. Core and UI were not touched.\n")
-	return nil
-}
-
-// WipeGatewaySeedDefaults removes the AI Gateway image's self-seeded
-// provider + model rows so the user lands on a clean AI configuration.
-//
-// The gateway image (built from the separate falconpulsar/ai-gateway repo)
-// inserts 3 default providers (Anthropic, Grok, Ollama) and 6 default
-// models (Claude Opus 4.6 / Sonnet 4.5, Grok 4, Llama 3.1 8B, Mistral 7B,
-// Gemma 2 9B) into its SQLite on first boot. On a fresh install where no
-// LLM provider is configured, those entries are misleading: the toolbar
-// shows "Llama 3.1 8B" as the active model, the Models page lists 6
-// "Offline" entries, and users reasonably assume FalconPulsar shipped them.
-//
-// Until falconpulsar/ai-gateway gates seeding (or stops doing it), this
-// helper runs after every "enable AI" action — install-time, fp ai
-// enable, TUI Enable, tray Enable — and DELETEs the seeded rows.
-//
-// Mirrors fp_wipe_gateway_seed_defaults in shared/lib/bootstrap.sh; both
-// implementations must do exactly the same SQL so the post-install state
-// is identical regardless of which surface enabled AI.
-//
-// Non-fatal: any failure logs to `out` and returns nil. We never fail an
-// otherwise-successful enable just because the cosmetic cleanup didn't
-// take.
-//
-// TODO(falconpulsar/ai-gateway): land the upstream fix and remove this
-// function plus its call sites in cli.go and tui.go.
-func WipeGatewaySeedDefaults(ctx context.Context, out io.Writer) error {
-	write := func(s string) {
-		if out != nil {
-			_, _ = io.WriteString(out, s)
-		}
-	}
-
-	port := parseEnvFile()["FP_GATEWAY_PORT"]
-	if port == "" {
-		port = "7436"
-	}
-	healthURL := fmt.Sprintf("http://127.0.0.1:%s/health", port)
-	container := "falconpulsar-ai-gateway"
-
-	waitHealthy := func(maxSeconds int) bool {
-		deadline := time.Now().Add(time.Duration(maxSeconds) * time.Second)
-		client := &http.Client{Timeout: 3 * time.Second}
-		for time.Now().Before(deadline) {
-			req, _ := http.NewRequestWithContext(ctx, "GET", healthURL, nil)
-			if resp, err := client.Do(req); err == nil {
-				_ = resp.Body.Close()
-				if resp.StatusCode == 200 {
-					return true
-				}
-			}
-			select {
-			case <-ctx.Done():
-				return false
-			case <-time.After(2 * time.Second):
-			}
-		}
-		return false
-	}
-
-	write("[wipe-seed] waiting for AI Gateway to finish init…\n")
-	if !waitHealthy(90) {
-		write("[wipe-seed] WARN: gateway not healthy in 90s — leaving seed defaults in place\n")
-		return nil
-	}
-
-	write("[wipe-seed] removing self-seeded providers and models…\n")
-	cmd := exec.CommandContext(ctx, dockerPath(), "exec", container,
-		"sqlite3", "/app/data/ai_config.db",
-		"DELETE FROM model_definitions; DELETE FROM provider_configs;")
-	if err := cmd.Run(); err != nil {
-		write(fmt.Sprintf("[wipe-seed] WARN: docker exec sqlite3 failed (%v) — install continues\n", err))
-		return nil
-	}
-
-	write("[wipe-seed] restarting AI Gateway so in-memory state matches DB…\n")
-	restart := exec.CommandContext(ctx, dockerPath(), "restart", container)
-	_ = restart.Run()
-
-	if waitHealthy(60) {
-		write("[wipe-seed] AI Gateway clean: 0 providers, 0 models\n")
-	} else {
-		write("[wipe-seed] WARN: gateway slow to come back after wipe — UI may show stale models for a moment\n")
-	}
-	return nil
-}
-
-// composeProfileArgs returns the --profile flags needed based on .env state.
+// composeProfileArgs returns the --profile flags for every compose call.
+// Legacy compose compat (pre-mandatory-gateway installs): fp runs against
+// the *installed* compose.yml, which on older stacks still gates ai-gateway
+// behind the "ai" profile. Unknown profile names are a no-op in Compose v2,
+// so passing the flag unconditionally is harmless on current stacks.
 func composeProfileArgs() []string {
-	if AIGatewayEnabled() {
-		return []string{"--profile", "ai"}
-	}
-	return nil
+	return []string{"--profile", "ai"}
 }
 
-// Compose runs `docker compose <args...>` in the stack directory. Automatically
-// adds --profile ai when FP_AI_GATEWAY_ENABLED=true in .env. Also ensures
-// gateway.yaml exists as a file before any compose up to prevent Docker from
-// creating a directory at that path.
+// Compose runs `docker compose <args...>` in the stack directory. Also ensures
+// gateway.yaml exists as a file before any compose command to prevent Docker
+// from creating a directory at that path.
 func Compose(ctx context.Context, stdout, stderr io.Writer, args ...string) error {
-	if AIGatewayEnabled() {
-		EnsureGatewayConfig()
-	}
+	EnsureGatewayConfig()
 	base := []string{"compose"}
 	base = append(base, composeProfileArgs()...)
 	base = append(base, args...)
@@ -605,18 +387,20 @@ type Status struct {
 	APIHealthy bool
 }
 
-// Aggregate returns a single word describing overall status.
-// When AI Gateway is disabled, it's excluded from the tally —
-// Core + UI running = "running" (green), not "partial" (yellow).
+// Aggregate returns a single word describing overall status. All three
+// services (core, ui, ai-gateway) plus a healthy REST API are required
+// for "running" — a stopped gateway yields "partial".
 func (s Status) Aggregate() string {
-	aiEnabled := AIGatewayEnabled()
-	expected := 2 // core + ui
+	expected := 3 // core + ui + ai-gateway
 	running := 0
-	if s.Core { running++ }
-	if s.UI { running++ }
-	if aiEnabled {
-		expected++
-		if s.Gateway { running++ }
+	if s.Core {
+		running++
+	}
+	if s.UI {
+		running++
+	}
+	if s.Gateway {
+		running++
 	}
 	if running == expected && s.APIHealthy {
 		return "running"
@@ -694,31 +478,75 @@ func EnsureGatewayConfig() {
 	}
 }
 
-const defaultGatewayYAML = `# FalconPulsar AI Gateway — default configuration.
-# Providers, API keys, and models are managed via the Web UI
-# (Settings > AI Configuration), not this file.
+// defaultGatewayYAML is the embedded fallback written when no on-disk
+// shared/gateway.yaml candidate resolves. It MUST track
+// shared/gateway.yaml verbatim (go:embed can't reach outside the console
+// module, so the copy is manual) — update both together.
+const defaultGatewayYAML = `# FalconPulsar AI Gateway — Standard Configuration
+#
+# This is the in-tree default configuration shipped with the gateway.
+# Server-level settings only. Environment variables override these
+# settings. Providers, API keys, models, and tuning are managed via
+# the UI (stored in SQLite).
+#
+# *** NEVER PUT REAL CREDENTIALS IN THIS FILE. ***
+# Credentials are read exclusively from environment variables at
+# startup, via the Settings/EnvOverrides mechanism in
+# fp_ai_gateway/config.py. The fields below intentionally have no
+# defaults — if neither FP_API_KEY nor (FP_USERNAME + FP_PASSWORD)
+# is set in the environment, the gateway will fail to authenticate
+# against Core on its first request. (A startup-time precondition
+# check would be a sensible follow-up; not added here to keep this
+# change scoped to credential removal.)
+
 server:
   host: "0.0.0.0"
   port: 7436
+
 falconpulsar:
-  url: "http://localhost:7433"
+  # Core's DNS name on the compose network. Note: the standard install
+  # also injects FALCONPULSAR_URL via compose.yml, and that environment
+  # variable takes precedence over this field — repoint Core there (or
+  # in the environment), not here.
+  url: "http://core:7433"
+  # Authentication is provided exclusively via environment variables:
+  #   FP_API_KEY                   — bearer/API token (preferred)
+  #   FP_USERNAME + FP_PASSWORD    — username/password fallback
+  # Do not add literal credentials to this file. See the gateway
+  # startup script or your container/orchestration secrets store.
   timeout: 30
+
+# Context configuration
 context:
-  schema_cache_ttl: 300
+  schema_cache_ttl: 300  # Cache schema for 5 minutes
   max_conversation_tokens: 100000
   include_fpq_examples: true
+
+# Knowledge base (RAG)
 knowledge:
-  enabled: true
   path: "./knowledge"
+  embedding_model: "snowflake/snowflake-arctic-embed-l"
+  vector_store: "chroma"
+  data_path: "./data/chromadb"
+
+# Conversation memory
 memory:
-  enabled: true
   db_path: "./data/conversations.db"
   max_messages: 100
+
+# User adaptive memory (per-user learning)
 user_memory:
-  enabled: true
   db_path: "./data/user_memory.db"
+  score_half_life_hours: 168
+  max_context_series: 8
+  max_context_assets: 5
+  max_context_tools: 5
+  decay_interval_minutes: 60
+
+# Logging
 logging:
   level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 `
 
 // OpenFolder opens a local directory in the platform file manager.

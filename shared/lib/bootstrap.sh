@@ -73,6 +73,28 @@ fp_wait_for_api_ready() {
     die "timed out waiting for REST API on port ${port}"
 }
 
+# Wait for the AI Gateway /health endpoint to return 200. Times out after
+# 3 minutes. Unlike fp_wait_for_api_ready this returns non-zero instead of
+# dying, so the caller can attach its own remediation hint (typically a
+# pointer at `docker logs falconpulsar-ai-gateway`). Installers use it as
+# a hard gate after `docker compose up -d`; fp_wipe_gateway_seed_defaults
+# runs after this gate in the install flow.
+fp_wait_for_gateway_ready() {
+    local port="${1:-${FP_GATEWAY_PORT:-7436}}"
+    local deadline=$(( $(date +%s) + 180 ))
+
+    log_info "waiting for AI Gateway on port ${port} to accept requests..."
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        if curl -fsS -o /dev/null "http://127.0.0.1:${port}/health" 2>/dev/null; then
+            log_success "AI Gateway is responding"
+            return 0
+        fi
+        sleep 2
+    done
+    log_error "timed out waiting for the AI Gateway on port ${port}"
+    return 1
+}
+
 # Extract a quoted string field from a flat JSON object.
 # Usage: _fp_json_str '<json>' <field-name>
 # Returns the value of "field":"value" or empty string. Not a real JSON
@@ -185,7 +207,10 @@ fp_bootstrap_gateway_token() {
 
     umask 077
     {
-        cat "$env_file"
+        # Drop the incomplete-setup marker left by an unattended upgrade
+        # that skipped the mint (see fp_try_upgrade_fastpath) — the token
+        # appended below is exactly what it was waiting for.
+        sed '/^FP_AI_SETUP_INCOMPLETE=/d' "$env_file"
         printf 'FP_API_KEY=%s\n' "$token"
         if [ -n "$gateway_secret" ]; then
             printf 'FP_GATEWAY_SECRET=%s\n' "$gateway_secret"
@@ -203,7 +228,7 @@ fp_bootstrap_gateway_token() {
 }
 
 # ── AI Gateway: wipe self-seeded providers + models ─────────────────────────
-# fp_wipe_gateway_seed_defaults [container_name]
+# fp_wipe_gateway_seed_defaults [container_name] [port]
 #
 # The AI Gateway image self-seeds 3 default providers (Anthropic, Grok,
 # Ollama) and 6 default models (Claude Opus 4.6, Claude Sonnet 4.5, Grok 4,
@@ -227,12 +252,24 @@ fp_bootstrap_gateway_token() {
 # Order of operations:
 #   1. Poll http://127.0.0.1:${FP_GATEWAY_PORT}/health until 200 OK
 #      (max 90 s). Without the wait, the gateway's seed INSERTs would
-#      run AFTER our DELETEs and undo them.
-#   2. docker exec into the container, DELETE FROM both tables.
-#   3. docker restart the container — the gateway loads provider/model
+#      run AFTER our DELETEs and undo them. Callers invoke this after
+#      the fp_wait_for_gateway_ready hard gate, so this inner poll
+#      normally succeeds on the first probe.
+#   2. Wait (max 300 s) while /health reports components.knowledge as
+#      "warming". Newer gateway images bind their port and answer
+#      /health BEFORE the background knowledge warm-up (model download
+#      + knowledge seeding) finishes, so the restart in step 4 could
+#      otherwise land mid-warm-up. An absent knowledge field means an
+#      older gateway image that only answers /health once fully
+#      initialised — proceed immediately, same as "ready"/"degraded".
+#      On deadline expiry we warn and proceed anyway: the gateway
+#      tolerates a mid-warm-up restart (persistent model cache +
+#      top-up seeding make warm-up convergent across restarts).
+#   3. docker exec into the container, DELETE FROM both tables.
+#   4. docker restart the container — the gateway loads provider/model
 #      state into memory at startup, so without a restart the API would
 #      keep serving the stale in-memory list.
-#   4. Re-poll /health so subsequent install steps see a healthy stack.
+#   5. Re-poll /health so subsequent install steps see a healthy stack.
 #
 # Non-fatal: any failure logs a warning and returns 0. We never abort an
 # otherwise-successful install just because the cosmetic cleanup didn't
@@ -240,11 +277,10 @@ fp_bootstrap_gateway_token() {
 #
 # TODO(falconpulsar/ai-gateway): land the upstream fix (skip seeding by
 # default, or gate with an env var) and remove this whole function plus
-# its 5 call sites (linux + macOS install.sh, fp CLI ai enable, macOS
-# menu-bar EnableAI, Windows tray EnableAI).
+# its call sites (linux + macOS install.sh, shared upgrade fast-path).
 fp_wipe_gateway_seed_defaults() {
     local container="${1:-falconpulsar-ai-gateway}"
-    local port="${FP_GATEWAY_PORT:-7436}"
+    local port="${2:-${FP_GATEWAY_PORT:-7436}}"
     local deadline
 
     deadline=$(( $(date +%s) + 90 ))
@@ -258,6 +294,23 @@ fp_wipe_gateway_seed_defaults() {
     if ! curl -fsS -o /dev/null "http://127.0.0.1:${port}/health" 2>/dev/null; then
         log_warn "AI Gateway did not become healthy in 90s — leaving seed defaults in place"
         return 0
+    fi
+
+    # Hold the restart below while the gateway's background knowledge
+    # warm-up is still running (components.knowledge == "warming" in the
+    # /health body). Older images without the field fall straight through.
+    deadline=$(( $(date +%s) + 300 ))
+    log_info "checking AI Gateway knowledge warm-up state before wiping seed defaults"
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        if ! curl -fsS "http://127.0.0.1:${port}/health" 2>/dev/null | \
+                grep -q '"knowledge"[[:space:]]*:[[:space:]]*"warming"'; then
+            break
+        fi
+        sleep 5
+    done
+    if curl -fsS "http://127.0.0.1:${port}/health" 2>/dev/null | \
+            grep -q '"knowledge"[[:space:]]*:[[:space:]]*"warming"'; then
+        log_warn "AI Gateway knowledge warm-up still running after 300s — proceeding anyway (model cache + top-up seeding keep the restart safe)"
     fi
 
     log_info "removing AI Gateway's self-seeded providers and models"

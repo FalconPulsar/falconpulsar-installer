@@ -72,8 +72,9 @@ jobs:
 
       - name: Validate shared/compose.yml
         # Use docker compose config which fully parses + validates
-        # interpolation. We pass dummy values for the required env vars so
-        # the file actually parses; this is a syntax check, not a runtime test.
+        # interpolation across all three services (core, ui, ai-gateway).
+        # We pass dummy values for the required env vars so the file
+        # actually parses; this is a syntax check, not a runtime test.
         run: |
           cd shared
           FP_ADMIN_PASS=ci-validation \

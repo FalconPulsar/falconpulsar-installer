@@ -135,13 +135,18 @@ build automatically.
 ## 3. Cutting a release
 
 1. Bump the version. The single source of truth is the `VERSION` file at
-   the repo root; every other site (Go const, Swift menu titles, C# tray
-   header, `installer.iss` `#define`, manifest `falconpulsar_version`
-   keys) is rewritten by `scripts/sync-version.sh`. To bump:
+   the repo root; every remaining hardcoded site (the Go `Version` var in
+   `console/internal/cli/cli.go`, the Go backup-manifest
+   `falconpulsar_version` key in `console/internal/configbackup/backup.go`,
+   and the `installer.iss` `#define MyAppVersion`) is rewritten by
+   `scripts/sync-version.sh`. The macOS menu-bar app and the Windows tray
+   app (menu headers and backup manifests) take their version from
+   build-time stamping (`CFBundleShortVersionString` / assembly version),
+   so they need no rewrite. To bump:
 
        echo 0.2.0 > VERSION
        scripts/sync-version.sh
-       git add VERSION console macos windows
+       git add VERSION console windows
        git commit -m "Release v0.2.0"
 
    `scripts/sync-version.sh --check` is also wired up for CI — it exits

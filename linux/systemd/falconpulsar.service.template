@@ -37,11 +37,11 @@ WorkingDirectory=@@FP_HOME@@
 Environment=FP_HOME=@@FP_HOME@@
 
 # Delegate to the fp CLI rather than calling `docker compose` directly.
-# fp reads .env's FP_AI_GATEWAY_ENABLED and automatically appends
-# `--profile ai` when needed (see actions.go:composeProfileArgs). Without
-# this indirection every systemctl restart silently dropped the AI
-# gateway container because the bare `docker compose` doesn't activate
-# the "ai" profile. The fp binary lives in @@FP_HOME@@/bin/fp; it is
+# fp owns the compose invocation details, including `--profile ai` for
+# legacy compose files from pre-mandatory-gateway installs (a no-op on
+# current stacks — see actions.go:composeProfileArgs), so every
+# systemctl start/restart brings up the full stack: core, ui and
+# ai-gateway. The fp binary lives in @@FP_HOME@@/bin/fp; it is
 # installed by linux/install.sh's step 7 well before this unit is
 # enabled, so the path is always populated by the time systemd runs it.
 ExecStart=@@FP_HOME@@/bin/fp start

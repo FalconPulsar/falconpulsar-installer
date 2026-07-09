@@ -48,7 +48,7 @@ curl -fsSL https://get.falconpulsar.com/linux | sudo bash -s -- uninstall
 
 **GUI installer (recommended):** download
 **[FalconPulsar-Setup.dmg](https://get.falconpulsar.com/macos)**, open it,
-drag the `.app` into `/Applications`, and run it. Requires macOS 13 Ventura
+drag the `.app` into `/Applications`, and run it. Requires macOS 14 Sonoma
 or newer, Apple Silicon or Intel, and a container runtime already installed
 (Docker Desktop, Colima, OrbStack, or Rancher Desktop — the installer
 doesn't modify your Mac's system.)
@@ -88,7 +88,7 @@ Full matrix (OS versions, kernel requirements, architecture notes) is in
 End to end, all three installers do the same six things:
 
 1. **Check prerequisites** — OS version, RAM, disk, free ports
-   (`8080`, `7433`, `7434`, `7436`), virtualization support.
+   (`8080`, `7433`, `7434`, `7435`, `7436`), virtualization support.
 2. **Install / verify a container engine** — Docker Engine via
    `get.docker.com` on Linux, WSL2 + Docker inside Ubuntu on Windows.
    macOS expects a container runtime to already be present.
@@ -103,14 +103,13 @@ End to end, all three installers do the same six things:
 4. **Generate the production stack files** — `compose.yml`, `.env`, and
    `gateway.yaml` — in the stack directory.
 5. **Pull and start the containers** — `core`, `ui`, and `ai-gateway`
-   (the FalconPulsar Gateway — installed by default; it powers Workspace
-   commands, standing watches, and the AI assistant. Operators on
-   constrained edge hardware can opt out at install or with
-   `fp ai disable`; AI models themselves stay optional either way and are
-   configured in ConfigHub). Wait for healthchecks to pass.
+   (the FalconPulsar Gateway — a required component on every platform;
+   it powers Workspace commands, standing watches, and the AI assistant.
+   LLM providers and models are optional and configured post-install in
+   ConfigHub). Wait for healthchecks to pass.
 6. **Register lifecycle management** — optional systemd user unit on
-   Linux, `restart: always` on macOS, Start Menu shortcuts + system tray
-   auto-start on Windows.
+   Linux, `restart: unless-stopped` on macOS, Start Menu shortcuts +
+   system tray auto-start on Windows.
 
 The installer requires `sudo` / admin briefly (package install,
 user-creation on Linux, WSL configuration on Windows). Ongoing operation

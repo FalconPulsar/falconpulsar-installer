@@ -8,7 +8,7 @@
 # The .pkg contains:
 #   - The bash installer (macos/install.sh, macos/uninstall.sh)
 #   - Shared libraries (shared/lib/*.sh)
-#   - Shared compose.yml + init schema
+#   - Shared compose.yml + nginx.conf + gateway.yaml + init schema
 #   - postinstall script that runs install.sh non-interactively
 #
 # The .pkg GUI shows:
@@ -35,11 +35,16 @@ mkdir -p "$STAGING_DIR/falconpulsar-installer/macos" \
          "$STAGING_DIR/falconpulsar-installer/shared/lib" \
          "$OUTPUT_DIR"
 
-# Stage the installer files (same layout the postinstall expects)
-cp "$REPO_ROOT/macos/install.sh"    "$STAGING_DIR/falconpulsar-installer/macos/"
-cp "$REPO_ROOT/macos/uninstall.sh"  "$STAGING_DIR/falconpulsar-installer/macos/"
-cp "$REPO_ROOT/shared/compose.yml"  "$STAGING_DIR/falconpulsar-installer/shared/"
-cp "$REPO_ROOT/shared/lib/"*.sh     "$STAGING_DIR/falconpulsar-installer/shared/lib/"
+# Stage the installer files (same layout the postinstall expects).
+# nginx.conf and gateway.yaml are hard requirements of install.sh — the ui
+# and ai-gateway containers bind-mount them, so a pkg built without them
+# produces an install that dies at the stack-file step.
+cp "$REPO_ROOT/macos/install.sh"     "$STAGING_DIR/falconpulsar-installer/macos/"
+cp "$REPO_ROOT/macos/uninstall.sh"   "$STAGING_DIR/falconpulsar-installer/macos/"
+cp "$REPO_ROOT/shared/compose.yml"   "$STAGING_DIR/falconpulsar-installer/shared/"
+cp "$REPO_ROOT/shared/nginx.conf"    "$STAGING_DIR/falconpulsar-installer/shared/"
+cp "$REPO_ROOT/shared/gateway.yaml"  "$STAGING_DIR/falconpulsar-installer/shared/"
+cp "$REPO_ROOT/shared/lib/"*.sh      "$STAGING_DIR/falconpulsar-installer/shared/lib/"
 if [ -f "$REPO_ROOT/shared/init.example.json" ]; then
     cp "$REPO_ROOT/shared/init.example.json" "$STAGING_DIR/falconpulsar-installer/shared/"
 fi
@@ -47,8 +52,14 @@ fi
 chmod +x "$STAGING_DIR/falconpulsar-installer/macos/"*.sh
 chmod +x "$STAGING_DIR/falconpulsar-installer/shared/lib/"*.sh
 
-# Ensure postinstall is executable
-chmod +x "$SCRIPT_DIR/scripts/postinstall"
+# Stage the pkg scripts separately (NOT under $STAGING_DIR, which is the
+# pkgbuild payload root) so the real release version can be stamped into
+# postinstall's log header in place of the __FP_VERSION__ placeholder.
+SCRIPTS_STAGING="$SCRIPT_DIR/scripts-staging"
+rm -rf "$SCRIPTS_STAGING"
+mkdir -p "$SCRIPTS_STAGING"
+sed "s/__FP_VERSION__/$VERSION/g" "$SCRIPT_DIR/scripts/postinstall" > "$SCRIPTS_STAGING/postinstall"
+chmod +x "$SCRIPTS_STAGING/postinstall"
 
 # Step 1: Build the component package
 # The payload goes to /tmp/falconpulsar-installer (temporary staging).
@@ -58,7 +69,7 @@ pkgbuild \
     --version "$VERSION" \
     --root "$STAGING_DIR" \
     --install-location "/tmp" \
-    --scripts "$SCRIPT_DIR/scripts" \
+    --scripts "$SCRIPTS_STAGING" \
     "$OUTPUT_DIR/FalconPulsar-component.pkg"
 
 # Step 2: Create the distribution XML for productbuild
@@ -97,7 +108,7 @@ cp "$OUTPUT_DIR/FalconPulsar-Setup-v${VERSION}.pkg" "$OUTPUT_DIR/FalconPulsar-Se
 
 # Clean up intermediate files
 rm -f "$OUTPUT_DIR/FalconPulsar-component.pkg" "$OUTPUT_DIR/distribution.xml"
-rm -rf "$STAGING_DIR"
+rm -rf "$STAGING_DIR" "$SCRIPTS_STAGING"
 
 echo ""
 echo "Built:"

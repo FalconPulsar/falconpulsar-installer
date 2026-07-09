@@ -260,19 +260,21 @@ fp_apply_existing_action() {
     local home="$1"
     case "${FP_INSTALL_ACTION:-}" in
         upgrade)
-            log_info "Upgrade in place — keeping existing compose.yml, .env, and data"
-            # Tell the installer to skip overwriting files that already exist.
-            export FP_SKIP_COMPOSE_WRITE=1
+            log_info "Upgrade in place — keeping existing data and settings"
             ;;
         reinstall)
             log_info "Reinstall — stopping containers, rewriting stack files, preserving data"
             if [ -f "${home}/compose.yml" ]; then
+                # --profile ai: legacy compose compat (pre-mandatory-gateway
+                # installs gated the gateway behind a profile); no-op on
+                # current stacks.
                 ( cd "$home" && docker compose --profile ai down 2>/dev/null ) || true
             fi
             ;;
         fresh)
             log_info "Fresh install — removing everything"
             if [ -f "${home}/compose.yml" ]; then
+                # --profile ai: legacy compose compat, see above.
                 ( cd "$home" && docker compose --profile ai down --remove-orphans --volumes 2>/dev/null ) || true
             fi
             # Best-effort image + orphan volume cleanup.
@@ -309,8 +311,14 @@ fp_apply_existing_action() {
 }
 
 # Upgrade fast-path: when the user chose "upgrade" AND the existing compose.yml
-# is intact, skip the full install and just pull+recreate. Returns 0 if it
-# completed the upgrade (caller should exit success); 1 if not applicable.
+# is intact, skip the full install and just migrate+pull+recreate. Returns 0 if
+# it completed the upgrade (caller should exit success); 1 if not applicable.
+#
+# Besides pulling images, the fast-path migrates legacy installs to the
+# mandatory AI Gateway: it refreshes the product-managed stack files
+# (compose.yml, nginx.conf), provisions gateway.yaml and the gateway
+# secrets when missing (existing secrets are always carried forward,
+# never regenerated), and hard-gates on the gateway's health endpoint.
 #
 # Re-verifies registry access before pulling so expired credentials surface
 # as a clean re-auth prompt rather than as a generic pull failure several
@@ -337,6 +345,120 @@ fp_try_upgrade_fastpath() {
         fi
     fi
 
+    # ── Stack-file migration ────────────────────────────────────────────
+    # compose.yml and nginx.conf are product-managed: re-copy the bundled
+    # versions so the upgraded stack matches the images being pulled (in
+    # particular, legacy compose.yml files gated ai-gateway behind the
+    # retired "ai" compose profile). gateway.yaml is user-editable, so it
+    # is only provisioned when missing. REPO_ROOT is set by the
+    # install.sh entry points that source this file.
+    log_step "Upgrade in place: refreshing stack files"
+    local shared_dir="${REPO_ROOT:-}/shared"
+    if [ -f "${shared_dir}/compose.yml" ]; then
+        # Preserve the stack files' ownership across the copy — on Linux
+        # the installer runs as root but the stack dir belongs to the
+        # falconpulsar user. stat flags differ between GNU and BSD.
+        local stack_owner
+        stack_owner=$(stat -c '%U:%G' "${home}/compose.yml" 2>/dev/null || stat -f '%Su:%Sg' "${home}/compose.yml" 2>/dev/null || echo "")
+        cp "${shared_dir}/compose.yml" "${home}/compose.yml" \
+            || die "could not refresh ${home}/compose.yml"
+        if [ -f "${shared_dir}/nginx.conf" ]; then
+            cp "${shared_dir}/nginx.conf" "${home}/nginx.conf" \
+                || die "could not refresh ${home}/nginx.conf"
+        fi
+        if [ ! -f "${home}/gateway.yaml" ] && [ -f "${shared_dir}/gateway.yaml" ]; then
+            # tr instead of cp: strip Windows CRLF on the way in — the
+            # gateway's YAML loader crash-loops on \r bytes (see the same
+            # defensive scrub in linux/install.sh).
+            tr -d '\r' < "${shared_dir}/gateway.yaml" > "${home}/gateway.yaml" \
+                || die "could not write ${home}/gateway.yaml"
+            log_info "copied default gateway.yaml"
+        fi
+        # Defensive: also strip CRLF from a pre-existing gateway.yaml —
+        # pre-fix Windows/WSL installs shipped one with \r line endings,
+        # which crash-loop the gateway's YAML loader (same repair as the
+        # full-install path). tr through a temp file rather than `sed -i`:
+        # this file also runs on macOS/BSD. The chmod/chown below restore
+        # mode and ownership after the rewrite.
+        if [ -f "${home}/gateway.yaml" ] \
+           && grep -q "$(printf '\r')" "${home}/gateway.yaml" 2>/dev/null; then
+            if ! tr -d '\r' < "${home}/gateway.yaml" > "${home}/gateway.yaml.tmp" \
+               || ! mv "${home}/gateway.yaml.tmp" "${home}/gateway.yaml"; then
+                die "could not scrub CRLF from ${home}/gateway.yaml"
+            fi
+            log_info "stripped CRLF line endings from existing gateway.yaml"
+        fi
+        chmod 0644 "${home}/compose.yml" "${home}/nginx.conf" "${home}/gateway.yaml" 2>/dev/null || true
+        if [ -n "$stack_owner" ]; then
+            chown "$stack_owner" "${home}/compose.yml" "${home}/nginx.conf" "${home}/gateway.yaml" 2>/dev/null || true
+        fi
+    else
+        log_warn "bundled stack files not found under ${shared_dir} — keeping the existing compose.yml"
+    fi
+
+    # ── .env migration ──────────────────────────────────────────────────
+    # The existing .env is edited in place, never rewritten, so secrets
+    # (FP_API_KEY / FP_GATEWAY_SECRET / FP_BRIDGE_TOKEN) always carry
+    # forward. Only missing pieces are provisioned.
+    if [ -f "${home}/.env" ]; then
+        # Legacy .env compat: scrub FP_AI_GATEWAY_ENABLED=false left by
+        # the retired opt-out prompt. Current code never reads the key,
+        # but older fp / tray binaries still do — force it true so they
+        # treat the now-mandatory gateway as part of the stack.
+        if grep -q '^FP_AI_GATEWAY_ENABLED=' "${home}/.env" \
+           && ! grep -q '^FP_AI_GATEWAY_ENABLED=true$' "${home}/.env"; then
+            local env_content
+            env_content=$(sed 's/^FP_AI_GATEWAY_ENABLED=.*/FP_AI_GATEWAY_ENABLED=true/' "${home}/.env")
+            printf '%s\n' "$env_content" > "${home}/.env"
+            log_info "set FP_AI_GATEWAY_ENABLED=true in .env (AI Capabilities are a mandatory component)"
+        fi
+        # SEC-001: legacy installs that skipped the gateway have no bridge
+        # secret. Generate one only when absent — both core and ai-gateway
+        # read it, and they pick it up on the recreate below.
+        if ! grep -q '^FP_BRIDGE_TOKEN=.' "${home}/.env"; then
+            local bridge_token
+            if command -v openssl >/dev/null 2>&1; then
+                bridge_token="$(openssl rand -hex 32)"
+            else
+                bridge_token="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+            fi
+            printf 'FP_BRIDGE_TOKEN=%s\n' "$bridge_token" >> "${home}/.env"
+            log_info "generated FP_BRIDGE_TOKEN (32 random bytes, hex)"
+        fi
+        # Anchor the gateway.yaml mount to the stack dir — compose's
+        # default resolves relative to FP_DATA_DIR, which breaks for
+        # legacy installs created with a custom --data-dir (Docker would
+        # bind-mount an auto-created directory over the config file).
+        # Same pin the fresh installers write; only added when absent so
+        # an operator-set custom path carries forward.
+        if ! grep -q '^FP_GATEWAY_CONFIG=' "${home}/.env"; then
+            printf 'FP_GATEWAY_CONFIG=%s/gateway.yaml\n' "$home" >> "${home}/.env"
+            log_info "anchored FP_GATEWAY_CONFIG to ${home}/gateway.yaml"
+        fi
+        # The gateway's bind-mounted data dir must exist before `up -d`,
+        # otherwise the Docker engine auto-creates it root-owned and the
+        # gateway process (running as FP_UID:FP_GID) cannot write its
+        # databases. Mirror compose.yml's default when .env has no
+        # explicit FP_GATEWAY_DATA_DIR.
+        local gw_data_dir
+        gw_data_dir="$(sed -n 's/^FP_GATEWAY_DATA_DIR=//p' "${home}/.env" | head -n1)"
+        if [ -z "$gw_data_dir" ]; then
+            local data_dir
+            data_dir="$(sed -n 's/^FP_DATA_DIR=//p' "${home}/.env" | head -n1)"
+            [ -n "$data_dir" ] && gw_data_dir="${data_dir}/../ai-gateway-data"
+        fi
+        if [ -n "$gw_data_dir" ] && [ ! -d "$gw_data_dir" ]; then
+            mkdir -p "$gw_data_dir" || die "could not create ${gw_data_dir}"
+            local env_uid env_gid
+            env_uid="$(sed -n 's/^FP_UID=//p' "${home}/.env" | head -n1)"
+            env_gid="$(sed -n 's/^FP_GID=//p' "${home}/.env" | head -n1)"
+            if [ -n "$env_uid" ] && [ -n "$env_gid" ]; then
+                chown "${env_uid}:${env_gid}" "$gw_data_dir" 2>/dev/null || true
+            fi
+            log_info "created AI Gateway data directory: ${gw_data_dir}"
+        fi
+    fi
+
     # Snapshot the image IDs each compose service currently resolves to,
     # BEFORE the pull. We use these IDs as the cleanup whitelist after the
     # upgrade succeeds — only images that were "ours" prior to the upgrade
@@ -351,23 +473,13 @@ fp_try_upgrade_fastpath() {
     # if the label is missing or stripped by a registry).
     local prev_image_ids=""
     local svc current_image
-    # Detect the install-time AI choice from the existing .env. The
-    # ai-gateway service lives behind compose's "ai" profile (see
-    # shared/compose.yml:profiles), so every compose invocation in this
-    # fast-path needs to pass --profile ai when AI is enabled — otherwise
-    # the AI container is invisible to `compose config --services`,
-    # `compose images`, `compose pull`, and `compose up -d`, and the
-    # upgrade silently keeps the OLD ai-gateway image running.
-    local fp_profile_flag=""
-    if grep -q '^FP_AI_GATEWAY_ENABLED=true' "${home}/.env" 2>/dev/null; then
-        fp_profile_flag="--profile ai"
-    fi
-
+    # --profile ai on every compose invocation below: legacy compose
+    # compat (pre-mandatory-gateway installs gated ai-gateway behind the
+    # profile, and the stack-file refresh above can be skipped when the
+    # bundle is incomplete); a no-op on current compose.yml files.
     if cd "$home" 2>/dev/null; then
-        # shellcheck disable=SC2086  # word-splitting on $fp_profile_flag is intentional
-        for svc in $(docker compose $fp_profile_flag config --services 2>/dev/null); do
-            # shellcheck disable=SC2086
-            current_image=$(docker compose $fp_profile_flag images -q "$svc" 2>/dev/null | head -1)
+        for svc in $(docker compose --profile ai config --services 2>/dev/null); do
+            current_image=$(docker compose --profile ai images -q "$svc" 2>/dev/null | head -1)
             if [ -n "$current_image" ]; then
                 prev_image_ids="${prev_image_ids} ${current_image}"
             fi
@@ -379,12 +491,76 @@ fp_try_upgrade_fastpath() {
     if declare -f fp_compose_pull_with_retry >/dev/null 2>&1; then
         fp_compose_pull_with_retry "$home" || return 1
     else
-        # shellcheck disable=SC2086
-        ( cd "$home" && docker compose $fp_profile_flag pull ) || return 1
+        ( cd "$home" && docker compose --profile ai pull ) || return 1
     fi
     log_step "Upgrade in place: recreating containers"
-    # shellcheck disable=SC2086
-    ( cd "$home" && docker compose $fp_profile_flag up -d ) || return 1
+    ( cd "$home" && docker compose --profile ai up -d ) || return 1
+
+    # ── Gateway bootstrap for migrated installs ─────────────────────────
+    # Legacy installs that declined the (formerly optional) AI Gateway
+    # have no FP_API_KEY — the service token the gateway authenticates
+    # against core with. Minting one requires an admin login, so prompt
+    # for credentials when they weren't supplied via the environment.
+    # Existing tokens are never touched.
+    local bootstrapped_gateway=0 ai_setup_incomplete=0
+    if [ -f "${home}/.env" ] && ! grep -q '^FP_API_KEY=.' "${home}/.env" \
+       && declare -f fp_bootstrap_gateway_token >/dev/null 2>&1; then
+        if { [ -z "${FP_ADMIN_USER:-}" ] || [ -z "${FP_ADMIN_PASS:-}" ]; } \
+           && [ "${FP_ASSUME_YES:-0}" != "1" ] && [ -r /dev/tty ]; then
+            printf '\nThe AI Gateway needs a one-time service token, which requires an admin login.\n' >&2
+            printf 'Admin username [admin]: ' >&2
+            read -r FP_ADMIN_USER </dev/tty || FP_ADMIN_USER=''
+            [ -z "$FP_ADMIN_USER" ] && FP_ADMIN_USER='admin'
+            printf 'Admin password: ' >&2
+            stty -echo </dev/tty 2>/dev/null || true
+            read -r FP_ADMIN_PASS </dev/tty || FP_ADMIN_PASS=''
+            stty echo </dev/tty 2>/dev/null || true
+            printf '\n' >&2
+            export FP_ADMIN_USER FP_ADMIN_PASS
+        fi
+        if [ -n "${FP_ADMIN_USER:-}" ] && [ -n "${FP_ADMIN_PASS:-}" ]; then
+            # Mint against the port the stack actually publishes: the
+            # .env remap wins over FP_REST_PORT pre-defaulted (unexported)
+            # by the installer shell — same precedence as gw_port below.
+            local rest_port
+            rest_port="$(sed -n 's/^FP_REST_PORT=//p' "${home}/.env" | head -n1)"
+            FP_REST_PORT="${rest_port:-${FP_REST_PORT:-7433}}" \
+                fp_bootstrap_gateway_token "${home}/.env"
+            bootstrapped_gateway=1
+            # Recreate so the gateway container picks up the fresh key.
+            ( cd "$home" && docker compose --profile ai up -d ) || return 1
+        else
+            ai_setup_incomplete=1
+            log_warn "cannot mint the AI Gateway service token without admin credentials"
+            log_warn "re-run this installer with FP_ADMIN_USER and FP_ADMIN_PASS set to finish AI setup"
+            # Persist the incomplete state so fp status / the tray apps
+            # can surface it until a token exists.
+            # fp_bootstrap_gateway_token drops the marker when the mint
+            # eventually succeeds.
+            if ! grep -q '^FP_AI_SETUP_INCOMPLETE=' "${home}/.env"; then
+                printf 'FP_AI_SETUP_INCOMPLETE=1\n' >> "${home}/.env"
+            fi
+        fi
+    fi
+
+    # Hard gate: the AI Gateway must come up healthy, same bar as the
+    # fresh-install paths. Honour a port remap from the existing .env:
+    # it wins over FP_GATEWAY_PORT pre-defaulted by the installer shell,
+    # because that variable is unexported — compose interpolates the
+    # published port from .env, so the .env value is what actually binds.
+    local gw_port=""
+    if [ -f "${home}/.env" ]; then
+        gw_port="$(sed -n 's/^FP_GATEWAY_PORT=//p' "${home}/.env" | head -n1)"
+    fi
+    gw_port="${gw_port:-${FP_GATEWAY_PORT:-7436}}"
+    if declare -f fp_wait_for_gateway_ready >/dev/null 2>&1; then
+        fp_wait_for_gateway_ready "${gw_port}" || \
+            die "the AI Gateway did not become healthy — inspect: docker logs falconpulsar-ai-gateway"
+    fi
+    if [ "$bootstrapped_gateway" = "1" ] \
+       && declare -f fp_wipe_gateway_seed_defaults >/dev/null 2>&1; then
+        fp_wipe_gateway_seed_defaults falconpulsar-ai-gateway "${gw_port}"
+    fi
 
     # Post-upgrade cleanup: remove each snapshotted previous image ID that
     # is now fully untagged (no RepoTags pointing to it = displaced by the
@@ -403,6 +579,21 @@ fp_try_upgrade_fastpath() {
     done
     if [ "$removed_count" -gt 0 ]; then
         log_step "Upgrade in place: removed ${removed_count} previous image(s)"
+    fi
+
+    # Distinct final status when the token mint was skipped: the stack
+    # upgrade itself succeeded (exit 0 stands), but AI features stay
+    # offline until a service token exists — make sure the caller's
+    # "Upgrade complete." cannot read as unqualified success.
+    if [ "$ai_setup_incomplete" = "1" ]; then
+        log_warn "──────────────────────────────────────────────────────────────"
+        log_warn "Upgrade finished, but AI SETUP IS INCOMPLETE."
+        log_warn "The AI Gateway is running without a service token, so AI"
+        log_warn "features (assistant, chat, watches) remain offline."
+        log_warn "Finish setup by re-running this installer with FP_ADMIN_USER"
+        log_warn "and FP_ADMIN_PASS set. (.env carries FP_AI_SETUP_INCOMPLETE=1"
+        log_warn "until the token is minted.)"
+        log_warn "──────────────────────────────────────────────────────────────"
     fi
     return 0
 }

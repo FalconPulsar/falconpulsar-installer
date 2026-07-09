@@ -297,31 +297,6 @@ prompt_transport_mode() {
     export FP_COOKIE_SECURE
 }
 
-# Ask whether the user wants the AI Gateway. Sets FP_AI_GATEWAY_ENABLED.
-prompt_ai_gateway() {
-    if [ -n "${FP_AI_GATEWAY_ENABLED:-}" ]; then
-        return 0
-    fi
-    if [ "${FP_ASSUME_YES:-0}" = "1" ]; then
-        FP_AI_GATEWAY_ENABLED=true
-        export FP_AI_GATEWAY_ENABLED
-        return 0
-    fi
-    printf '\n%sFalconPulsar Gateway%s\n' "${FP_C_BOLD}" "${FP_C_RESET}" >&2
-    printf 'The Gateway powers Workspace commands, standing watches, and the AI\n' >&2
-    printf 'assistant. No API key is needed — AI models are optional and can be\n' >&2
-    printf 'configured later in ConfigHub.\n\n' >&2
-    printf 'Skipping turns off Workspace commands and watches (the image is ~1.6 GB —\n' >&2
-    printf 'constrained edge boxes may prefer to skip). Enable later with: %sfp ai enable%s\n\n' "${FP_C_CYAN}" "${FP_C_RESET}" >&2
-    if confirm "Install the FalconPulsar Gateway? (recommended)" default-yes; then
-        FP_AI_GATEWAY_ENABLED=true
-    else
-        FP_AI_GATEWAY_ENABLED=false
-        log_info "Gateway will not be installed. Workspace commands and watches will be unavailable. Enable later with: fp ai enable"
-    fi
-    export FP_AI_GATEWAY_ENABLED
-}
-
 prompt_admin_credentials() {
     prompt_string "admin username" FP_ADMIN_USER "admin"
 

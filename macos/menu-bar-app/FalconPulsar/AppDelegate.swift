@@ -10,11 +10,6 @@ enum StackStatus {
 class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var pollTimer: Timer?
-    // Strong ref to the active streaming panel. Without this the NSPanel is
-    // deallocated the moment runDockerActionPanel returns (subviews hold only
-    // a weak ref back to their window), which is why the window "flashes"
-    // open and vanishes.
-    private var activeActionPanel: NSPanel?
 
     private var coreRunning = false
     private var uiRunning = false
@@ -65,10 +60,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func buildMenu() {
         let menu = NSMenu()
 
-        let header = NSMenuItem(title: "FalconPulsar v0.1.3", action: nil, keyEquivalent: "")
+        // Version comes from Info.plist (CFBundleShortVersionString), which
+        // build-dmg.sh stamps from FP_VERSION at build time — same source
+        // showAbout() uses, so the two displays can't drift.
+        let appVersion = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "dev"
+        let header = NSMenuItem(title: "FalconPulsar v\(appVersion)", action: nil, keyEquivalent: "")
         header.isEnabled = false
         header.attributedTitle = NSAttributedString(
-            string: "FalconPulsar v0.1.3",
+            string: "FalconPulsar v\(appVersion)",
             attributes: [.font: NSFont.boldSystemFont(ofSize: 13)]
         )
         menu.addItem(header)
@@ -156,18 +155,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         backupItem.submenu = backupMenu
         menu.addItem(backupItem)
 
-        // FalconPulsar Gateway — single toggle (powers Workspace commands,
-        // standing watches, and the AI assistant)
-        if isAIGatewayEnabled() {
-            let aiToggle = NSMenuItem(title: "Disable FalconPulsar Gateway", action: #selector(disableAIGateway), keyEquivalent: "")
-            aiToggle.target = self
-            menu.addItem(aiToggle)
-        } else {
-            let aiToggle = NSMenuItem(title: "Enable FalconPulsar Gateway", action: #selector(enableAIGateway), keyEquivalent: "")
-            aiToggle.target = self
-            menu.addItem(aiToggle)
-        }
-
         menu.addItem(.separator())
 
         let autoStart = NSMenuItem(title: "Start at Login", action: #selector(toggleAutoStart), keyEquivalent: "")
@@ -213,8 +200,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func updateMenu() {
         guard let menu = statusItem.menu else { return }
 
-        let aiEnabled = isAIGatewayEnabled()
-
         // When Docker itself is off, collapse the 4 status rows to a single
         // actionable message. Four separate red "Stopped" lines hides the
         // real problem (Docker Desktop is not running).
@@ -255,21 +240,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         for (i, (running, name)) in statuses.enumerated() {
             let item = menu.item(at: i + 2)!
-
-            // AI Capabilities: show "Disabled" in gray when not enabled
-            if name == "AI Capabilities" && !aiEnabled {
-                let attributed = NSMutableAttributedString()
-                attributed.append(NSAttributedString(
-                    string: "– ",
-                    attributes: [.foregroundColor: NSColor.systemGray, .font: NSFont.systemFont(ofSize: 14)]
-                ))
-                attributed.append(NSAttributedString(
-                    string: "\(name): Disabled",
-                    attributes: [.foregroundColor: NSColor.systemGray, .font: NSFont.systemFont(ofSize: 13)]
-                ))
-                item.attributedTitle = attributed
-                continue
-            }
 
             let dot = running ? "●" : "○"
             let dotColor: NSColor = running ? .systemGreen : .systemRed
@@ -416,17 +386,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
 
             let prev = self.status
-            let aiEnabled = self.isAIGatewayEnabled()
             if !self.dockerDaemonUp {
                 self.status = .dockerDown
             } else {
-                let allExpectedRunning: Bool
-                if aiEnabled {
-                    allExpectedRunning = self.coreRunning && self.uiRunning && self.gatewayRunning
-                } else {
-                    allExpectedRunning = self.coreRunning && self.uiRunning
-                }
-                let anyRunning = self.coreRunning || self.uiRunning || (aiEnabled && self.gatewayRunning)
+                let allExpectedRunning = self.coreRunning && self.uiRunning && self.gatewayRunning
+                let anyRunning = self.coreRunning || self.uiRunning || self.gatewayRunning
                 if allExpectedRunning && self.apiHealthy {
                     self.status = .running
                 } else if allExpectedRunning {
@@ -476,7 +440,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         updateIcon(.partiallyRunning)
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
-            let (bin, argv) = self.dockerInvocation(["compose", "up", "-d"])
+            // --profile ai: legacy compose compat (pre-mandatory-gateway
+            // installs gate ai-gateway behind the "ai" profile); no-op on
+            // current stacks.
+            let (bin, argv) = self.dockerInvocation(["compose", "--profile", "ai", "up", "-d"])
             _ = self.runArgs(bin, argv, cwd: self.homeDir)
             sleep(3)
             self.pollHealth()
@@ -487,7 +454,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         updateIcon(.partiallyRunning)
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
-            let (bin, argv) = self.dockerInvocation(["compose", "down"])
+            // --profile ai: legacy compose compat — see startStack().
+            let (bin, argv) = self.dockerInvocation(["compose", "--profile", "ai", "down"])
             _ = self.runArgs(bin, argv, cwd: self.homeDir)
             sleep(2)
             self.pollHealth()
@@ -498,7 +466,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         updateIcon(.partiallyRunning)
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
-            let (bin, argv) = self.dockerInvocation(["compose", "restart"])
+            // --profile ai: legacy compose compat — see startStack().
+            let (bin, argv) = self.dockerInvocation(["compose", "--profile", "ai", "restart"])
             _ = self.runArgs(bin, argv, cwd: self.homeDir)
             sleep(3)
             self.pollHealth()
@@ -662,7 +631,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let body = """
         #!/bin/bash
         cd \"\(homeDir)\" || exit 1
-        exec docker compose logs -f --tail 100
+        # --profile ai: legacy compose compat — see startStack().
+        exec docker compose --profile ai logs -f --tail 100
         """
         try? body.write(toFile: scriptPath, atomically: true, encoding: .utf8)
         try? FileManager.default.setAttributes([.posixPermissions: 0o755],
@@ -764,509 +734,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func openRequestFeature() {
         NSWorkspace.shared.open(URL(string: "https://falconpulsar.com/roadmap#request-form")!)
-    }
-
-    // MARK: - AI Gateway Toggle
-
-    private func isAIGatewayEnabled() -> Bool {
-        let envPath = "\(homeDir)/.env"
-        guard let data = try? String(contentsOfFile: envPath, encoding: .utf8) else { return true }
-        for line in data.components(separatedBy: "\n") {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed.hasPrefix("FP_AI_GATEWAY_ENABLED=") {
-                let val = trimmed.replacingOccurrences(of: "FP_AI_GATEWAY_ENABLED=", with: "")
-                return val == "true" || val == "1" || val == "yes"
-            }
-        }
-        return true
-    }
-
-    private func setEnvValue(_ key: String, _ value: String) {
-        let envPath = "\(homeDir)/.env"
-        guard let data = try? String(contentsOfFile: envPath, encoding: .utf8) else { return }
-        var lines = data.components(separatedBy: "\n")
-        var found = false
-        for i in 0..<lines.count {
-            if lines[i].trimmingCharacters(in: .whitespaces).hasPrefix("\(key)=") {
-                lines[i] = "\(key)=\(value)"
-                found = true
-                break
-            }
-        }
-        if !found { lines.append("\(key)=\(value)") }
-        try? lines.joined(separator: "\n").write(toFile: envPath, atomically: true, encoding: .utf8)
-    }
-
-    private func removeEnvValue(_ key: String) {
-        let envPath = "\(homeDir)/.env"
-        guard let data = try? String(contentsOfFile: envPath, encoding: .utf8) else { return }
-        let lines = data.components(separatedBy: "\n").filter {
-            !$0.trimmingCharacters(in: .whitespaces).hasPrefix("\(key)=")
-        }
-        try? lines.joined(separator: "\n").write(toFile: envPath, atomically: true, encoding: .utf8)
-    }
-
-    // MARK: - Install log tee (shared with installer-app: /tmp/falconpulsar-install.log)
-
-    private static let installLogPath = "/tmp/falconpulsar-install.log"
-
-    private func installLogBegin(action: String) -> FileHandle? {
-        let fm = FileManager.default
-        // Rotate at 5 MiB, keep 3 archives (.1 .2 .3).
-        if let attrs = try? fm.attributesOfItem(atPath: Self.installLogPath),
-           let size = attrs[.size] as? UInt64, size > 5 * 1024 * 1024 {
-            for i in stride(from: 2, through: 1, by: -1) {
-                let src = "\(Self.installLogPath).\(i)"
-                let dst = "\(Self.installLogPath).\(i + 1)"
-                if fm.fileExists(atPath: src) {
-                    try? fm.removeItem(atPath: dst)
-                    try? fm.moveItem(atPath: src, toPath: dst)
-                }
-            }
-            try? fm.moveItem(atPath: Self.installLogPath,
-                             toPath: "\(Self.installLogPath).1")
-        }
-        if !fm.fileExists(atPath: Self.installLogPath) {
-            // Create with 0600 — contains admin usernames + partial errors.
-            fm.createFile(atPath: Self.installLogPath, contents: nil,
-                          attributes: [.posixPermissions: 0o600])
-        } else {
-            // Existing file might have been created by the Swift installer
-            // or a shell script with a looser umask. Lock it down.
-            try? fm.setAttributes([.posixPermissions: 0o600],
-                                  ofItemAtPath: Self.installLogPath)
-        }
-        guard let fh = FileHandle(forWritingAtPath: Self.installLogPath) else { return nil }
-        fh.seekToEndOfFile()
-        let fmt = ISO8601DateFormatter()
-        let header = "\n=== \(fmt.string(from: Date()))  \(action) (platform=macos-menubar, pid=\(getpid())) ===\n"
-        fh.write(header.data(using: .utf8) ?? Data())
-        return fh
-    }
-
-    private func installLogAppend(_ fh: FileHandle?, _ text: String) {
-        guard let fh = fh, let data = text.data(using: .utf8) else { return }
-        fh.write(data)
-    }
-
-    private func installLogEnd(_ fh: FileHandle?, exit code: Int32) {
-        guard let fh = fh else { return }
-        let footer = "=== end (exit \(code)) ===\n"
-        fh.write(footer.data(using: .utf8) ?? Data())
-        try? fh.close()
-    }
-
-    // MARK: - AI Gateway service token (mirrors fp_bootstrap_gateway_token)
-
-    /// Creates the AI gateway service token via REST using a pre-authenticated admin JWT.
-    private func createGatewayServiceToken(jwt: String) throws -> String {
-        let url = URL(string: "http://localhost:7433/api/v1/tokens")!
-        var req = URLRequest(url: url)
-        req.httpMethod = "POST"
-        req.addValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.addValue("Bearer \(jwt)", forHTTPHeaderField: "Authorization")
-        req.httpBody = try JSONSerialization.data(withJSONObject: [
-            "name": "ai-gateway-token",
-            "expires_days": 0,
-            "permissions": ["read", "query"]
-        ])
-
-        let sem = DispatchSemaphore(value: 0)
-        var body: Data?
-        var err: Error?
-        var status = 0
-        URLSession.shared.dataTask(with: req) { d, resp, e in
-            body = d; err = e
-            status = (resp as? HTTPURLResponse)?.statusCode ?? 0
-            sem.signal()
-        }.resume()
-        sem.wait()
-
-        if let err = err { throw err }
-        guard (200..<300).contains(status),
-              let data = body,
-              let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let tok = j["token"] as? String, !tok.isEmpty else {
-            throw NSError(domain: "FalconPulsar", code: status, userInfo: [
-                NSLocalizedDescriptionKey: "Could not create AI gateway service token (HTTP \(status))."
-            ])
-        }
-        return tok
-    }
-
-    // MARK: - Streaming docker-action panel (used by enable/disable AI)
-
-    private func runDockerActionPanel(title: String, marker: String,
-                                      command: String, successMessage: String) {
-        let panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 550, height: 350),
-            styleMask: [.titled, .closable],
-            backing: .buffered, defer: false)
-        panel.title = title
-        panel.isReleasedWhenClosed = false
-        // NSPanels hide on deactivate by default. Menu-bar apps run as
-        // .accessory so they constantly gain/lose focus — that caused the
-        // panel to flash open and vanish. Keep it visible until the user
-        // explicitly closes it.
-        panel.hidesOnDeactivate = false
-        panel.becomesKeyOnlyIfNeeded = false
-        panel.center()
-        // Retain the panel so ARC doesn't deallocate it when this function
-        // returns (subviews only weakly reference their window).
-        activeActionPanel = panel
-
-        let scrollView = NSScrollView(frame: NSRect(x: 10, y: 40, width: 530, height: 300))
-        let logView = NSTextView(frame: scrollView.bounds)
-        logView.isEditable = false
-        logView.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
-        logView.backgroundColor = NSColor(white: 0.1, alpha: 1)
-        logView.textColor = NSColor.white
-        scrollView.documentView = logView
-        scrollView.hasVerticalScroller = true
-        panel.contentView?.addSubview(scrollView)
-
-        let closeBtn = NSButton(frame: NSRect(x: 440, y: 5, width: 80, height: 30))
-        closeBtn.title = "Close"
-        closeBtn.bezelStyle = .rounded
-        closeBtn.isEnabled = false
-        closeBtn.target = panel
-        closeBtn.action = #selector(NSPanel.orderOut(_:))
-        panel.contentView?.addSubview(closeBtn)
-        // Menu-bar apps run as .accessory, so their windows don't auto-front.
-        // Activate the app and float the panel so the user actually sees progress.
-        panel.level = .floating
-        NSApp.activate(ignoringOtherApps: true)
-        panel.makeKeyAndOrderFront(nil)
-
-        let logHandle = installLogBegin(action: marker)
-
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            guard let self = self else { return }
-            let process = Process()
-            let pipe = Pipe()
-            process.launchPath = "/bin/bash"
-            process.arguments = ["-c", command]
-            process.standardOutput = pipe
-            process.standardError = pipe
-
-            pipe.fileHandleForReading.readabilityHandler = { handle in
-                let data = handle.availableData
-                guard !data.isEmpty, let line = String(data: data, encoding: .utf8) else { return }
-                self.installLogAppend(logHandle, line)
-                DispatchQueue.main.async {
-                    logView.string += line
-                    logView.scrollToEndOfDocument(nil)
-                }
-            }
-
-            try? process.run()
-            process.waitUntilExit()
-            pipe.fileHandleForReading.readabilityHandler = nil
-            let exitCode = process.terminationStatus
-            self.installLogEnd(logHandle, exit: exitCode)
-
-            DispatchQueue.main.async {
-                logView.string += "\n--- Done (exit \(exitCode)) ---\n"
-                logView.string += exitCode == 0
-                    ? "\(successMessage)\n"
-                    : "Action may have failed. Check the log above.\n"
-                closeBtn.isEnabled = true
-                self.buildMenu()
-                self.pollHealth()
-
-                // On success show a prominent confirmation dialog so the user
-                // doesn't have to read the streaming log to know it worked,
-                // and give them a one-click path to the Web UI.
-                if exitCode == 0 {
-                    let alert = NSAlert()
-                    alert.messageText = "FalconPulsar"
-                    alert.informativeText = successMessage
-                    alert.alertStyle = .informational
-                    alert.addButton(withTitle: "Open Web UI")
-                    alert.addButton(withTitle: "OK")
-                    NSApp.activate(ignoringOtherApps: true)
-                    if alert.runModal() == .alertFirstButtonReturn,
-                       let url = URL(string: "http://localhost:8080") {
-                        NSWorkspace.shared.open(url)
-                    }
-                }
-            }
-        }
-    }
-
-    private func ensureGatewayConfig() {
-        let p = "\(homeDir)/gateway.yaml"
-        let fm = FileManager.default
-        var isDir: ObjCBool = false
-
-        // Remove if Docker created a directory instead of a file
-        if fm.fileExists(atPath: p, isDirectory: &isDir), isDir.boolValue {
-            try? fm.removeItem(atPath: p)
-        }
-
-        // Check if existing file contains the known-bad `providers: []`
-        var needsWrite = !fm.fileExists(atPath: p)
-        if !needsWrite, let content = try? String(contentsOfFile: p, encoding: .utf8) {
-            if content.contains("providers: []") || content.contains("providers: {}") {
-                needsWrite = true
-            }
-        }
-
-        if needsWrite {
-            // Copy the real shared/gateway.yaml from the installer if available
-            let candidates = [
-                "\(homeDir)/../shared/gateway.yaml",
-                "/opt/falconpulsar-installer/shared/gateway.yaml",
-            ]
-            for src in candidates where fm.fileExists(atPath: src) {
-                try? fm.removeItem(atPath: p)
-                try? fm.copyItem(atPath: src, toPath: p)
-                return
-            }
-            let cfg = """
-            # FalconPulsar AI Gateway — default configuration.
-            # Providers and models are managed via the Web UI.
-            server:
-              host: "0.0.0.0"
-              port: 7436
-            falconpulsar:
-              url: "http://localhost:7433"
-              timeout: 30
-            context:
-              schema_cache_ttl: 300
-              max_conversation_tokens: 100000
-            logging:
-              level: "INFO"
-            """
-            try? cfg.write(toFile: p, atomically: true, encoding: .utf8)
-        }
-        // Defensive: sanitise CRLF + UTF-8 BOM in gateway.yaml. macOS
-        // wouldn't normally produce these, but an imported config backup
-        // or an edit from a Windows editor could — and Python's
-        // yaml.safe_load in the ai-gateway container raises a ReaderError
-        // on \r bytes, crashing the container on start.
-        if let data = try? Data(contentsOf: URL(fileURLWithPath: p)) {
-            var bytes = [UInt8](data)
-            var mutated = false
-            // Strip UTF-8 BOM (EF BB BF).
-            if bytes.count >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF {
-                bytes.removeFirst(3)
-                mutated = true
-            }
-            // Strip lone \r bytes (keeping \n) — CRLF becomes LF.
-            let cleaned = bytes.filter { $0 != 0x0D }
-            if cleaned.count != bytes.count { mutated = true }
-            if mutated {
-                try? Data(cleaned).write(to: URL(fileURLWithPath: p))
-            }
-        }
-    }
-
-    private func hasGatewayToken() -> Bool {
-        return hasEnvValue("FP_API_KEY")
-    }
-
-    /// True when `key` exists in .env with a non-empty value.
-    private func hasEnvValue(_ key: String) -> Bool {
-        let envPath = "\(homeDir)/.env"
-        guard let data = try? String(contentsOfFile: envPath, encoding: .utf8) else { return false }
-        for line in data.components(separatedBy: "\n") {
-            let t = line.trimmingCharacters(in: .whitespaces)
-            if t.hasPrefix("\(key)=") {
-                return !t.replacingOccurrences(of: "\(key)=", with: "").isEmpty
-            }
-        }
-        return false
-    }
-
-    @objc func enableAIGateway() {
-        // Core must be running so we can authenticate against its REST API.
-        guard coreRunning else {
-            let alert = NSAlert()
-            alert.messageText = "Core service not running"
-            alert.informativeText = "FalconPulsar Core must be running before AI Capabilities can be enabled. Start the stack first, then try again."
-            alert.alertStyle = .warning
-            alert.addButton(withTitle: "OK")
-            alert.runModal()
-            return
-        }
-
-        // Admin authentication gate — every enable operation requires admin
-        // credentials, matching the uninstall flow. Matches 3-attempt retry.
-        guard let authed = authenticateWithRetry(
-            title: "Enable AI Capabilities",
-            message: "Enter admin credentials to authorize enabling AI Capabilities."
-        ) else { return }   // user cancelled or exhausted retries
-
-        // First-time setup only: create the service token now that we have
-        // an authenticated admin JWT in hand.
-        if !hasGatewayToken() {
-            do {
-                let apiKey = try createGatewayServiceToken(jwt: authed.token)
-                setEnvValue("FP_API_KEY", apiKey)
-            } catch {
-                showError(error, title: "Enable AI Capabilities")
-                return
-            }
-        }
-
-        // SEC-003: ensure the provider-key encryption secret exists.
-        // Generated once; never rotated implicitly (rotation would orphan
-        // previously-encrypted provider keys). Mirrors
-        // actions.EnsureGatewaySecret in Go and bootstrap.sh.
-        if !hasEnvValue("FP_GATEWAY_SECRET") {
-            var bytes = [UInt8](repeating: 0, count: 32)
-            if SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess {
-                let secret = bytes.map { String(format: "%02x", $0) }.joined()
-                setEnvValue("FP_GATEWAY_SECRET", secret)
-            }
-        }
-
-        ensureGatewayConfig()
-        setEnvValue("FP_AI_GATEWAY_ENABLED", "true")
-
-        // Target the ai-gateway service explicitly so core/ui are never touched.
-        // BUILDKIT_PROGRESS=plain forces line-buffered output over our pipe.
-        //
-        // The trailing wipe block removes the AI gateway image's self-seeded
-        // provider/model catalog (3 providers + 6 models inserted on first
-        // boot from the falconpulsar/ai-gateway repo). Without this the user
-        // would land on a Models page showing 6 "Offline" entries they
-        // never configured. Mirrors fp_wipe_gateway_seed_defaults in
-        // shared/lib/bootstrap.sh and actions.WipeGatewaySeedDefaults in Go;
-        // all three implementations must do the same SQL so post-enable
-        // state is identical regardless of which surface enabled AI.
-        // TODO(falconpulsar/ai-gateway): land the upstream fix and remove.
-        let command = """
-        export BUILDKIT_PROGRESS=plain
-        export DOCKER_CLI_HINTS=false
-        export PATH='/Applications/Docker.app/Contents/Resources/bin:/usr/local/bin:/opt/homebrew/bin':"$PATH"
-        cd '\(homeDir)' || exit 1
-        # Snapshot current image IDs for all services BEFORE the pull. After
-        # `up -d` we remove any captured ID that's now untagged (= displaced
-        # by the pull). Stops orphaned <none> images accumulating on
-        # disable/re-enable cycles or whenever the AI gateway image gets a
-        # new version. Mirrors fp_try_upgrade_fastpath in
-        # shared/lib/existing.sh and actions.SnapshotComposeImageIDs in Go.
-        prev_image_ids=''
-        for svc in `docker compose --profile ai config --services 2>/dev/null`; do
-            id=`docker compose --profile ai images -q "$svc" 2>/dev/null | head -1`
-            [ -n "$id" ] && prev_image_ids="$prev_image_ids $id"
-        done
-        echo '[enable-ai] pulling AI gateway image…'
-        docker compose --profile ai pull ai-gateway 2>&1
-        echo '[enable-ai] starting ai-gateway container…'
-        docker compose --profile ai up -d ai-gateway 2>&1
-        # Best-effort cleanup: remove each snapshotted ID that is now
-        # untagged. Errors swallowed — the enable itself already succeeded.
-        for id in $prev_image_ids; do
-            tag_count=`docker image inspect "$id" --format '{{len .RepoTags}}' 2>/dev/null || echo ''`
-            if [ "$tag_count" = '0' ]; then
-                docker image rm "$id" >/dev/null 2>&1 || true
-            fi
-        done
-
-        # ── Wipe self-seeded providers + models ─────────────────────────
-        echo '[wipe-seed] waiting for AI Gateway to finish init…'
-        deadline=$(( $(date +%s) + 90 ))
-        while [ "$(date +%s)" -lt "$deadline" ]; do
-            if curl -fsS -o /dev/null http://127.0.0.1:7436/health 2>/dev/null; then
-                break
-            fi
-            sleep 2
-        done
-        if curl -fsS -o /dev/null http://127.0.0.1:7436/health 2>/dev/null; then
-            echo '[wipe-seed] removing self-seeded providers and models…'
-            docker exec falconpulsar-ai-gateway sqlite3 /app/data/ai_config.db \
-                'DELETE FROM model_definitions; DELETE FROM provider_configs;' \
-                >/dev/null 2>&1 || echo '[wipe-seed] WARN: sqlite3 wipe failed — continuing'
-            echo '[wipe-seed] restarting AI Gateway so in-memory state matches DB…'
-            docker restart falconpulsar-ai-gateway >/dev/null 2>&1 || true
-            deadline=$(( $(date +%s) + 60 ))
-            while [ "$(date +%s)" -lt "$deadline" ]; do
-                if curl -fsS -o /dev/null http://127.0.0.1:7436/health 2>/dev/null; then
-                    echo '[wipe-seed] AI Gateway clean: 0 providers, 0 models'
-                    break
-                fi
-                sleep 2
-            done
-        else
-            echo '[wipe-seed] WARN: gateway not healthy in 90s — leaving seed defaults in place'
-        fi
-        """
-
-        runDockerActionPanel(
-            title: "Enabling AI Capabilities…",
-            marker: "enable-ai",
-            command: command,
-            successMessage: "AI Capabilities enabled.\n\nClose any open FalconPulsar Web UI sessions and sign in again to see the AI features, then configure LLM providers."
-        )
-    }
-
-    @objc func disableAIGateway() {
-        // Core must be running so we can authenticate. If it isn't, we have
-        // no way to verify the admin password — bail with a friendly notice.
-        guard coreRunning else {
-            let alert = NSAlert()
-            alert.messageText = "Core service not running"
-            alert.informativeText = "FalconPulsar Core must be running to authorize disabling AI Capabilities. Start the stack first, then try again."
-            alert.alertStyle = .warning
-            alert.addButton(withTitle: "OK")
-            alert.runModal()
-            return
-        }
-
-        // Admin authentication gate — every disable operation requires admin
-        // credentials, matching the uninstall flow.
-        guard authenticateWithRetry(
-            title: "Disable AI Capabilities",
-            message: "Enter admin credentials to authorize disabling AI Capabilities."
-        ) != nil else { return }
-
-        let alert = NSAlert()
-        alert.messageText = "Disable the FalconPulsar Gateway?"
-        alert.informativeText = "This stops and removes the gateway container and image (re-enabling later re-downloads it). It also turns off Workspace commands and standing watches. Your watches, conversations, AI configuration, and credentials are PRESERVED and return when re-enabled. Core and UI stay running and untouched."
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "Disable")
-        alert.addButton(withTitle: "Cancel")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-
-        setEnvValue("FP_AI_GATEWAY_ENABLED", "false")
-        // NOTE: deliberately NON-DESTRUCTIVE (matches `fp ai disable` and the
-        // Windows tray). The gateway data dir now holds watches.db,
-        // conversations.db, and ai_config.db (encrypted provider keys) —
-        // FP_API_KEY, gateway.yaml, and the data dir are all preserved so
-        // re-enabling restores everything. Destructive cleanup is
-        // `fp ai purge` (console, behind an explicit confirmation).
-
-        // Surgical: act only on the ai-gateway service. Never uses `down -v`
-        // because that would also stop core/ui (they have no profile so
-        // compose treats them as always-active).
-        let command = """
-        export PATH='/Applications/Docker.app/Contents/Resources/bin:/usr/local/bin:/opt/homebrew/bin':"$PATH"
-        cd '\(homeDir)' || exit 1
-
-        echo '[disable-ai] loading environment from .env…'
-        set -a
-        . '\(homeDir)/.env' 2>/dev/null || true
-        set +a
-        IMAGE_REF="${FP_REGISTRY:-falconpulsar}/ai-gateway:${FP_VERSION:-latest}"
-
-        echo '[disable-ai] stopping and removing ai-gateway container (core/ui untouched)…'
-        docker compose --profile ai rm -f -s ai-gateway 2>&1
-
-        echo "[disable-ai] removing AI gateway image: $IMAGE_REF"
-        docker rmi -f "$IMAGE_REF" 2>&1 || true
-
-        echo '[disable-ai] done. Watches, conversations, AI configuration, and credentials were preserved. Core and UI were not touched.'
-        """
-
-        runDockerActionPanel(
-            title: "Disabling the FalconPulsar Gateway…",
-            marker: "disable-ai",
-            command: command,
-            successMessage: "Gateway disabled. Your watches, conversations, and AI configuration were preserved and will return when re-enabled."
-        )
     }
 
     // MARK: - Configuration Backup
@@ -1834,7 +1301,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let home = NSHomeDirectory()
         let stackDir = "\(home)/falconpulsar"
 
-        // 1. compose down (plus --volumes on purge).
+        // 1. compose down (plus --volumes on purge). --profile ai: legacy
+        // compose compat (pre-mandatory-gateway installs); no-op on current
+        // stacks.
         var downArgs = ["compose", "--profile", "ai", "down", "--remove-orphans"]
         if purge { downArgs.append("--volumes") }
         let (dockerBin, dockerDownArgv) = dockerInvocation(downArgs)
@@ -1844,8 +1313,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // 2. Remove project images + any falconpulsar/* images. Pipes/xargs
         // make this string-shaped; no Swift-interpolated paths involved.
+        // --profile ai: legacy compose compat, so the gateway image is
+        // included even against a profile-gated compose.yml.
         _ = shell("""
-            IMAGES="$(cd ~/falconpulsar 2>/dev/null && docker compose config --images 2>/dev/null | sort -u)"
+            IMAGES="$(cd ~/falconpulsar 2>/dev/null && docker compose --profile ai config --images 2>/dev/null | sort -u)"
             if [ -n "$IMAGES" ]; then echo "$IMAGES" | xargs docker rmi -f 2>/dev/null || true; fi
             docker images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | grep -E '^falconpulsar/' | xargs -r docker rmi -f 2>/dev/null || true
             """)

@@ -24,8 +24,8 @@
 #   2. Detect which container runtime is present
 #   3. Create ~/falconpulsar/ + ~/falconpulsar/data/
 #   4. Generate compose.yml + .env
-#   5. Pull images and start the stack
-#   6. Wait for the core healthcheck and print connection details
+#   5. Pull images, start the stack, bootstrap the AI gateway service token
+#   6. Wait for the core + AI gateway healthchecks and print connection details
 #
 # Usage:
 #   bash install.sh                      # interactive
@@ -322,19 +322,21 @@ log_success "${FP_HOME} ready"
 # ── Step 4: compose.yml + .env ──────────────────────────────────────────────
 log_step "step 4/6 — stack files"
 
-prompt_ai_gateway
 prompt_transport_mode
 prompt_admin_credentials
 
 cp "${REPO_ROOT}/shared/compose.yml" "${FP_HOME}/compose.yml"
 cp "${REPO_ROOT}/shared/nginx.conf" "${FP_HOME}/nginx.conf"
 
-# Copy the AI Gateway config if it doesn't already exist (skip if gateway disabled)
-if [ "${FP_AI_GATEWAY_ENABLED}" = "true" ]; then
-    if [ ! -f "${FP_HOME}/gateway.yaml" ] && [ -f "${REPO_ROOT}/shared/gateway.yaml" ]; then
-        cp "${REPO_ROOT}/shared/gateway.yaml" "${FP_HOME}/gateway.yaml"
-        log_info "copied default gateway.yaml"
-    fi
+# Copy the AI Gateway config if it doesn't already exist (operator edits
+# survive reinstalls). The compose ai-gateway service bind-mounts this file
+# read-only, so a missing source is fatal — Docker would otherwise create a
+# directory named gateway.yaml at the mount point.
+if [ ! -f "${FP_HOME}/gateway.yaml" ]; then
+    [ -f "${REPO_ROOT}/shared/gateway.yaml" ] || \
+        die "gateway.yaml missing from installer payload (${REPO_ROOT}/shared/gateway.yaml) — cannot configure the AI gateway"
+    cp "${REPO_ROOT}/shared/gateway.yaml" "${FP_HOME}/gateway.yaml"
+    log_info "copied default gateway.yaml"
 fi
 
 # On macOS, FP_UID = the current user's UID. The compose.yml uses this to set
@@ -343,10 +345,31 @@ fi
 FP_UID="$(id -u)"
 FP_GID="$(id -g)"
 
+# Carry secrets forward from a pre-existing .env (reinstall path). The .env
+# is rewritten from scratch below, so anything not re-emitted is lost — and
+# these must never be silently regenerated while the data directories they
+# guard survive: FP_GATEWAY_SECRET encrypts the LLM provider keys stored in
+# the preserved ai_config.db (rotating it orphans them), FP_API_KEY is the
+# gateway's service token (still valid in the preserved core database).
+# Operator-set environment values win.
+OLD_FP_GATEWAY_SECRET=""
+OLD_FP_API_KEY=""
+if [ -f "${FP_HOME}/.env" ]; then
+    OLD_FP_GATEWAY_SECRET="$(grep -m1 '^FP_GATEWAY_SECRET=' "${FP_HOME}/.env" | cut -d= -f2- || true)"
+    OLD_FP_API_KEY="$(grep -m1 '^FP_API_KEY=' "${FP_HOME}/.env" | cut -d= -f2- || true)"
+    if [ -z "${FP_BRIDGE_TOKEN:-}" ]; then
+        FP_BRIDGE_TOKEN="$(grep -m1 '^FP_BRIDGE_TOKEN=' "${FP_HOME}/.env" | cut -d= -f2- || true)"
+        if [ -n "${FP_BRIDGE_TOKEN}" ]; then
+            log_info "preserved FP_BRIDGE_TOKEN from existing .env"
+        fi
+    fi
+fi
+
 # SEC-001: Generate (or preserve) FP_BRIDGE_TOKEN.
 # Shared secret core ↔ ai-gateway use on /api/v1/bridge/* calls. The
 # gateway's AuthMiddleware rejects bridge calls without a matching
-# X-FP-Internal-Token header. Operator-set value is honoured if present.
+# X-FP-Internal-Token header. Operator-set value is honoured if present,
+# as is the value carried forward from a pre-existing .env above.
 if [ -z "${FP_BRIDGE_TOKEN:-}" ]; then
     if command -v openssl >/dev/null 2>&1; then
         FP_BRIDGE_TOKEN="$(openssl rand -hex 32)"
@@ -385,9 +408,15 @@ FP_PUBSUB_PORT=${FP_PUBSUB_PORT}
 FP_GATEWAY_PORT=${FP_GATEWAY_PORT}
 FP_UI_PORT=${FP_UI_PORT}
 FP_LOG_LEVEL=${FP_LOG_LEVEL}
-FP_AI_GATEWAY_ENABLED=${FP_AI_GATEWAY_ENABLED:-false}
+# AI Capabilities are a mandatory component; this key exists only so older
+# fp / menu-bar binaries that still read it stay on the enabled path.
+FP_AI_GATEWAY_ENABLED=true
+# Host path of the gateway config bind-mounted into the ai-gateway
+# container. Pinned explicitly so a custom --data-dir cannot break the
+# mount (compose defaults it relative to FP_DATA_DIR).
+FP_GATEWAY_CONFIG=${FP_HOME}/gateway.yaml
 # SEC-001: shared secret read by both core and ai-gateway containers.
-# Rotate by overwriting this value and `docker compose up -d`.
+# Rotate by overwriting this value and 'docker compose up -d'.
 FP_BRIDGE_TOKEN=${FP_BRIDGE_TOKEN}
 # Front-door HTTPS declaration — see the equivalent block in
 # linux/install.sh for the full rationale.
@@ -397,6 +426,36 @@ FP_COOKIE_SECURE=${FP_COOKIE_SECURE:-true}
 # tray app's settings UI or 'fp update mode' flips it.
 FP_UPDATE_MODE=${FP_UPDATE_MODE:-manual}
 EOF
+
+# Re-emit the gateway secrets carried forward above so bootstrap.sh's
+# generate-only-when-absent logic is a no-op on reinstall.
+if [ -n "${OLD_FP_GATEWAY_SECRET}" ]; then
+    printf 'FP_GATEWAY_SECRET=%s\n' "${OLD_FP_GATEWAY_SECRET}" >>"${FP_HOME}/.env"
+    log_info "preserved FP_GATEWAY_SECRET from existing .env"
+fi
+if [ -n "${OLD_FP_API_KEY}" ]; then
+    printf 'FP_API_KEY=%s\n' "${OLD_FP_API_KEY}" >>"${FP_HOME}/.env"
+    log_info "preserved FP_API_KEY from existing .env"
+fi
+
+# SEC-003: ensure the provider-key encryption secret exists independently
+# of the token mint in step 5b — a carried-forward FP_API_KEY skips the
+# mint (where bootstrap.sh normally generates the secret), which would
+# leave pre-SEC-003 installs storing provider API keys in plaintext.
+# Generate only when absent: rotating orphans already-encrypted keys.
+if ! grep -q '^FP_GATEWAY_SECRET=.' "${FP_HOME}/.env"; then
+    if command -v openssl >/dev/null 2>&1; then
+        NEW_FP_GATEWAY_SECRET="$(openssl rand -hex 32)"
+    elif [ -r /dev/urandom ]; then
+        NEW_FP_GATEWAY_SECRET="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+    else
+        die "cannot generate FP_GATEWAY_SECRET: neither openssl nor /dev/urandom available"
+    fi
+    printf 'FP_GATEWAY_SECRET=%s\n' "${NEW_FP_GATEWAY_SECRET}" >>"${FP_HOME}/.env"
+    unset NEW_FP_GATEWAY_SECRET
+    log_info "generated FP_GATEWAY_SECRET (SEC-003: encrypts provider API keys at rest)"
+fi
+
 chmod 0600 "${FP_HOME}/.env"
 umask 022
 
@@ -415,7 +474,9 @@ log_success "wrote ${FP_HOME}/compose.yml and ${FP_HOME}/.env (admin password NO
 
 # ── Step 5: Pull, start core, bootstrap token, start the rest ──────────────
 log_step "step 5/6 — pulling images and starting stack"
-fp_compose_pull_with_retry "$FP_HOME"
+# `|| die` keeps errexit from firing inside the helper — without it the
+# first transient pull failure aborts the install before the retry loop runs.
+fp_compose_pull_with_retry "$FP_HOME" || die "image pull failed after retries"
 
 # 5a. Start core only with FP_ADMIN_PASS injected from this shell.
 # We do NOT write FP_ADMIN_PASS to .env. compose.yml has `${FP_ADMIN_PASS:-}`
@@ -438,24 +499,37 @@ while :; do
     sleep 3
 done
 
-# 5b. Create the AI gateway service token via REST API (skip if gateway disabled).
-if [ "${FP_AI_GATEWAY_ENABLED}" = "true" ]; then
-    fp_bootstrap_gateway_token "${FP_HOME}/.env"
+# 5b. Create the AI gateway service token via REST API. A carried-forward
+# FP_API_KEY (reinstall) is kept as-is — it is still valid in the preserved
+# database, and re-minting would leave an orphaned service token behind.
+if grep -q '^FP_API_KEY=.' "${FP_HOME}/.env" 2>/dev/null; then
+    log_info "existing gateway service token found in .env — skipping mint"
 else
-    log_info "AI Gateway disabled — skipping token bootstrap"
+    fp_bootstrap_gateway_token "${FP_HOME}/.env"
 fi
 
 # 5c. Start the rest of the stack.
-if [ "${FP_AI_GATEWAY_ENABLED}" = "true" ]; then
-    log_info "starting ui and ai-gateway"
-    ( cd "$FP_HOME" && docker compose --profile ai up -d )
-    # Wipe the gateway's self-seeded provider/model catalog so the user
-    # lands on a clean AI configuration page. See bootstrap.sh for the
-    # full rationale + the upstream fix this stops being necessary after.
+# Record whether the gateway database predates this run BEFORE the stack
+# starts. If it does, the catalog holds user-configured providers/models
+# (API keys encrypted under the preserved FP_GATEWAY_SECRET), not the
+# image's self-seeded defaults — the wipe below must not touch it.
+GATEWAY_DB_PREEXISTS=0
+if [ -f "${FP_GATEWAY_DATA_DIR}/ai_config.db" ]; then
+    GATEWAY_DB_PREEXISTS=1
+fi
+log_info "starting ui and ai-gateway"
+( cd "$FP_HOME" && docker compose up -d )
+# Hard gate: the AI Gateway is a mandatory component — an install whose
+# gateway never becomes healthy is a failed install, not a warning.
+fp_wait_for_gateway_ready "${FP_GATEWAY_PORT}" || \
+    die "AI Gateway did not become healthy. Check: docker logs falconpulsar-ai-gateway"
+# Wipe the gateway's self-seeded provider/model catalog so the user
+# lands on a clean AI configuration page — only when the gateway DB was
+# created by this run (fresh install / legacy opt-out migration). See
+# bootstrap.sh for the full rationale + the upstream fix this stops
+# being necessary after.
+if [ "$GATEWAY_DB_PREEXISTS" = "0" ]; then
     fp_wipe_gateway_seed_defaults
-else
-    log_info "starting ui (AI Gateway disabled)"
-    ( cd "$FP_HOME" && docker compose up -d )
 fi
 
 # 5d. Install the fp CLI into ${FP_HOME}/bin/ and optionally add to PATH.
@@ -465,8 +539,7 @@ fp_offer_path_append "$FP_HOME"
 # ── Step 6: Done ────────────────────────────────────────────────────────────
 log_step "verifying installation health"
 HEALTH_OK=true
-HEALTH_SVCS="falconpulsar-core falconpulsar-ui"
-[ "${FP_AI_GATEWAY_ENABLED}" = "true" ] && HEALTH_SVCS="${HEALTH_SVCS} falconpulsar-ai-gateway"
+HEALTH_SVCS="falconpulsar-core falconpulsar-ui falconpulsar-ai-gateway"
 for svc in $HEALTH_SVCS; do
     if docker ps --filter "name=$svc" --filter "status=running" -q 2>/dev/null | grep -q .; then
         log_success "$svc: running"

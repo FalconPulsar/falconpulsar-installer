@@ -31,7 +31,6 @@ param(
     [string] $RegistryUser = '',
     [string] $RegistryPass = '',
     [switch] $RegistrySkip,
-    [string] $AIGateway = 'false',
     # 'true' = HTTPS at front door (default, recommended).
     # 'false' = HTTP-only deployment; cookies emit without Secure flag.
     [string] $CookieSecure = 'true',
@@ -210,51 +209,48 @@ if (-not $InstallAction) {
 Write-Info "Install action: $InstallAction"
 
 if ($InstallAction -eq 'upgrade' -and $hasExisting -and -not $hasLegacyInstall) {
-    Write-Info 'Upgrading in place -- pulling latest images and restarting'
-    $profileFlag = if ($AIGateway -eq 'true') { '--profile ai' } else { '' }
-    # Snapshot-then-cleanup pattern: capture each service's current image
-    # ID before pulling, then after `compose up -d` succeeds remove any
-    # captured ID that is now fully untagged (= displaced by a newer image
-    # the pull brought down). This mirrors fp_try_upgrade_fastpath in
-    # shared/lib/existing.sh so the installer-driven upgrade behaves the
-    # same as the tray/CLI-driven `fp update --apply`. Without this the
-    # operator accumulates orphaned <none> images on every upgrade.
+    Write-Info 'Upgrading in place -- delegating to the bundled bash installer'
+    # The bash installer's upgrade fast-path (fp_try_upgrade_fastpath in
+    # shared/lib/existing.sh) owns the in-place upgrade: it re-copies the
+    # product-managed compose.yml + nginx.conf, provisions gateway.yaml if
+    # missing, carries the existing secrets forward in .env, pulls the new
+    # images (cleaning up displaced ones), restarts the stack, and
+    # health-gates core + AI gateway. Delegating instead of re-implementing
+    # the compose dance in PowerShell keeps the installer-driven upgrade
+    # identical to the CLI-driven `fp update --apply`. When no usable stack
+    # is found, install.sh falls through to a full install using the same
+    # credentials.
     #
-    # Registry-agnostic: only image IDs that were "ours" before the pull
-    # are candidates, only when fully untagged afterward. Cannot touch
-    # unrelated images, and respects any manual backup tags the operator
-    # may have on the same image ID.
+    # Credentials travel via a one-shot env file, same as the full-install
+    # invocation below (argv is visible in /proc/<pid>/cmdline).
+    $upgPw      = $AdminPass -replace "'", "'\''"
+    $upgUser    = $AdminUser -replace "'", "'\''"
+    $upgRegSkip = if ($RegistrySkip) { '1' } else { '0' }
     $upgradeScript = @"
 set -e
+umask 077
+ENVFILE=`$(mktemp /root/fp-upgrade.env.XXXXXX)
+trap 'rm -f "`$ENVFILE"' EXIT
+# Quoted heredoc: bash writes these lines verbatim (PowerShell already
+# interpolated the values), so a password containing dollar signs or
+# backticks is neither expanded nor executed on the way into the env file.
+# FP_REGISTRY is deliberately NOT exported here: compose gives process env
+# precedence over the project .env, so exporting it would clobber a custom
+# registry mirror recorded in the stack's .env during the in-place upgrade.
+cat > "`$ENVFILE" <<'FPEOF'
+export FP_ADMIN_USER='$upgUser'
+export FP_ADMIN_PASS='$upgPw'
 export FP_ASSUME_YES=1
 export FP_LEGAL_ACCEPTED=1
-cd '$WslHome' 2>/dev/null || cd /opt/falconpulsar-installer
-if [ -f '$WslHome/compose.yml' ]; then
-    sudo -u '$WslUser' -H sg docker -c "
-        cd '$WslHome' || exit 1
-        prev_ids=''
-        for svc in \`docker compose $profileFlag config --services 2>/dev/null\`; do
-            id=\`docker compose $profileFlag images -q \"\$svc\" 2>/dev/null | head -1\`
-            [ -n \"\$id\" ] && prev_ids=\"\$prev_ids \$id\"
-        done
-        docker compose $profileFlag pull
-        docker compose $profileFlag up -d
-        removed=0
-        for id in \$prev_ids; do
-            tag_count=\`docker image inspect \"\$id\" --format '{{len .RepoTags}}' 2>/dev/null || echo ''\`
-            if [ \"\$tag_count\" = '0' ]; then
-                docker image rm \"\$id\" >/dev/null 2>&1 && removed=\$((removed + 1)) || true
-            fi
-        done
-        [ \"\$removed\" -gt 0 ] && echo \"[ok] Removed \$removed previous image(s)\"
-        exit 0
-    "
-    echo '[ok] Stack upgraded and restarted'
-else
-    echo '[info] No existing compose.yml found -- running full installer'
-    FP_INVOKING_USER='$WslUser' FP_INSTALL_ACTION=upgrade FP_AI_GATEWAY_ENABLED='$AIGateway' FP_COOKIE_SECURE='$CookieSecure' \
-        bash /opt/falconpulsar-installer/linux/install.sh --user '$WslUser' --mode docker --yes
-fi
+export FP_REGISTRY_SKIP='$upgRegSkip'
+export FP_INSTALL_ACTION='upgrade'
+export FP_COOKIE_SECURE='$CookieSecure'
+export FP_INVOKING_USER='$WslUser'
+FPEOF
+. "`$ENVFILE"
+rm -f "`$ENVFILE"
+trap - EXIT
+bash /opt/falconpulsar-installer/linux/install.sh --user '$WslUser' --mode docker --yes
 "@
     $rc = Invoke-WslBash -Distro $Distro -Script $upgradeScript -User root
     if ($rc -ne 0) {
@@ -327,6 +323,8 @@ removed_volumes=0
 removed_networks=0
 
 # 2a. Prefer coordinated compose-down if a compose.yml still exists.
+# --profile ai: legacy compose compat (pre-mandatory-gateway installs gated
+# the ai-gateway behind an 'ai' profile); no-op on current stacks.
 if [ -f '$WslHome/compose.yml' ]; then
     echo '[clean] running compose down --volumes --remove-orphans on existing stack'
     cd '$WslHome' && \
@@ -413,13 +411,19 @@ echo '[ok] WSL state wiped -- ready for fresh install'
     $null = Invoke-WslBash -Distro $Distro -Script $cleanScript -User root
 }
 
-# For 'reinstall' -- lighter cleanup: stop the stack + remove stack files,
-# but KEEP /home/falconpulsar/data (the database). Matches macOS's
-# "Reinstall (keep data)" behavior.
+# For 'reinstall' -- lighter cleanup: stop the stack + remove the
+# product-managed stack files (compose.yml, gateway.yaml -- re-provisioned
+# by the bash installer), but KEEP the data dirs (database, ai-gateway
+# data) AND .env: the linux installer's carry-forward reads FP_API_KEY /
+# FP_GATEWAY_SECRET / FP_BRIDGE_TOKEN from it, so deleting .env would
+# orphan the provider keys encrypted in the preserved gateway data.
+# Matches macOS's "Reinstall (keep data)" behavior.
 if ($InstallAction -eq 'reinstall') {
     Write-Info 'Reinstall -- stopping stack and rewriting files (database preserved)'
     $cleanScript = @"
 set +e
+# --profile ai: legacy compose compat (pre-mandatory-gateway installs gated
+# the ai-gateway behind an 'ai' profile); no-op on current stacks.
 if command -v docker >/dev/null 2>&1; then
     if [ -f '$WslHome/compose.yml' ]; then
         cd '$WslHome' && \
@@ -431,8 +435,8 @@ if command -v docker >/dev/null 2>&1; then
     fi
     docker ps -a --filter 'name=falconpulsar-' -q 2>/dev/null | xargs -r docker rm -f 2>/dev/null
 fi
-rm -f '$WslHome/compose.yml' '$WslHome/.env' '$WslHome/gateway.yaml'
-rm -f /home/falconpulsar/compose.yml /home/falconpulsar/.env /home/falconpulsar/gateway.yaml 2>/dev/null
+rm -f '$WslHome/compose.yml' '$WslHome/gateway.yaml'
+rm -f /home/falconpulsar/compose.yml /home/falconpulsar/gateway.yaml 2>/dev/null
 echo '[ok] Reinstall prep complete (database preserved)'
 "@
     $null = Invoke-WslBash -Distro $Distro -Script $cleanScript -User root
@@ -629,20 +633,22 @@ set -e
 umask 077
 ENVFILE=`$(mktemp /root/fp-install.env.XXXXXX)
 trap 'rm -f "`$ENVFILE"' EXIT
-printf '%s\n' \
-  "export FP_ADMIN_USER='$userEscaped'" \
-  "export FP_ADMIN_PASS='$pwEscaped'" \
-  "export FP_ASSUME_YES=1" \
-  "export FP_LEGAL_ACCEPTED=1" \
-  "export FP_REGISTRY='$regEscaped'" \
-  "export FP_REGISTRY_USER='$regUserEscaped'" \
-  "export FP_REGISTRY_PASS='$regPassEscaped'" \
-  "export FP_REGISTRY_SKIP='$regSkipVal'" \
-  "export FP_INSTALL_ACTION='$InstallAction'" \
-  "export FP_AI_GATEWAY_ENABLED='$AIGateway'" \
-  "export FP_COOKIE_SECURE='$CookieSecure'" \
-  "export FP_INVOKING_USER='$WslUser'" \
-  > "`$ENVFILE"
+# Quoted heredoc: bash writes these lines verbatim (PowerShell already
+# interpolated the values), so a password containing dollar signs or
+# backticks is neither expanded nor executed on the way into the env file.
+cat > "`$ENVFILE" <<'FPEOF'
+export FP_ADMIN_USER='$userEscaped'
+export FP_ADMIN_PASS='$pwEscaped'
+export FP_ASSUME_YES=1
+export FP_LEGAL_ACCEPTED=1
+export FP_REGISTRY='$regEscaped'
+export FP_REGISTRY_USER='$regUserEscaped'
+export FP_REGISTRY_PASS='$regPassEscaped'
+export FP_REGISTRY_SKIP='$regSkipVal'
+export FP_INSTALL_ACTION='$InstallAction'
+export FP_COOKIE_SECURE='$CookieSecure'
+export FP_INVOKING_USER='$WslUser'
+FPEOF
 . "`$ENVFILE"
 rm -f "`$ENVFILE"
 trap - EXIT
@@ -654,14 +660,6 @@ $rc = Invoke-WslBash -Distro $Distro -Script $runScript -User root
 if ($rc -ne 0) {
     Stop-WithError "Bash installer failed inside WSL with exit code $rc. Run 'wsl -d $Distro -u root -- bash /opt/falconpulsar-installer/linux/install.sh --mode docker' manually to see the full output."
 }
-
-# Mirror the AI flag to the Windows side so the tray + fp.exe can read it
-# (they can't access the WSL filesystem directly).
-$winEnvDir = Join-Path $env:USERPROFILE 'falconpulsar'
-if (-not (Test-Path $winEnvDir)) { New-Item -ItemType Directory -Path $winEnvDir -Force | Out-Null }
-$winEnvPath = Join-Path $winEnvDir '.env'
-Set-Content -Path $winEnvPath -Value "FP_AI_GATEWAY_ENABLED=$AIGateway"
-Write-Info "Mirrored AI flag to $winEnvPath"
 
 # Stage the Linux fp binary into WSL so the Windows fp.exe wrapper has
 # something to exec. The wrapper does:

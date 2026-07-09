@@ -52,6 +52,9 @@ PATH. The install path is wired in `shared/lib/fpcli.sh`.
 | `fp config edit <name>` | F6 | opens $EDITOR |
 | `fp config export <file>` | F7 | admin-only, AES-256-GCM `.fpconfig` |
 | `fp config import <file>` | F8 | admin-only, replaces config |
+| `fp config inspect <file>` | — | decrypt + summarize a `.fpconfig` without applying it |
+| `fp update [--apply\|--json]` | Stack menu → Check for updates | registry digest probe; `--apply` upgrades in place |
+| `fp update mode [manual\|auto]` | — | read/set FP_UPDATE_MODE (tray auto-apply) |
 | `fp about` / `docs` / `request-feature` | Help menu | |
 | `fp uninstall` | — | On Linux / macOS runs `linux/uninstall.sh` (copied to `$FP_HOME/uninstall.sh` at install). On WSL hands off to the Windows Inno Setup uninstaller (`unins000.exe`) via interop. |
 
