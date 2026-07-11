@@ -15,8 +15,6 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
-
-	"github.com/falconpulsar/falconpulsar-installer/console/internal/api"
 )
 
 // HomeDir resolves the stack directory.
@@ -194,7 +192,7 @@ func SetEnvValue(key, value string) error {
 }
 
 // parseEnvFile reads .env into a map. Doesn't interpret quoting — good enough
-// for the few keys we care about (FP_REGISTRY, FP_VERSION, FP_GATEWAY_PORT,
+// for the few keys we care about (registry/version pins, FP_*_PORT remaps,
 // FP_UPDATE_MODE).
 func parseEnvFile() map[string]string {
 	result := make(map[string]string)
@@ -417,7 +415,7 @@ func Poll(ctx context.Context) Status {
 	st.Core = containerRunning(ctx, "falconpulsar-core")
 	st.UI = containerRunning(ctx, "falconpulsar-ui")
 	st.Gateway = containerRunning(ctx, "falconpulsar-ai-gateway")
-	cli := api.New()
+	cli := NewAPIClient()
 	cli.HTTP.Timeout = 2 * time.Second
 	if ok, err := cli.Health(ctx); err == nil && ok {
 		st.APIHealthy = true

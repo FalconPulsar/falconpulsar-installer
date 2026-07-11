@@ -162,6 +162,42 @@ namespace FalconPulsar.Tray
             return "/home/falconpulsar";
         }
 
+        // Reads one value out of the stack's .env inside WSL, via the same
+        // resolved \\wsl.localhost UNC path the Config Files menu uses.
+        // Returns null when the file or key is missing. Last occurrence
+        // wins, matching docker compose's own env-file semantics, so a
+        // hand-appended override behaves the same here and in the stack
+        // itself (mirrors AppDelegate.envValue on macOS).
+        private string EnvValue(string key)
+        {
+            try
+            {
+                var envPath = Path.Combine(_wslHomeUnc, ".env");
+                if (!File.Exists(envPath)) return null;
+                string value = null;
+                foreach (var line in File.ReadAllLines(envPath))
+                {
+                    var trimmed = line.Trim();
+                    if (!trimmed.StartsWith(key + "=")) continue;
+                    var v = trimmed.Substring(key.Length + 1).Trim();
+                    if (v.Length > 0) value = v;
+                }
+                return value;
+            }
+            catch
+            {
+                // UNC reads can fail while WSL is starting/stopping —
+                // fall back to the installer defaults below.
+                return null;
+            }
+        }
+
+        // Ports come from the stack's .env so port-remapped installs report
+        // health and open the Web UI correctly; the literals are only the
+        // installer defaults, used when .env is missing or doesn't set them.
+        private string RestPort => EnvValue("FP_REST_PORT") ?? "7433";
+        private string UiPort => EnvValue("FP_UI_PORT") ?? "8080";
+
         // Our own version, read from the assembly. Set at build time by
         // <Version> in FalconPulsarTray.csproj, and overridable from CI
         // via `dotnet publish -p:Version=$VER`. Falls back to "dev" on
@@ -468,7 +504,7 @@ namespace FalconPulsar.Tray
         {
             try
             {
-                var resp = await _http.GetAsync("http://localhost:7433/api/v1/health");
+                var resp = await _http.GetAsync($"http://localhost:{RestPort}/api/v1/health");
                 return resp.IsSuccessStatusCode;
             }
             catch
@@ -732,7 +768,7 @@ namespace FalconPulsar.Tray
 
         private void OpenWebUI()
         {
-            Process.Start(new ProcessStartInfo("http://localhost:8080")
+            Process.Start(new ProcessStartInfo($"http://localhost:{UiPort}")
             { UseShellExecute = true });
         }
 

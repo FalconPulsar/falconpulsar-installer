@@ -51,7 +51,41 @@ namespace FalconPulsar.Tray
         public const int Iterations = 100_000;
         public static readonly byte[] Magic = { 0x46, 0x50, 0x43, 0x46 }; // "FPCF"
 
-        public const string CoreBaseUrl = "http://localhost:7433";
+        /// <summary>
+        /// Core's base URL. The REST port comes from the stack's .env
+        /// (FP_REST_PORT) so port-remapped installs still reach Core; 7433
+        /// is only the installer default, used when .env is missing or
+        /// doesn't set the key. FalconPulsarHomeDir is pointed at the
+        /// resolved WSL UNC stack dir by TrayApp at startup, so this reads
+        /// the same .env the stack itself runs with.
+        /// </summary>
+        public static string CoreBaseUrl => $"http://localhost:{RestPort()}";
+
+        // Last occurrence wins, matching docker compose's env-file
+        // semantics (mirrors TrayApp.EnvValue / macOS AppDelegate.envValue).
+        private static string RestPort()
+        {
+            try
+            {
+                var envPath = Path.Combine(FalconPulsarHomeDir, ".env");
+                if (!File.Exists(envPath)) return "7433";
+                string port = null;
+                foreach (var line in File.ReadAllLines(envPath))
+                {
+                    var trimmed = line.Trim();
+                    if (!trimmed.StartsWith("FP_REST_PORT=")) continue;
+                    var v = trimmed.Substring("FP_REST_PORT=".Length).Trim();
+                    if (v.Length > 0) port = v;
+                }
+                return string.IsNullOrEmpty(port) ? "7433" : port;
+            }
+            catch
+            {
+                // UNC reads can fail while WSL is starting/stopping —
+                // fall back to the installer default.
+                return "7433";
+            }
+        }
 
         public class AdminCredentials
         {
@@ -81,7 +115,7 @@ namespace FalconPulsar.Tray
             catch (HttpRequestException)
             {
                 throw new BackupException(
-                    "Cannot reach FalconPulsar Core at http://localhost:7433.");
+                    $"Cannot reach FalconPulsar Core at {CoreBaseUrl}.");
             }
 
             if (!loginResp.IsSuccessStatusCode)

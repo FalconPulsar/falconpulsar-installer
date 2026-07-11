@@ -11,6 +11,11 @@ import (
 	"time"
 )
 
+// DefaultBaseURL is the Core REST API endpoint at the default install
+// port. It is the documented fallback only — the installer supports
+// remapping the published port (FP_REST_PORT in the stack's .env), so
+// callers should prefer actions.NewAPIClient, which resolves the remap
+// and falls back to this constant's port.
 const DefaultBaseURL = "http://localhost:7433"
 
 type Client struct {

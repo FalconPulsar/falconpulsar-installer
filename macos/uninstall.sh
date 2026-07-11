@@ -24,6 +24,11 @@
 #   bash uninstall.sh                # interactive — asks what to remove
 #   bash uninstall.sh --purge --yes  # delete everything, no prompts
 #   bash uninstall.sh --yes          # keep data, no prompts
+#
+# Environment:
+#   FP_MENUBAR_UNINSTALL=1   Set by the menu bar app when it launches this
+#                            script. Defers the menu bar shutdown so the
+#                            cleanup isn't killed along with its parent.
 # =============================================================================
 
 set -o errexit
@@ -44,7 +49,36 @@ else
     log_warn()        { echo "[warn] $1"; }
     log_error()       { echo "[error] $1" >&2; }
     die()             { log_error "$1"; exit 1; }
-    confirm()         { return 0; }
+    # Standalone fallback — mirrors shared/lib/common.sh confirm(): prompts
+    # on /dev/tty and resolves to the STATED DEFAULT when no answer can be
+    # read (no tty) or FP_ASSUME_YES=1. Default-no gates destructive steps,
+    # so this must never auto-answer yes: a standalone copy of this script
+    # always runs on this fallback, and a `return 0` stub would silently
+    # approve every destructive prompt (same bug linux/uninstall.sh had).
+    confirm() {
+        local prompt="$1" default="${2:-default-no}" hint reply
+        if [ "${FP_ASSUME_YES:-0}" = "1" ]; then
+            [ "$default" = "default-yes" ]
+            return
+        fi
+        if [ "$default" = "default-yes" ]; then hint="[Y/n]"; else hint="[y/N]"; fi
+        printf '%s %s ' "$prompt" "$hint" >&2
+        reply=''
+        # 2>/dev/null before </dev/tty: redirections apply left to right,
+        # and a failed /dev/tty open would otherwise print its own error.
+        if ! read -r reply 2>/dev/null </dev/tty; then
+            [ "$default" = "default-yes" ]
+            return
+        fi
+        if [ -z "$reply" ]; then
+            [ "$default" = "default-yes" ]
+            return
+        fi
+        case "$reply" in
+            y|Y|yes|YES|Yes) return 0 ;;
+            *)               return 1 ;;
+        esac
+    }
     require_not_root(){ [ "$(id -u)" -ne 0 ] || die "don't run as root"; }
     on_error()        { log_error "failed at line $1"; }
 fi
@@ -212,10 +246,22 @@ if ! command -v docker >/dev/null 2>&1; then
     log_warn "Docker Desktop should be installed and running for a clean uninstall."
 fi
 
-# Step 1: Stop the menu bar app
+# Step 1: Stop the menu bar app.
+#
+# Skipped when the menu bar app itself launched this script
+# (FP_MENUBAR_UNINSTALL=1 in its environment): the app is our parent and
+# is draining our output pipe — SIGTERMing it here would close the pipe
+# and abort the entire cleanup on the next write (SIGPIPE + errexit),
+# leaving containers, images, and stack files behind. The app quits
+# itself after showing the completion alert; any OTHER menu bar
+# instances are swept at the very end of this script.
 log_step "Stopping FalconPulsar Menu Bar"
-pkill -f FalconPulsarMenuBar 2>/dev/null || true
-log_info "Menu bar app stopped"
+if [ "${FP_MENUBAR_UNINSTALL:-0}" = "1" ]; then
+    log_info "Menu bar app is driving this uninstall — it will quit itself when done"
+else
+    pkill -f FalconPulsarMenuBar 2>/dev/null || true
+    log_info "Menu bar app stopped"
+fi
 
 # Step 2: Stop and remove containers (+ volumes on purge)
 log_step "Stopping containers"
@@ -403,4 +449,18 @@ echo "  Full log: $FP_LOG_FILE"
 if [ "$FP_ASSUME_YES" != "1" ] && command -v open >/dev/null 2>&1; then
     # Best-effort; silently ignore if the user has no default text editor.
     open -t "$FP_LOG_FILE" 2>/dev/null || open "$FP_LOG_FILE" 2>/dev/null || true
+fi
+
+# Final step (menu-bar-driven runs only): the step-1 pkill was skipped, so
+# sweep any menu bar instances OTHER than the one that launched us — their
+# bundle is gone. Our parent ($PPID, the launching app) is spared so it can
+# read our exit status and show the completion alert; it terminates itself
+# right after. Deliberately the last statement in the script: killing our
+# parent any earlier would sever the output pipe mid-cleanup.
+if [ "${FP_MENUBAR_UNINSTALL:-0}" = "1" ]; then
+    for pid in $(pgrep -f FalconPulsarMenuBar 2>/dev/null || true); do
+        if [ "$pid" != "$PPID" ]; then
+            kill "$pid" 2>/dev/null || true
+        fi
+    done
 fi

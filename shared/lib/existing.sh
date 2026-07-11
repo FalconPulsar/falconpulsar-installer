@@ -396,6 +396,17 @@ fp_try_upgrade_fastpath() {
             cp "${shared_dir}/nginx.conf" "${home}/nginx.conf" \
                 || die "could not refresh ${home}/nginx.conf"
         fi
+        # A broken earlier install can leave gateway.yaml as a DIRECTORY:
+        # docker auto-creates missing bind-mount sources as directories, so
+        # a compose up that ran before the config existed plants one. The
+        # [ ! -f ] below is false for a directory, so the default config
+        # would never land and the gateway would crash-loop on the
+        # directory mount forever. Clear it so the refresh can write the
+        # real file (same repair as the full-install paths).
+        if [ -d "${home}/gateway.yaml" ]; then
+            log_warn "${home}/gateway.yaml is a directory (docker auto-created it on a broken install) — removing it"
+            rm -rf "${home}/gateway.yaml"
+        fi
         if [ ! -f "${home}/gateway.yaml" ] && [ -f "${shared_dir}/gateway.yaml" ]; then
             # tr instead of cp: strip Windows CRLF on the way in — the
             # gateway's YAML loader crash-loops on \r bytes (see the same

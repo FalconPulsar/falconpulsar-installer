@@ -111,15 +111,23 @@ require_not_root() {
 
 # ── User interaction ─────────────────────────────────────────────────────────
 # confirm "question" [default-yes|default-no]
-# Returns 0 for yes, 1 for no. Honours FP_ASSUME_YES=1 (CI / unattended).
+# Returns 0 for yes, 1 for no. Under FP_ASSUME_YES=1 (CI / unattended) the
+# prompt resolves to its stated default: default-yes → yes, default-no → no.
+# Default-no marks prompts whose "yes" is destructive (delete data, remove
+# a user) — unattended runs must opt into those via an explicit flag
+# (e.g. uninstall --purge), never through a blanket --yes.
 confirm() {
     local prompt="$1"
     local default="${2:-default-no}"
     local hint reply
 
     if [ "${FP_ASSUME_YES:-0}" = "1" ]; then
-        log_debug "confirm: '${prompt}' → yes (FP_ASSUME_YES=1)"
-        return 0
+        if [ "$default" = "default-yes" ]; then
+            log_debug "confirm: '${prompt}' → yes (FP_ASSUME_YES=1)"
+            return 0
+        fi
+        log_debug "confirm: '${prompt}' → no (FP_ASSUME_YES=1 resolves default-no prompts to no)"
+        return 1
     fi
 
     case "$default" in

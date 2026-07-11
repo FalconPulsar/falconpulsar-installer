@@ -28,13 +28,15 @@ set -o errexit
 set -o nounset
 set -o pipefail
 
-# Release URLs. `/releases/latest/download/` is a stable GitHub alias that
-# always resolves to the most recent published release's asset with the
-# matching name. No version hard-coded here -- one bootstrap script works
-# across versions.
-FP_RELEASE_BASE="${FP_RELEASE_BASE:-https://github.com/FalconPulsar/falconpulsar-installer/releases/latest/download}"
-INSTALL_URL="${FP_RELEASE_BASE}/install-linux.sh"
-UNINSTALL_URL="${FP_RELEASE_BASE}/uninstall-linux.sh"
+# Release URLs. GitHub's `/releases/latest/download/` alias excludes
+# prereleases, and FalconPulsar currently ships prerelease tags only
+# (v0.1.4-alpha.X) — the alias 404s. So the newest release tag (prereleases
+# included) is resolved via the GitHub API below, mirroring
+# shared/lib/fpcli.sh, with the /latest alias kept only as the fallback
+# when the API is unreachable. No version hard-coded here -- one bootstrap
+# script works across versions. FP_RELEASE_BASE skips the lookup entirely.
+FP_REPO="${FP_REPO:-FalconPulsar/falconpulsar-installer}"
+FP_RELEASE_BASE="${FP_RELEASE_BASE:-}"
 
 # Small helpers so the bootstrap has a consistent voice before it hands off
 # to the real script. Colors only if stderr is a TTY.
@@ -71,8 +73,10 @@ Examples:
   curl -fsSL https://get.falconpulsar.com/linux | sudo bash -s -- uninstall --purge --yes
 
 Environment overrides:
-  FP_RELEASE_BASE   override the release-asset base URL
-                    (default: ${FP_RELEASE_BASE})
+  FP_REPO           GitHub repository the release assets are pulled from
+                    (default: ${FP_REPO})
+  FP_RELEASE_BASE   override the release-asset base URL and skip the
+                    GitHub API release lookup entirely
 EOF
 }
 
@@ -108,6 +112,33 @@ trap 'rm -rf "$TMP"' EXIT
 
 INSTALL_SH="$TMP/install.sh"
 UNINSTALL_SH="$TMP/uninstall.sh"
+
+# Resolve the newest release tag (prereleases included) via the GitHub API
+# — same idiom as fp_download_release_asset in shared/lib/fpcli.sh: one
+# `/releases?per_page=1` call, tag parsed with awk (no jq dependency).
+# Only when the API is unreachable (offline, rate-limited proxy, ...) fall
+# back to the /releases/latest alias and hope a stable release exists.
+if [ -z "$FP_RELEASE_BASE" ]; then
+    API_RELEASES="https://api.github.com/repos/${FP_REPO}/releases?per_page=1"
+    API_JSON="$TMP/releases.json"
+    HTTP_CODE="$(curl -sSL -o "$API_JSON" -w '%{http_code}' \
+        -H "Accept: application/vnd.github+json" \
+        "$API_RELEASES" 2>/dev/null || true)"
+    TAG=""
+    if [ "$HTTP_CODE" = "200" ]; then
+        TAG="$(awk -F'"' '/"tag_name":/ { print $4; exit }' "$API_JSON" 2>/dev/null)"
+    fi
+    rm -f "$API_JSON"
+    if [ -n "$TAG" ]; then
+        bs_info "Newest release: $TAG"
+        FP_RELEASE_BASE="https://github.com/${FP_REPO}/releases/download/${TAG}"
+    else
+        bs_info "GitHub API gave no release (HTTP ${HTTP_CODE:-no-response}) -- falling back to /releases/latest"
+        FP_RELEASE_BASE="https://github.com/${FP_REPO}/releases/latest/download"
+    fi
+fi
+INSTALL_URL="${FP_RELEASE_BASE}/install-linux.sh"
+UNINSTALL_URL="${FP_RELEASE_BASE}/uninstall-linux.sh"
 
 bs_info "Downloading install bundle..."
 if ! curl -fsSL "$INSTALL_URL" -o "$INSTALL_SH"; then

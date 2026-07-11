@@ -7,16 +7,18 @@
 #
 #   - Stops and removes the docker containers + the falconpulsar bridge network
 #   - Disables the systemd user unit (if installed) and disables linger
-#   - Optionally deletes ${FP_HOME} (compose.yml, .env, data/,
-#     ai-gateway-data/) — asks first
-#   - Optionally removes the falconpulsar system user — asks first
+#   - Deletes ${FP_HOME} (compose.yml, .env, data/, ai-gateway-data/)
+#     ONLY when --purge is passed (interactive runs confirm once first)
+#   - Removes the falconpulsar system user + group (service-user installs,
+#     --purge only)
 #
 # Does NOT touch:
 #   - Docker Engine itself (we don't know if you installed it for FP only)
 #   - Pulled images on disk (use `docker image prune` if you want them gone)
 #
 # Usage:
-#   sudo bash uninstall.sh                    # interactive
+#   sudo bash uninstall.sh                    # keep data (default)
+#   sudo bash uninstall.sh --purge            # delete data + user, asks once
 #   sudo bash uninstall.sh --purge --yes      # delete data + user, no prompts
 # =============================================================================
 
@@ -55,7 +57,36 @@ else
     log_warn()    { echo "[warn] $1"; }
     log_error()   { echo "[error] $1" >&2; }
     die()         { log_error "$1"; exit 1; }
-    confirm()     { return 0; }
+    # Standalone fallback — mirrors shared/lib/common.sh confirm(): prompts
+    # on /dev/tty and resolves to the STATED DEFAULT when no answer can be
+    # read (no tty) or FP_ASSUME_YES=1. Default-no gates the destructive
+    # steps below, so this must never auto-answer yes: the planted copy at
+    # ${FP_HOME}/uninstall.sh always runs on this fallback, and an earlier
+    # `return 0` stub silently purged data on every run.
+    confirm() {
+        local prompt="$1" default="${2:-default-no}" hint reply
+        if [ "${FP_ASSUME_YES:-0}" = "1" ]; then
+            [ "$default" = "default-yes" ]
+            return
+        fi
+        if [ "$default" = "default-yes" ]; then hint="[Y/n]"; else hint="[y/N]"; fi
+        printf '%s %s ' "$prompt" "$hint" >&2
+        reply=''
+        # 2>/dev/null before </dev/tty: redirections apply left to right,
+        # and a failed /dev/tty open would otherwise print its own error.
+        if ! read -r reply 2>/dev/null </dev/tty; then
+            [ "$default" = "default-yes" ]
+            return
+        fi
+        if [ -z "$reply" ]; then
+            [ "$default" = "default-yes" ]
+            return
+        fi
+        case "$reply" in
+            y|Y|yes|YES|Yes) return 0 ;;
+            *)               return 1 ;;
+        esac
+    }
     require_root() { [ "$(id -u)" -eq 0 ] || die "must run as root"; }
     on_error()    { log_error "failed at line $1"; }
     is_wsl() {
@@ -113,6 +144,7 @@ while [ $# -gt 0 ]; do
             shift 2 ;;
         --home)   FP_HOME="$2"; shift 2 ;;
         --purge)  FP_PURGE=1; shift ;;
+        --keep)   FP_PURGE=0; shift ;;
         -y|--yes) FP_ASSUME_YES=1; shift ;;
         --force)  FP_FORCE=1; shift ;;
         -h|--help)
@@ -123,8 +155,11 @@ Usage: uninstall.sh [options]
                     WSL default:          the invoking human user (NOT removed)
   --home <path>   Stack directory (default derived from --user)
   --purge         Also delete the stack directory and its database
-                    (service-user mode: also removes the system user)
-  --yes, -y       Assume yes to all prompts
+                    (service-user mode: also removes the system user).
+                    Data is only ever deleted when this flag is passed.
+  --keep          Keep the stack directory and data (default)
+  --yes, -y       No prompts. Answers yes to safe prompts only — data
+                    deletion still requires an explicit --purge
   --force         Skip admin authentication (emergency use only)
 EOF
             exit 0
@@ -204,6 +239,18 @@ else
     else
         log_warn "auth.sh not found — proceeding without admin auth"
     fi
+fi
+
+# Resolve the purge decision up front — several destructive steps below
+# (compose down --volumes, volume pruning, the final rm -rf) key off
+# FP_PURGE. --purge on an interactive run double-checks once here;
+# --purge --yes proceeds without prompting. Without --purge, data is
+# ALWAYS kept: deletion is gated strictly on the explicit flag, never on
+# a confirm() answer alone.
+if [ "$FP_PURGE" -eq 1 ] && \
+   ! confirm "delete ${FP_HOME} (including the time-series database and AI Gateway data)?" default-yes; then
+    FP_PURGE=0
+    log_info "purge declined — keeping data (${FP_HOME} preserved)"
 fi
 
 # Append a run marker to the install log (best-effort). Earlier versions
@@ -313,7 +360,13 @@ fi
 # IMPORTANT: rm -rf $FP_HOME is the LAST filesystem operation below.
 # This script may live at $FP_HOME/uninstall.sh; removing $FP_HOME while
 # bash is reading it line-by-line would cause premature EOF.
-if [ "$FP_PURGE" -eq 1 ] || confirm "delete ${FP_HOME} (including the time-series database and AI Gateway data)?" default-no; then
+#
+# Deletion is gated STRICTLY on --purge (resolved through the confirmation
+# up top). A yes from confirm() alone must never stand between the user
+# and their database — the copy of this script planted in ${FP_HOME} runs
+# on the standalone fallback helpers, and a broken confirm() there used
+# to auto-answer yes on every run.
+if [ "$FP_PURGE" -eq 1 ]; then
     log_step "removing ${FP_HOME}"
     # Remove child directories first to shrink what the final rm has to do.
     # :? guards against FP_HOME being unset/empty — would otherwise rm /bin.
@@ -323,11 +376,18 @@ if [ "$FP_PURGE" -eq 1 ] || confirm "delete ${FP_HOME} (including the time-serie
     log_success "deleted ${FP_HOME}"
 
     if [ "$FP_INSTALL_MODEL" = "service-user" ]; then
-        if [ "$FP_PURGE" -eq 1 ] || confirm "remove the ${FP_USER} system user?" default-no; then
-            log_step "removing user ${FP_USER}"
-            userdel "$FP_USER" 2>/dev/null || true
-            log_success "user ${FP_USER} removed"
+        log_step "removing user ${FP_USER}"
+        userdel "$FP_USER" 2>/dev/null || true
+        # userdel keeps the group when it still has members (install.sh
+        # adds the invoking human to it), and a leftover group wedges the
+        # next fresh install's useradd with "group falconpulsar exists".
+        # Safe once the user is gone: groupdel only refuses to remove a
+        # group that is still some user's primary group.
+        if getent group "$FP_USER" >/dev/null 2>&1; then
+            groupdel "$FP_USER" 2>/dev/null || \
+                log_warn "could not remove group ${FP_USER} — remove it manually: sudo groupdel ${FP_USER}"
         fi
+        log_success "user ${FP_USER} removed"
     else
         log_info "per-user install -- leaving the human user '${FP_USER}' in place"
     fi

@@ -96,3 +96,29 @@ jobs:
         # --check exits non-zero if any site has drifted, so a forgotten
         # version bump can never reach main.
         run: scripts/sync-version.sh --check
+
+  bundle:
+    name: bundles contain their script bodies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build and verify the release bundles
+        # bundle.sh extracts each top-level script's body with an awk
+        # anchor. If the anchor drifts out of sync with the script headers,
+        # the bundle still builds, ships, and exits 0 — with no body at all
+        # (exactly how the published uninstall-linux.sh once became a
+        # silent no-op). Assert each bundle parses and still defines a
+        # function that only its embedded body provides.
+        run: |
+          set -e
+          out="$(mktemp -d)"
+          .github/scripts/bundle.sh linux           > "$out/install-linux.sh"
+          .github/scripts/bundle.sh macos           > "$out/install-macos.sh"
+          .github/scripts/bundle.sh linux-uninstall > "$out/uninstall-linux.sh"
+          for f in "$out"/*.sh; do
+            bash -n "$f"
+          done
+          grep -q 'print_help()'         "$out/install-linux.sh"
+          grep -q 'detect_mac_runtime()' "$out/install-macos.sh"
+          grep -q 'run_as_fp_user()'     "$out/uninstall-linux.sh"

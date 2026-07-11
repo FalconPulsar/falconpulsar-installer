@@ -163,11 +163,19 @@ fi
 echo "REPO_ROOT=\"\${__FP_BUNDLE_DIR}\""
 echo 'SCRIPT_DIR="${REPO_ROOT}/'"${SUBDIR}"'"'
 echo
-# Skip the header up to the first "# shellcheck source=" line (which is
-# the first sourced lib in both install.sh and uninstall.sh).
+# Skip the header up to and including the column-0 REPO_ROOT= resolution
+# line — the last header line in install.sh and uninstall.sh, and the one
+# this bundle replaces with its own definition above. Do NOT anchor on the
+# first "# shellcheck source=" line instead: uninstall.sh's markers are
+# indented inside its lib-detection if-block, so a marker anchor either
+# misses entirely (column-0 match — the body comes out empty) or cuts
+# mid-block (whitespace-tolerant match — the orphaned else/fi is a syntax
+# error).
+grep -c '^REPO_ROOT=' "$INSTALL_SH" | grep -qx '1' \
+    || { echo "ERROR: expected exactly one column-0 REPO_ROOT= line in $INSTALL_SH" >&2; exit 1; }
 awk '
-    /^# shellcheck source=/ { found=1 }
     found { print }
+    /^REPO_ROOT=/ { found=1 }
 ' "$INSTALL_SH"
 if [ "$PLATFORM" = "linux-uninstall" ]; then
     echo '# ---------- end embedded uninstall.sh ----------'

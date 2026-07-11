@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/falconpulsar/falconpulsar-installer/console/internal/actions"
 	"github.com/falconpulsar/falconpulsar-installer/console/internal/api"
 	"golang.org/x/term"
 )
@@ -37,7 +38,7 @@ func PromptAdmin(ctx context.Context, reason string) (*api.Client, string, strin
 	}
 	pass := string(passBytes)
 
-	cli := api.New()
+	cli := actions.NewAPIClient()
 	if err := cli.Login(ctx, user, pass); err != nil {
 		return nil, "", "", err
 	}

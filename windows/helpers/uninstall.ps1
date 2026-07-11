@@ -5,10 +5,13 @@
 #
 #   Default (no -Purge):
 #     - Stop and remove Docker containers
-#     - Remove compose.yml and .env
+#     - Remove compose.yml (product-managed; re-provisioned on reinstall)
 #     - Remove staged installer files at /opt/falconpulsar-installer
 #     - Remove Start Menu shortcuts
 #     - KEEP /home/falconpulsar/data (database preserved)
+#     - KEEP .env and gateway.yaml (.env carries FP_GATEWAY_SECRET -- the
+#       key that encrypts the provider API keys in the preserved AI data;
+#       the reinstall carry-forward reads it)
 #     - KEEP the falconpulsar user
 #     - KEEP the WSL distro
 #
@@ -227,9 +230,17 @@ else
     fi
 fi
 
-# Remove stack files in this home (but NOT the data dir unless -Purge;
-# -Purge deletes the whole home in Step 3 below).
-rm -f "`$HOME_DIR/compose.yml" "`$HOME_DIR/.env" "`$HOME_DIR/gateway.yaml" 2>/dev/null
+# Remove compose.yml (product-managed; the installer re-provisions it).
+# Keep mode preserves .env and gateway.yaml alongside the data dirs:
+# .env carries FP_GATEWAY_SECRET -- the key that encrypts the provider
+# API keys in the preserved AI data -- plus FP_API_KEY, which the
+# reinstall carry-forward reads (see 40-run-fp-installer.ps1's reinstall
+# prep; mirrors the macOS keep semantics). -Purge deletes the whole home
+# in Step 3 below.
+rm -f "`$HOME_DIR/compose.yml" 2>/dev/null
+if [ "`$PURGE" = "1" ]; then
+    rm -f "`$HOME_DIR/.env" "`$HOME_DIR/gateway.yaml" 2>/dev/null
+fi
 echo "[info] cleaned `$HOME_DIR"
 "@
     $null = Invoke-WslBash -Distro $Distro -Script $cleanupScript -User root
@@ -262,6 +273,7 @@ echo '[info] Purge complete'
 } else {
     $firstHome = $WslHomes | Select-Object -First 1
     Write-Info ("Data preserved at {0}/data" -f $firstHome)
+    Write-Info ("Gateway credentials preserved in {0}/.env" -f $firstHome)
     Write-Info ("To access: wsl -d {0} -- ls '{1}/data'" -f $Distro, $firstHome)
 }
 

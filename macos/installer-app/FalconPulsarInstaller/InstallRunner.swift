@@ -210,7 +210,24 @@ enum InstallRunner {
                         log("[warn] Could not update \(name): \(error)")
                     }
                 }
+                // fileExists(atPath:) alone returns true for a DIRECTORY at
+                // this path — which is exactly what Docker plants when the
+                // stack was ever started while gateway.yaml was missing
+                // (bind-mount sources are auto-created as directories). A
+                // directory here means the gateway crash-loops and the
+                // upgrade dies at the health gate, so replace it with the
+                // bundled default instead of skipping the restore.
                 let gatewayCfg = "\(stackHome)/gateway.yaml"
+                var gatewayCfgIsDir: ObjCBool = false
+                let gatewayCfgExists = FileManager.default.fileExists(atPath: gatewayCfg, isDirectory: &gatewayCfgIsDir)
+                if gatewayCfgExists && gatewayCfgIsDir.boolValue {
+                    log("[warn] gateway.yaml is a directory (Docker bind-mount artifact) — replacing it with the bundled default")
+                    do {
+                        try FileManager.default.removeItem(atPath: gatewayCfg)
+                    } catch {
+                        log("[warn] Could not remove directory at gateway.yaml: \(error)")
+                    }
+                }
                 if !FileManager.default.fileExists(atPath: gatewayCfg),
                    FileManager.default.fileExists(atPath: "\(sharedDir)/gateway.yaml") {
                     try? FileManager.default.copyItem(atPath: "\(sharedDir)/gateway.yaml", toPath: gatewayCfg)

@@ -85,15 +85,17 @@ func cmdStatus() *cobra.Command {
 		Short: "Show stack status (Core, UI, AI Capabilities, REST API)",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			st := actions.Poll(context.Background())
+			aiIncomplete := actions.AISetupIncomplete()
 			if asJSON {
 				enc := json.NewEncoder(os.Stdout)
 				enc.SetIndent("", "  ")
 				return enc.Encode(map[string]any{
-					"core":      st.Core,
-					"ui":        st.UI,
-					"gateway":   st.Gateway,
-					"api":       st.APIHealthy,
-					"aggregate": st.Aggregate(),
+					"core":                st.Core,
+					"ui":                  st.UI,
+					"gateway":             st.Gateway,
+					"api":                 st.APIHealthy,
+					"aggregate":           st.Aggregate(),
+					"ai_setup_incomplete": aiIncomplete,
 				})
 			}
 			printRow := func(name string, ok bool, note string) {
@@ -107,10 +109,16 @@ func cmdStatus() *cobra.Command {
 			}
 			fmt.Println("FalconPulsar status:")
 			printRow("Core", st.Core, "")
-			printRow("Web UI", st.UI, "http://localhost:8080")
+			printRow("Web UI", st.UI, actions.UIURL())
 			printRow("AI Capabilities", st.Gateway, "")
-			printRow("REST API", st.APIHealthy, "http://localhost:7433")
+			printRow("REST API", st.APIHealthy, actions.RestURL())
 			fmt.Printf("\nAggregate: %s\n", st.Aggregate())
+			if aiIncomplete {
+				fmt.Printf("\n%s AI setup is incomplete: the AI gateway has no service token, so\n",
+					colorText("⚠", colorYellow))
+				fmt.Println("  AI features remain offline. Re-run the FalconPulsar installer with")
+				fmt.Println("  FP_ADMIN_USER and FP_ADMIN_PASS set to finish AI setup.")
+			}
 			// Exit code tells scripts the overall state
 			switch st.Aggregate() {
 			case "running":
@@ -176,7 +184,7 @@ func cmdOpen() *cobra.Command {
 		Use:   "open",
 		Short: "Open the FalconPulsar Web UI in the default browser",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return actions.OpenURL("http://localhost:8080")
+			return actions.OpenURL(actions.UIURL())
 		},
 	}
 }
@@ -458,11 +466,12 @@ func cmdAbout() *cobra.Command {
 
 			// Local endpoints -- duplicated in the TUI About modal and
 			// useful here for shell pipelines (e.g. piping to grep to
-			// extract a port number for a script).
+			// extract a port number for a script). Ports honor any
+			// FP_*_PORT remap in the stack's .env.
 			fmt.Println("Endpoints:")
-			fmt.Println("  Web UI          http://localhost:8080")
-			fmt.Println("  REST API        http://localhost:7433")
-			fmt.Println("  AI Gateway      http://localhost:7436")
+			fmt.Printf("  Web UI          %s\n", actions.UIURL())
+			fmt.Printf("  REST API        %s\n", actions.RestURL())
+			fmt.Printf("  AI Gateway      %s\n", actions.GatewayURL())
 			fmt.Println()
 
 			fmt.Println("Website:          https://falconpulsar.com")

@@ -44,6 +44,13 @@ set -o pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 
+# Snapshot operator-provided registry overrides BEFORE the sources below —
+# registry_auth.sh defaults FP_REGISTRY/FP_VERSION at source time, and the
+# reinstall .env seeding further down must be able to tell an explicit
+# operator choice from that fallback.
+FP_REGISTRY_FROM_ENV="${FP_REGISTRY:-}"
+FP_VERSION_FROM_ENV="${FP_VERSION:-}"
+
 # shellcheck source=../shared/lib/common.sh
 . "${REPO_ROOT}/shared/lib/common.sh"
 # shellcheck source=../shared/lib/checks.sh
@@ -62,14 +69,11 @@ REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 trap 'on_error $LINENO' ERR
 
 # ── Defaults ────────────────────────────────────────────────────────────────
+# Layout and port settings deliberately stay unset here unless the
+# environment (or a flag below) provides them: on a reinstall they are
+# first seeded from the existing install's .env, and the hard defaults are
+# applied only after that — see the seeding block before the port check.
 FP_HOME="${FP_HOME:-${HOME}/falconpulsar}"
-FP_DATA_DIR="${FP_DATA_DIR:-${FP_HOME}/data}"
-FP_GATEWAY_DATA_DIR="${FP_GATEWAY_DATA_DIR:-${FP_HOME}/ai-gateway-data}"
-FP_REST_PORT="${FP_REST_PORT:-7433}"
-FP_WS_PORT="${FP_WS_PORT:-7434}"
-FP_PUBSUB_PORT="${FP_PUBSUB_PORT:-7435}"
-FP_GATEWAY_PORT="${FP_GATEWAY_PORT:-7436}"
-FP_UI_PORT="${FP_UI_PORT:-8080}"
 FP_LOG_LEVEL="${FP_LOG_LEVEL:-info}"
 
 print_help() {
@@ -89,7 +93,7 @@ EOF
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --home)        FP_HOME="$2"; FP_DATA_DIR="${FP_HOME}/data"; shift 2 ;;
+        --home)        FP_HOME="$2"; shift 2 ;;
         --data-dir)    FP_DATA_DIR="$2"; shift 2 ;;
         --rest-port)   FP_REST_PORT="$2"; shift 2 ;;
         --ui-port)     FP_UI_PORT="$2"; shift 2 ;;
@@ -288,6 +292,59 @@ else
     log_info "no existing install detected — proceeding with fresh install"
 fi
 
+# ── Carry sticky settings forward from the existing .env ───────────────────
+# The full flow rewrites .env from this shell's values, so on a reinstall
+# (or an upgrade that fell through from the fast-path) anything not re-read
+# here silently reverts to defaults: a custom data dir comes back as
+# ${FP_HOME}/data (core re-inits an empty database while the real one sits
+# orphaned at the custom path), remapped ports revert to 7433/…/8080, and a
+# pinned FP_VERSION jumps to "latest". Seed unset settings from the
+# existing .env before the port check below so the ports being verified are
+# the ones the stack will actually use. Explicit flags and operator-set
+# environment values always win — only unset settings are seeded.
+fp_seed_from_existing_env() {
+    local var="$1" val
+    [ -n "${!var:-}" ] && return 0
+    # tr: tolerate CRLF line endings from a hand-edited / restored .env.
+    # tail -n1: last occurrence wins, matching docker compose's env-file
+    # semantics, so a hand-appended override seeds the same value the
+    # stack actually runs with.
+    val="$(grep "^${var}=" "${FP_HOME}/.env" | tail -n1 | cut -d= -f2- | tr -d '\r' || true)"
+    [ -n "$val" ] || return 0
+    printf -v "$var" '%s' "$val"
+    log_info "carried ${var}=${val} forward from existing .env"
+}
+if [ -f "${FP_HOME}/.env" ]; then
+    for setting in FP_DATA_DIR FP_GATEWAY_DATA_DIR \
+                   FP_REST_PORT FP_WS_PORT FP_PUBSUB_PORT FP_GATEWAY_PORT FP_UI_PORT \
+                   FP_COOKIE_SECURE FP_UPDATE_MODE; do
+        fp_seed_from_existing_env "$setting"
+    done
+    # FP_REGISTRY/FP_VERSION were already defaulted when registry_auth.sh
+    # was sourced above — consult the pre-source snapshot so the values
+    # recorded in .env win over that fallback (but never over an operator
+    # override), and the registry probe below validates the same
+    # registry:tag the pull will use.
+    if [ -z "$FP_REGISTRY_FROM_ENV" ]; then
+        FP_REGISTRY=""
+        fp_seed_from_existing_env FP_REGISTRY
+        FP_REGISTRY="${FP_REGISTRY:-falconpulsar}"
+    fi
+    if [ -z "$FP_VERSION_FROM_ENV" ]; then
+        FP_VERSION=""
+        fp_seed_from_existing_env FP_VERSION
+        FP_VERSION="${FP_VERSION:-latest}"
+    fi
+fi
+# Hard defaults for whatever is still unset (fresh install, sparse .env).
+FP_DATA_DIR="${FP_DATA_DIR:-${FP_HOME}/data}"
+FP_GATEWAY_DATA_DIR="${FP_GATEWAY_DATA_DIR:-${FP_HOME}/ai-gateway-data}"
+FP_REST_PORT="${FP_REST_PORT:-7433}"
+FP_WS_PORT="${FP_WS_PORT:-7434}"
+FP_PUBSUB_PORT="${FP_PUBSUB_PORT:-7435}"
+FP_GATEWAY_PORT="${FP_GATEWAY_PORT:-7436}"
+FP_UI_PORT="${FP_UI_PORT:-8080}"
+
 # ── Phantom-container sweep ─────────────────────────────────────────────────
 # Same problem the Linux installer solves: containers from a previous
 # install whose stack directory has been removed manually (or whose
@@ -328,6 +385,15 @@ prompt_admin_credentials
 cp "${REPO_ROOT}/shared/compose.yml" "${FP_HOME}/compose.yml"
 cp "${REPO_ROOT}/shared/nginx.conf" "${FP_HOME}/nginx.conf"
 
+# Repair a Docker artifact first: if the stack was ever started while
+# gateway.yaml was missing, Docker created a DIRECTORY at the bind-mount
+# point. [ ! -f ] below is false for a directory, so the default config
+# would never land and the gateway would crash-loop on it forever.
+if [ -d "${FP_HOME}/gateway.yaml" ]; then
+    rm -rf "${FP_HOME}/gateway.yaml"
+    log_warn "removed directory at ${FP_HOME}/gateway.yaml (Docker bind-mount artifact)"
+fi
+
 # Copy the AI Gateway config if it doesn't already exist (operator edits
 # survive reinstalls). The compose ai-gateway service bind-mounts this file
 # read-only, so a missing source is fatal — Docker would otherwise create a
@@ -363,6 +429,19 @@ if [ -f "${FP_HOME}/.env" ]; then
             log_info "preserved FP_BRIDGE_TOKEN from existing .env"
         fi
     fi
+fi
+
+# A carried-forward FP_API_KEY is only valid against the core database it
+# was minted in. When that database does not survive into this install
+# (data dir missing or empty — core's first-run init will build a fresh
+# one), drop the token so the bootstrap mint runs; keeping it would
+# suppress the mint and leave the gateway healthy-but-unauthorized
+# against core. FP_GATEWAY_SECRET is still carried: it encrypts provider
+# keys in the gateway's own database, which lives elsewhere.
+if [ -n "${OLD_FP_API_KEY}" ] && \
+   { [ ! -d "${FP_DATA_DIR}" ] || [ -z "$(ls -A "${FP_DATA_DIR}" 2>/dev/null)" ]; }; then
+    log_warn "found FP_API_KEY in the old .env but no surviving database in ${FP_DATA_DIR} — a new gateway service token will be minted"
+    OLD_FP_API_KEY=""
 fi
 
 # SEC-001: Generate (or preserve) FP_BRIDGE_TOKEN.

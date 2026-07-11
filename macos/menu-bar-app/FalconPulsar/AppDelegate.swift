@@ -426,14 +426,41 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func isAPIHealthy() -> Bool {
-        let output = shell("curl -sf http://localhost:7433/api/v1/health 2>/dev/null")
+        let output = shell("curl -sf http://localhost:\(restPort)/api/v1/health 2>/dev/null")
         return !output.isEmpty
     }
+
+    // MARK: - Stack .env
+
+    /// Reads one value out of the stack's .env. Returns nil when the file or
+    /// key is missing. Last occurrence wins, matching docker compose's own
+    /// env-file semantics, so a hand-appended override behaves the same here
+    /// and in the stack itself.
+    private func envValue(_ key: String) -> String? {
+        guard let content = try? String(contentsOfFile: "\(homeDir)/.env", encoding: .utf8) else {
+            return nil
+        }
+        var value: String?
+        for line in content.components(separatedBy: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard trimmed.hasPrefix("\(key)=") else { continue }
+            let v = String(trimmed.dropFirst(key.count + 1)).trimmingCharacters(in: .whitespaces)
+            if !v.isEmpty { value = v }
+        }
+        return value
+    }
+
+    /// Ports come from the stack's .env so port-remapped installs report
+    /// health and open the Web UI correctly; the literals are only the
+    /// installer defaults, used when .env is missing or doesn't set them.
+    private var restPort: String { envValue("FP_REST_PORT") ?? "7433" }
+    private var uiPort: String { envValue("FP_UI_PORT") ?? "8080" }
 
     // MARK: - Actions
 
     @objc func openWebUI() {
-        NSWorkspace.shared.open(URL(string: "http://localhost:8080")!)
+        guard let url = URL(string: "http://localhost:\(uiPort)") else { return }
+        NSWorkspace.shared.open(url)
     }
 
     @objc func startStack() {
@@ -1266,7 +1293,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 // script should not try to prompt for credentials again via
                 // /dev/tty (which isn't attached in a GUI-launched shell and
                 // would just fail + exit without cleanup).
-                _ = self?.runArgs("/bin/bash", [scriptPath, purgeFlag, "--yes", "--force"])
+                //
+                // FP_MENUBAR_UNINSTALL=1 tells the script we are its parent:
+                // its usual first step — pkill FalconPulsarMenuBar — would
+                // SIGTERM this very app, closing the output pipe and killing
+                // the cleanup mid-run. With the flag set the script skips
+                // that step; we quit ourselves after the completion alert.
+                _ = self?.runArgs("/bin/bash", [scriptPath, purgeFlag, "--yes", "--force"],
+                                  extraEnv: ["FP_MENUBAR_UNINSTALL": "1"])
             } else {
                 self?.inlineUninstall(purge: purge)
             }
@@ -1326,12 +1360,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             _ = shell("docker volume ls --format '{{.Name}}' 2>/dev/null | grep -E '^falconpulsar' | xargs -r docker volume rm -f 2>/dev/null || true")
         }
 
-        // 4. Remove ~/falconpulsar (purge: whole tree; keep: only compose.yml + .env).
+        // 4. Remove ~/falconpulsar (purge: whole tree; keep: application
+        // files only, mirroring uninstall.sh's keep semantics). Keep-data
+        // mode preserves .env — it carries FP_GATEWAY_SECRET, which encrypts
+        // the provider API keys inside the preserved ai_config.db; deleting
+        // it would make a reinstall mint a fresh secret and permanently
+        // orphan those keys.
         if purge {
             try? fm.removeItem(atPath: stackDir)
         } else {
             try? fm.removeItem(atPath: "\(stackDir)/compose.yml")
-            try? fm.removeItem(atPath: "\(stackDir)/.env")
+            try? fm.removeItem(atPath: "\(stackDir)/.docker")
+            try? fm.removeItem(atPath: "\(stackDir)/bin")
         }
 
         // 5. Remove the menu bar app from both Applications locations.
@@ -1386,6 +1426,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Shell
 
+    /// Drains the process's combined output on a background thread WHILE the
+    /// child runs, then waits for exit. Reading only after `waitUntilExit`
+    /// deadlocks once the child outgrows the 64 KB pipe buffer, and any child
+    /// that must outlive a hiccup in this app (uninstall.sh in particular)
+    /// needs a reader that keeps the pipe open for its entire lifetime.
+    private func drainAndWait(_ process: Process, _ pipe: Pipe) -> String {
+        var data = Data()
+        let drained = DispatchSemaphore(value: 0)
+        let handle = pipe.fileHandleForReading
+        DispatchQueue.global(qos: .utility).async {
+            data = handle.readDataToEndOfFile()
+            drained.signal()
+        }
+        process.waitUntilExit()
+        drained.wait()
+        return String(data: data, encoding: .utf8) ?? ""
+    }
+
     /// Legacy helper that runs a command string via `/bin/bash -c`. Subject to
     /// shell parsing/quoting on every interpolated value, so prefer `runArgs`
     /// for any new call site that touches a path, filename, or container name.
@@ -1401,17 +1459,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         process.arguments = ["-c", "\(pathExport); \(command)"]
         process.launchPath = "/bin/bash"
         process.launch()
-        process.waitUntilExit()
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        return String(data: data, encoding: .utf8) ?? ""
+        return drainAndWait(process, pipe)
     }
 
     /// Argv-form runner: launches `launchPath` with `args` directly, with no
     /// shell interpreter in the middle, so paths/filenames containing spaces
     /// or shell metacharacters are passed through verbatim. Returns combined
-    /// stdout+stderr as a String for parity with `shell()`.
+    /// stdout+stderr as a String for parity with `shell()`. `extraEnv`
+    /// entries are merged over the inherited environment.
     @discardableResult
-    private func runArgs(_ launchPath: String, _ args: [String], cwd: String? = nil) -> String {
+    private func runArgs(_ launchPath: String, _ args: [String], cwd: String? = nil,
+                         extraEnv: [String: String] = [:]) -> String {
         let process = Process()
         let pipe = Pipe()
         process.standardOutput = pipe
@@ -1428,15 +1486,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let dockerBin = "/Applications/Docker.app/Contents/Resources/bin"
         let extra = "\(dockerBin):/usr/local/bin:/opt/homebrew/bin"
         env["PATH"] = extra + ":" + (env["PATH"] ?? "/usr/bin:/bin")
+        for (key, value) in extraEnv {
+            env[key] = value
+        }
         process.environment = env
         do {
             try process.run()
         } catch {
             return "runArgs failed to launch \(launchPath): \(error)"
         }
-        process.waitUntilExit()
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        return String(data: data, encoding: .utf8) ?? ""
+        return drainAndWait(process, pipe)
     }
 
     /// Resolve the docker CLI binary, mirroring the resolution order used

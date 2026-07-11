@@ -58,6 +58,15 @@ REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 . "${REPO_ROOT}/shared/lib/prompts.sh"
 # shellcheck source=../shared/lib/bootstrap.sh
 . "${REPO_ROOT}/shared/lib/bootstrap.sh"
+# registry_auth.sh defaults FP_REGISTRY and FP_VERSION at source time, so
+# record whether the operator pinned them first — the reinstall carry-forward
+# below must be able to tell an explicit pin from the library default when
+# it seeds settings from a pre-existing .env. (eval keeps the *_EXPLICIT
+# markers pairable by name with the variables that carry-forward loop reads.)
+for _fp_var in FP_REGISTRY FP_VERSION; do
+    eval "${_fp_var}_EXPLICIT=\${${_fp_var}:+1}"
+done
+unset _fp_var
 # shellcheck source=../shared/lib/registry_auth.sh
 . "${REPO_ROOT}/shared/lib/registry_auth.sh"
 # shellcheck source=../shared/lib/fpcli.sh
@@ -116,6 +125,15 @@ else
         FP_HOME="${FP_HOME:-/home/${FP_USER}/falconpulsar}"
     fi
 fi
+# Record which of these the operator supplied explicitly (environment here,
+# flags below) before the defaults fill in the rest — on a reinstall the
+# non-explicit ones are seeded from the previous .env so custom layouts,
+# port remaps and version pins survive the stack-file rewrite.
+for _fp_var in FP_DATA_DIR FP_GATEWAY_DATA_DIR FP_REST_PORT FP_WS_PORT \
+    FP_PUBSUB_PORT FP_GATEWAY_PORT FP_UI_PORT FP_COOKIE_SECURE FP_UPDATE_MODE; do
+    eval "${_fp_var}_EXPLICIT=\${${_fp_var}:+1}"
+done
+unset _fp_var
 FP_DATA_DIR="${FP_DATA_DIR:-${FP_HOME}/data}"
 FP_GATEWAY_DATA_DIR="${FP_GATEWAY_DATA_DIR:-${FP_HOME}/ai-gateway-data}"
 FP_INSTALL_MODE="${FP_INSTALL_MODE:-}"        # docker | systemd
@@ -176,9 +194,21 @@ while [ $# -gt 0 ]; do
             shift 2
             ;;
         --home)        FP_HOME="$2"; FP_HOME_EXPLICIT=1; FP_DATA_DIR="${FP_HOME}/data"; FP_GATEWAY_DATA_DIR="${FP_HOME}/ai-gateway-data"; shift 2 ;;
-        --data-dir)    FP_DATA_DIR="$2"; shift 2 ;;
-        --rest-port)   FP_REST_PORT="$2"; shift 2 ;;
-        --ui-port)     FP_UI_PORT="$2"; shift 2 ;;
+        --data-dir)
+            FP_DATA_DIR="$2"
+            # shellcheck disable=SC2034  # consumed via eval in the .env carry-forward
+            FP_DATA_DIR_EXPLICIT=1
+            shift 2 ;;
+        --rest-port)
+            FP_REST_PORT="$2"
+            # shellcheck disable=SC2034  # consumed via eval in the .env carry-forward
+            FP_REST_PORT_EXPLICIT=1
+            shift 2 ;;
+        --ui-port)
+            FP_UI_PORT="$2"
+            # shellcheck disable=SC2034  # consumed via eval in the .env carry-forward
+            FP_UI_PORT_EXPLICIT=1
+            shift 2 ;;
         -y|--yes)      FP_ASSUME_YES=1; shift ;;
         --remove-cached-images) FP_REMOVE_CACHED_IMAGES=true; shift ;;
         --keep-cached-images)   FP_REMOVE_CACHED_IMAGES=false; shift ;;
@@ -332,6 +362,43 @@ else
     log_info "no existing install detected — proceeding with fresh install"
 fi
 
+# ── Carry the previous configuration forward from a surviving .env ─────────
+# Reinstalls (and upgrades that fall through to the full flow) rewrite .env
+# from this shell's defaults in step 6, which used to silently reset custom
+# ports, a custom --data-dir (orphaning the database while core re-inits an
+# empty one), a pinned FP_VERSION and a private registry mirror. Seed those
+# values from the existing .env here, before anything consumes them — the
+# port check, the registry probe and the step-6 rewrite must all see the
+# install's real layout. Explicit env/flag values still win (tracked via
+# the *_EXPLICIT markers set alongside the defaults above). The fresh path
+# is unaffected: fp_apply_existing_action deleted ${FP_HOME} — and the .env
+# with it — before we get here.
+if [ -f "${FP_HOME}/.env" ]; then
+    _fp_seeded=""
+    for _fp_var in FP_DATA_DIR FP_GATEWAY_DATA_DIR FP_REST_PORT FP_WS_PORT \
+        FP_PUBSUB_PORT FP_GATEWAY_PORT FP_UI_PORT FP_REGISTRY FP_VERSION \
+        FP_COOKIE_SECURE FP_UPDATE_MODE; do
+        _fp_explicit=""
+        eval "_fp_explicit=\${${_fp_var}_EXPLICIT:-}"
+        if [ "$_fp_explicit" = "1" ]; then
+            continue
+        fi
+        # tr: tolerate CRLF line endings from a hand-edited / Windows .env.
+        # tail -n1: last occurrence wins, matching docker compose's env-file
+        # semantics, so a hand-appended override seeds the same value the
+        # stack actually runs with.
+        _fp_val="$(sed -n "s/^${_fp_var}=//p" "${FP_HOME}/.env" | tail -n1 | tr -d '\r')"
+        if [ -n "$_fp_val" ]; then
+            eval "${_fp_var}=\"\$_fp_val\""
+            _fp_seeded="${_fp_seeded} ${_fp_var}"
+        fi
+    done
+    if [ -n "$_fp_seeded" ]; then
+        log_info "carrying forward from the existing .env:${_fp_seeded}"
+    fi
+    unset _fp_var _fp_val _fp_explicit _fp_seeded
+fi
+
 # ── Phantom-container sweep ─────────────────────────────────────────────────
 # Containers from a previous install whose stack directory has been
 # removed manually (or whose FP_HOME differs from the one we're about to
@@ -391,6 +458,20 @@ elif [ "$FP_INSTALL_MODEL" = "per-user" ]; then
     # Per-user installs never create a user -- the invoking human must
     # already exist (we validated this up top).
     die "user ${FP_USER} does not exist (per-user install cannot create it)"
+elif getent group "$FP_USER" >/dev/null 2>&1; then
+    # A previous --purge uninstall can leave the group behind: userdel only
+    # removes it when empty, and this installer adds the invoking human to
+    # it below. useradd without -g would then die with "group falconpulsar
+    # exists" and wedge every purge→fresh cycle — reuse the group instead.
+    useradd \
+        --system \
+        --create-home \
+        --home-dir "$FP_HOME" \
+        --shell /bin/bash \
+        --comment "FalconPulsar service account" \
+        -g "$FP_USER" \
+        "$FP_USER"
+    log_success "created ${FP_USER} (home: ${FP_HOME}, reused existing group)"
 else
     useradd \
         --system \
@@ -471,6 +552,13 @@ fi
 # ── Step 5: Install mode selection ──────────────────────────────────────────
 log_step "step 5/8 — install mode"
 if [ -z "$FP_INSTALL_MODE" ]; then
+    # Unattended runs cannot answer the menu below — fail fast with the
+    # exact flag to pass instead of looping on a read that can never
+    # succeed (with stdin at EOF the old loop busy-printed "please answer
+    # 1 or 2" forever).
+    if [ "${FP_ASSUME_YES:-0}" = "1" ]; then
+        die "FP_ASSUME_YES=1 but no install mode selected — re-run with --mode docker (or --mode systemd)"
+    fi
     cat >&2 <<EOF
 
 Choose how FalconPulsar should be managed:
@@ -487,7 +575,12 @@ Choose how FalconPulsar should be managed:
 EOF
     while :; do
         printf '%schoose [1/2]:%s ' "${FP_C_BOLD}" "${FP_C_RESET}" >&2
-        read -r choice || choice=''
+        if ! read -r choice; then
+            # stdin hit EOF (piped install, </dev/null) — retrying would
+            # spin forever on the same failed read.
+            printf '\n' >&2
+            die "no interactive input available for the mode menu — re-run with --mode docker (or --mode systemd)"
+        fi
         case "$choice" in
             1) FP_INSTALL_MODE=docker;  break ;;
             2) FP_INSTALL_MODE=systemd; break ;;
@@ -514,6 +607,16 @@ install -m 0644 -o "$FP_USER" -g "$FP_USER" \
 install -m 0644 -o "$FP_USER" -g "$FP_USER" \
     "${REPO_ROOT}/shared/nginx.conf" \
     "${FP_HOME}/nginx.conf"
+
+# A broken earlier install can leave gateway.yaml as a DIRECTORY: docker
+# auto-creates missing bind-mount sources as directories, so a compose up
+# that ran before the config existed plants one. The copy below would then
+# land INSIDE it (gateway.yaml/gateway.yaml) and the gateway crash-loops
+# on the directory mount. Clear it before provisioning the real file.
+if [ -d "${FP_HOME}/gateway.yaml" ]; then
+    log_warn "${FP_HOME}/gateway.yaml is a directory (docker auto-created it on a broken install) — removing it"
+    rm -rf "${FP_HOME}/gateway.yaml"
+fi
 
 # Copy the AI Gateway config if it doesn't already exist.
 if [ ! -f "${FP_HOME}/gateway.yaml" ] && [ -f "${REPO_ROOT}/shared/gateway.yaml" ]; then
@@ -562,6 +665,19 @@ if [ -f "${FP_HOME}/.env" ]; then
     if [ -n "$FP_EXISTING_API_KEY" ] || [ -n "$FP_EXISTING_GATEWAY_SECRET" ]; then
         log_info "preserving existing gateway credentials from ${FP_HOME}/.env"
     fi
+fi
+
+# A carried-forward FP_API_KEY is only valid against the core database it
+# was minted in. When that database does not survive into this install
+# (data dir missing or empty — core's first-run init will build a fresh
+# one), drop the token so step 7b mints a new one; keeping it would
+# suppress the mint and leave the gateway healthy-but-unauthorized
+# against core. FP_GATEWAY_SECRET is still carried: it encrypts provider
+# keys in the gateway's own database, which lives elsewhere.
+if [ -n "$FP_EXISTING_API_KEY" ] && \
+   { [ ! -d "$FP_DATA_DIR" ] || [ -z "$(ls -A "$FP_DATA_DIR" 2>/dev/null)" ]; }; then
+    log_warn "found FP_API_KEY in the old .env but no surviving database in ${FP_DATA_DIR} — a new gateway service token will be minted"
+    FP_EXISTING_API_KEY=""
 fi
 
 # SEC-001: Generate (or preserve) FP_BRIDGE_TOKEN.

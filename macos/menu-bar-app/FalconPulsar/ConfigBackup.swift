@@ -52,6 +52,29 @@ enum ConfigBackup {
     static let nonceLength = 12
     static let homeDir: String = "\(NSHomeDirectory())/falconpulsar"
 
+    /// Core's base URL. The REST port comes from the stack's .env
+    /// (FP_REST_PORT) so port-remapped installs still reach Core; 7433 is
+    /// only the installer default, used when .env is missing or doesn't
+    /// set the key.
+    static var coreBaseURL: String { "http://localhost:\(envValue("FP_REST_PORT") ?? "7433")" }
+
+    /// Reads one value out of the stack's .env. Returns nil when the file or
+    /// key is missing. Last occurrence wins, matching docker compose's own
+    /// env-file semantics (mirrors AppDelegate.envValue).
+    private static func envValue(_ key: String) -> String? {
+        guard let content = try? String(contentsOfFile: "\(homeDir)/.env", encoding: .utf8) else {
+            return nil
+        }
+        var value: String?
+        for line in content.components(separatedBy: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard trimmed.hasPrefix("\(key)=") else { continue }
+            let v = String(trimmed.dropFirst(key.count + 1)).trimmingCharacters(in: .whitespaces)
+            if !v.isEmpty { value = v }
+        }
+        return value
+    }
+
     struct AdminCredentials {
         let username: String
         let password: String
@@ -86,11 +109,11 @@ enum ConfigBackup {
 
     // MARK: - Authentication + admin verification
 
-    /// Validates credentials against Core at http://localhost:7433 and verifies
+    /// Validates credentials against Core (coreBaseURL) and verifies
     /// the user has the admin role. Returns an AdminCredentials with the auth
     /// token on success; throws BackupError otherwise.
     static func authenticateAsAdmin(username: String, password: String) throws -> AdminCredentials {
-        let loginURL = URL(string: "http://localhost:7433/api/v1/auth/login")!
+        let loginURL = URL(string: "\(coreBaseURL)/api/v1/auth/login")!
         var req = URLRequest(url: loginURL)
         req.httpMethod = "POST"
         req.addValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -116,7 +139,7 @@ enum ConfigBackup {
                 "Cannot reach FalconPulsar Core (\(msg)). Check that the stack is running.")
         } catch {
             throw BackupError.loginFailed(
-                "Cannot reach FalconPulsar Core at http://localhost:7433.")
+                "Cannot reach FalconPulsar Core at \(coreBaseURL).")
         }
         guard let tokenString = token ?? (try? JSONSerialization.jsonObject(with: data)
                                     as? [String: Any])?["token"] as? String,
@@ -125,7 +148,7 @@ enum ConfigBackup {
         }
 
         // Verify role
-        let meURL = URL(string: "http://localhost:7433/api/v1/auth/me")!
+        let meURL = URL(string: "\(coreBaseURL)/api/v1/auth/me")!
         var meReq = URLRequest(url: meURL)
         meReq.addValue("Bearer \(tokenString)", forHTTPHeaderField: "Authorization")
         let (meData, _) = try syncRequest(meReq)
@@ -402,7 +425,7 @@ enum ConfigBackup {
             let items = Self.extractItems(from: json, sectionKey: sec.key)
             for raw in items {
                 let item = Self.stripServerIDs(raw)
-                let url = URL(string: "http://localhost:7433\(sec.path)")!
+                let url = URL(string: "\(coreBaseURL)\(sec.path)")!
                 var req = URLRequest(url: url)
                 req.httpMethod = "POST"
                 req.addValue("Bearer \(creds.token)", forHTTPHeaderField: "Authorization")
@@ -453,7 +476,7 @@ enum ConfigBackup {
 
         for i in 0..<maxIterations {
             let paged = "\(path)\(separator)limit=\(pageLimit)&offset=\(offset)"
-            guard let url = URL(string: "http://localhost:7433\(paged)") else { return nil }
+            guard let url = URL(string: "\(coreBaseURL)\(paged)") else { return nil }
             var req = URLRequest(url: url)
             req.addValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
             guard let (data, _) = try? syncRequest(req) else {

@@ -221,11 +221,11 @@ func (a *App) refreshServices() {
 	var rows []svcRow
 	rows = append(rows, svcRow{"Core", "time-series engine",
 		stateLabel(a.status.Core), dotColor(a.status.Core), stateColor(a.status.Core)})
-	rows = append(rows, svcRow{"Web UI", "http://localhost:8080",
+	rows = append(rows, svcRow{"Web UI", actions.UIURL(),
 		stateLabel(a.status.UI), dotColor(a.status.UI), stateColor(a.status.UI)})
-	rows = append(rows, svcRow{"AI Capabilities", "http://localhost:7436",
+	rows = append(rows, svcRow{"AI Capabilities", actions.GatewayURL(),
 		stateLabel(a.status.Gateway), dotColor(a.status.Gateway), stateColor(a.status.Gateway)})
-	rows = append(rows, svcRow{"REST API", "http://localhost:7433",
+	rows = append(rows, svcRow{"REST API", actions.RestURL(),
 		stateLabel(a.status.APIHealthy), dotColor(a.status.APIHealthy), stateColor(a.status.APIHealthy)})
 
 	for i, r := range rows {
@@ -722,7 +722,7 @@ func (a *App) askAdminThen(purpose string, then func(*api.Client, string, string
 		pass := form.GetFormItem(1).(*tview.InputField).GetText()
 		a.pages.RemovePage("modal")
 		go func() {
-			cli := api.New()
+			cli := actions.NewAPIClient()
 			if err := cli.Login(context.Background(), user, pass); err != nil {
 				a.tv.QueueUpdateDraw(func() { a.showMessage("Login failed", err.Error(), true) })
 				return
@@ -974,9 +974,9 @@ func (a *App) showAbout() {
 			"  AI Capabilities %s\n"+
 			"  Compose         %s\n\n"+
 			"[::b]Endpoints:[-:-:-]\n"+
-			"  Web UI          http://localhost:8080\n"+
-			"  REST API        http://localhost:7433\n"+
-			"  AI Gateway      http://localhost:7436\n\n"+
+			"  Web UI          %s\n"+
+			"  REST API        %s\n"+
+			"  AI Gateway      %s\n\n"+
 			"Website:          https://falconpulsar.com\n"+
 			"Docs:             https://falconpulsar.com/docs\n"+
 			"Roadmap:          https://falconpulsar.com/roadmap\n\n"+
@@ -987,7 +987,10 @@ func (a *App) showAbout() {
 		coreInfo.DisplayString(),
 		uiInfo.DisplayString(),
 		gwInfo.DisplayString(),
-		composeVer))
+		composeVer,
+		actions.UIURL(),
+		actions.RestURL(),
+		actions.GatewayURL()))
 	tv.SetInputCapture(func(ev *tcell.EventKey) *tcell.EventKey {
 		if ev.Key() == tcell.KeyEscape || ev.Key() == tcell.KeyEnter {
 			a.pages.RemovePage("modal")

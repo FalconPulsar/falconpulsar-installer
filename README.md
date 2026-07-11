@@ -27,10 +27,17 @@ uninstaller. Every step is documented and reversible.
 
 ## Install
 
+> **Note**: FalconPulsar currently ships prerelease tags only, and GitHub's
+> `releases/latest` alias excludes prereleases — URLs built on it (including
+> the `get.falconpulsar.com` redirects) return 404 until a stable release is
+> published. The commands below resolve the newest release, prereleases
+> included, via the GitHub API.
+
 ### Linux
 
 ```bash
-curl -fsSL https://get.falconpulsar.com/linux | sudo bash
+FP_TAG=$(curl -fsSL "https://api.github.com/repos/FalconPulsar/falconpulsar-installer/releases?per_page=1" | awk -F'"' '/"tag_name":/ {print $4; exit}')
+curl -fsSL "https://github.com/FalconPulsar/falconpulsar-installer/releases/download/${FP_TAG}/install-linux.sh" | sudo bash
 ```
 
 Installs the stack on Ubuntu, Debian, RHEL, Rocky, AlmaLinux, Fedora, or
@@ -40,28 +47,31 @@ already present.
 To uninstall:
 
 ```bash
-curl -fsSL https://get.falconpulsar.com/linux | sudo bash -s -- uninstall
-# add --purge to also delete the local database
+FP_TAG=$(curl -fsSL "https://api.github.com/repos/FalconPulsar/falconpulsar-installer/releases?per_page=1" | awk -F'"' '/"tag_name":/ {print $4; exit}')
+curl -fsSL "https://github.com/FalconPulsar/falconpulsar-installer/releases/download/${FP_TAG}/uninstall-linux.sh" | sudo bash
+# add `-s -- --purge` to also delete the local database
 ```
 
 ### macOS
 
-**GUI installer (recommended):** download
-**[FalconPulsar-Setup.dmg](https://get.falconpulsar.com/macos)**, open it,
-drag the `.app` into `/Applications`, and run it. Requires macOS 14 Sonoma
-or newer, Apple Silicon or Intel, and a container runtime already installed
-(Docker Desktop, Colima, OrbStack, or Rancher Desktop — the installer
-doesn't modify your Mac's system.)
+**GUI installer (recommended):** download **FalconPulsar-Setup.dmg** from
+the [newest release](https://github.com/FalconPulsar/falconpulsar-installer/releases),
+open it, drag the `.app` into `/Applications`, and run it. Requires macOS 14
+Sonoma or newer, Apple Silicon or Intel, and a container runtime already
+installed (Docker Desktop, Colima, OrbStack, or Rancher Desktop — the
+installer doesn't modify your Mac's system.)
 
 **Headless / CI:**
 
 ```bash
-curl -fsSL https://get.falconpulsar.com/macos | bash
+FP_TAG=$(curl -fsSL "https://api.github.com/repos/FalconPulsar/falconpulsar-installer/releases?per_page=1" | awk -F'"' '/"tag_name":/ {print $4; exit}')
+curl -fsSL "https://github.com/FalconPulsar/falconpulsar-installer/releases/download/${FP_TAG}/install-macos.sh" | bash
 ```
 
 ### Windows
 
-Download **[FalconPulsar-Setup.exe](https://get.falconpulsar.com/windows)**
+Download **FalconPulsar-Setup.exe** from the
+[newest release](https://github.com/FalconPulsar/falconpulsar-installer/releases)
 and double-click. The GUI installer handles WSL2, Ubuntu, Docker, and the
 stack end-to-end. Requires Windows 10 22H2 or Windows 11 with virtualization
 (VT-x / AMD-V) enabled in the BIOS.
@@ -124,10 +134,11 @@ ECR, Google Artifact Registry, Azure ACR — set `FP_REGISTRY` and provide
 credentials via `FP_REGISTRY_USER` / `FP_REGISTRY_PASS`.
 
 ```bash
+FP_TAG=$(curl -fsSL "https://api.github.com/repos/FalconPulsar/falconpulsar-installer/releases?per_page=1" | awk -F'"' '/"tag_name":/ {print $4; exit}')
 FP_REGISTRY=ghcr.io/your-org/falconpulsar \
 FP_REGISTRY_USER=your-github-username \
 FP_REGISTRY_PASS=ghp_your_personal_access_token \
-    curl -fsSL https://get.falconpulsar.com/linux | sudo -E bash
+    curl -fsSL "https://github.com/FalconPulsar/falconpulsar-installer/releases/download/${FP_TAG}/install-linux.sh" | sudo -E bash
 ```
 
 The Windows installer has a dedicated **Container Registry** wizard page
@@ -150,8 +161,8 @@ The installer ends when the stack is up and healthchecks pass. You can:
 
 | Platform | Command |
 |---|---|
-| **Linux** | `curl -fsSL https://get.falconpulsar.com/linux \| sudo bash -s -- uninstall` <br> Add `--purge` to also delete the database. |
-| **macOS** | Run the installer `.app` again and choose Uninstall, or: <br> `curl -fsSL https://get.falconpulsar.com/macos \| bash -s -- uninstall` |
+| **Linux** | The `uninstall-linux.sh` one-liner from [Install → Linux](#linux), or `sudo bash /home/falconpulsar/uninstall.sh` (planted by the installer). <br> Add `--purge` to also delete the database. |
+| **macOS** | Run the installer `.app` again and choose Uninstall, or: <br> `bash ~/falconpulsar/uninstall.sh` |
 | **Windows** | Settings → Apps → FalconPulsar → Uninstall, or the tray's "Uninstall" entry, or `fp uninstall` in any shell. |
 
 All paths ultimately run the same cleanup: stop and remove the
@@ -327,7 +338,11 @@ This produces a GitHub Release with:
 
 The unversioned aliases back the stable redirects at
 `https://get.falconpulsar.com/<platform>` so end users always pull the
-current release without URL changes between versions.
+current release without URL changes between versions. Those redirects
+resolve through GitHub's `releases/latest` alias, which excludes
+prereleases — while only prerelease tags exist they return 404, so the
+[Install](#install) section resolves the newest release via the GitHub
+API instead.
 
 The macOS DMG is signed with a Developer ID Application certificate and
 notarized by Apple — double-clicking the download does not trigger a
