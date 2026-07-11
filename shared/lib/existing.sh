@@ -51,44 +51,73 @@ fp_detect_existing_install() {
 
 # ── Phantom-container detection ─────────────────────────────────────────────
 #
-# A "phantom" is a docker container that:
-#   - has a name starting with `falconpulsar-` AND the compose project
-#     label `com.docker.compose.project=falconpulsar`
-#   - belongs to a working_dir that no longer holds a compose.yml
-#     (i.e. the user uninstalled the stack dir but the container kept
-#     running)
+# A "phantom" is a docker container the install would collide with:
 #
-# Why detect them: they hold our standard ports, so a re-install at
-# the same FP_HOME would conflict — but fp_detect_existing_install
-# misses the case because there's no compose.yml to find. Without this
+#   (a) ORPHAN — name starts with `falconpulsar-`, carries the compose
+#       project label `com.docker.compose.project=falconpulsar`, but its
+#       working_dir no longer holds a compose.yml (the user removed the
+#       stack dir while the container kept running).
+#
+#   (b) NAME CONFLICT — a container holding one of the stack's RESERVED
+#       container names (the container_name values in shared/compose.yml)
+#       that our compose project does NOT own: e.g. started with a plain
+#       `docker run --name falconpulsar-core ...` (dev setups, pre-compose
+#       install methods). `docker compose up` cannot start while the name
+#       is taken, and these containers typically publish our standard
+#       ports too — so the install is doomed either way.
+#
+# Why detect them: they hold our reserved names/ports, but
+# fp_detect_existing_install misses both cases because there's no
+# compose.yml to find (a) or no compose labels at all (b). Without this
 # check the user hits "port 7433 in use" with no obvious way out.
 #
-# Populates the FP_PHANTOM_CONTAINERS array as "name|workdir" entries.
+# Containers merely PREFIXED `falconpulsar-` that carry neither our
+# project label nor a reserved name (e.g. a user's own falconpulsar-doc)
+# are deliberately left alone — they don't block the stack.
+#
+# Populates the FP_PHANTOM_CONTAINERS array as "name|origin" entries.
 # Returns 0 if any phantom was found, 1 otherwise.
+
+# Container names the stack claims — keep in sync with the
+# `container_name:` fields in shared/compose.yml.
+FP_RESERVED_CONTAINER_NAMES="falconpulsar-core falconpulsar-ui falconpulsar-ai-gateway"
+
 FP_PHANTOM_CONTAINERS=()
 fp_detect_phantom_containers() {
     FP_PHANTOM_CONTAINERS=()
     command -v docker >/dev/null 2>&1 || return 1
 
     local target_home="$1"
-    local line name workdir
-    while IFS=$'\t' read -r name workdir; do
+    local name project workdir reserved is_reserved
+    while IFS=$'\t' read -r name project workdir; do
         [ -z "$name" ] && continue
-        # If the container belongs to the install we're targeting, it's
-        # not a phantom — fp_apply_existing_action will handle it via the
-        # normal upgrade/reinstall/fresh path.
-        if [ -n "$target_home" ] && [ "$workdir" = "$target_home" ]; then
-            continue
-        fi
-        # Phantom = working_dir is gone or has no compose.yml.
-        if [ -z "$workdir" ] || [ ! -d "$workdir" ] || [ ! -f "${workdir}/compose.yml" ]; then
-            FP_PHANTOM_CONTAINERS+=("${name}|${workdir:-(no working_dir label)}")
+
+        is_reserved=0
+        for reserved in $FP_RESERVED_CONTAINER_NAMES; do
+            [ "$name" = "$reserved" ] && is_reserved=1 && break
+        done
+
+        if [ "$project" = "falconpulsar" ]; then
+            # Ours by label. If it belongs to the install we're targeting
+            # it's not a phantom — fp_apply_existing_action handles it via
+            # the normal upgrade/reinstall/fresh path.
+            if [ -n "$target_home" ] && [ "$workdir" = "$target_home" ]; then
+                continue
+            fi
+            # Orphan = working_dir is gone or has no compose.yml.
+            if [ -z "$workdir" ] || [ ! -d "$workdir" ] || [ ! -f "${workdir}/compose.yml" ]; then
+                FP_PHANTOM_CONTAINERS+=("${name}|orphaned from: ${workdir:-(no working_dir label)}")
+            fi
+        elif [ "$is_reserved" = "1" ]; then
+            # Reserved name held by something our compose project doesn't
+            # own — `compose up` would fail on the name even if the ports
+            # were somehow free.
+            FP_PHANTOM_CONTAINERS+=("${name}|name conflict — not created by this installer${project:+ (compose project: ${project})}")
         fi
     done < <(
         docker ps -a \
             --filter "name=falconpulsar-" \
-            --filter "label=com.docker.compose.project=falconpulsar" \
-            --format '{{.Names}}'$'\t''{{.Label "com.docker.compose.project.working_dir"}}' \
+            --format '{{.Names}}'$'\t''{{.Label "com.docker.compose.project"}}'$'\t''{{.Label "com.docker.compose.project.working_dir"}}' \
             2>/dev/null
     )
 
@@ -106,20 +135,21 @@ fp_handle_phantom_containers() {
     [ "${#FP_PHANTOM_CONTAINERS[@]}" -gt 0 ] || return 0
 
     log_warn ""
-    log_warn "Found FalconPulsar containers from a previous install whose stack"
-    log_warn "directory no longer exists. These will hold our ports and break"
-    log_warn "the install if left running:"
+    log_warn "Found docker containers that hold FalconPulsar's reserved container"
+    log_warn "names and/or ports but do not belong to this install. They will"
+    log_warn "break the install if left in place:"
     local entry
     for entry in "${FP_PHANTOM_CONTAINERS[@]}"; do
-        printf '    %s   (orphaned from: %s)\n' "${entry%%|*}" "${entry##*|}" >&2
+        printf '    %s   (%s)\n' "${entry%%|*}" "${entry##*|}" >&2
     done
     printf '\n' >&2
+    log_warn "Removing a container does not delete its data volumes."
 
     local do_remove=0
     if [ "${FP_ASSUME_YES:-0}" = "1" ]; then
         do_remove=1
-        log_info "FP_ASSUME_YES=1 — removing orphaned containers"
-    elif confirm "Stop and remove these orphaned containers?" default-yes; then
+        log_info "FP_ASSUME_YES=1 — removing conflicting containers"
+    elif confirm "Stop and remove these containers?" default-yes; then
         do_remove=1
     fi
 
@@ -127,14 +157,14 @@ fp_handle_phantom_containers() {
         for entry in "${FP_PHANTOM_CONTAINERS[@]}"; do
             local cname="${entry%%|*}"
             if docker rm -f "$cname" >/dev/null 2>&1; then
-                log_success "removed orphan ${cname}"
+                log_success "removed conflicting container ${cname}"
             else
                 log_warn "could not remove ${cname} — it may need manual cleanup"
             fi
         done
         FP_PHANTOM_CONTAINERS=()
     else
-        log_warn "keeping orphans — the port-conflict prompt below will surface them again"
+        log_warn "keeping them — the port-conflict prompt below will surface them again"
     fi
 }
 
