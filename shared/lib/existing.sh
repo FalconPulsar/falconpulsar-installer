@@ -466,6 +466,16 @@ fp_try_upgrade_fastpath() {
             printf 'FP_BRIDGE_TOKEN=%s\n' "$bridge_token" >> "${home}/.env"
             log_info "generated FP_BRIDGE_TOKEN (32 random bytes, hex)"
         fi
+        if ! grep -q '^FP_CONFIRM_SECRET=.' "${home}/.env"; then
+            local confirm_secret
+            if command -v openssl >/dev/null 2>&1; then
+                confirm_secret="$(openssl rand -hex 32)"
+            else
+                confirm_secret="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+            fi
+            printf 'FP_CONFIRM_SECRET=%s\n' "$confirm_secret" >> "${home}/.env"
+            log_info "generated FP_CONFIRM_SECRET (32 random bytes, hex)"
+        fi
         # Anchor the gateway.yaml mount to the stack dir — compose's
         # default resolves relative to FP_DATA_DIR, which breaks for
         # legacy installs created with a custom --data-dir (Docker would

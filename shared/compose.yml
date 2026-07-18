@@ -189,6 +189,10 @@ services:
       # from core. If unset, the gateway returns 503 on every bridge call
       # (fail-closed — see auth.py).
       FP_BRIDGE_TOKEN: ${FP_BRIDGE_TOKEN:-}
+      # HMAC secret for write-confirmation IDs (multi-worker must share one
+      # value). Generated once by the installer; never rotate casually —
+      # in-flight Confirm buttons stop verifying until re-issued.
+      FP_CONFIRM_SECRET: ${FP_CONFIRM_SECRET:-}
       # SEC-001: CORS allowlist. Comma-separated list of origins that the
       # web UI / Tauri shell will hit the gateway from. Empty = main.py
       # bakes in safe localhost dev defaults. Override when the UI is

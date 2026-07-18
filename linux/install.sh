@@ -700,6 +700,25 @@ if [ -z "${FP_BRIDGE_TOKEN:-}" ]; then
     log_info "generated FP_BRIDGE_TOKEN (32 random bytes, hex)"
 fi
 
+# Write-confirmation HMAC secret (multi-worker shared). Preserve across
+# reinstalls when present; generate once when absent. Same entropy class
+# as FP_BRIDGE_TOKEN.
+if [ -z "${FP_CONFIRM_SECRET:-}" ]; then
+    if [ -f "${FP_HOME}/.env" ]; then
+        FP_CONFIRM_SECRET="$(sed -n 's/^FP_CONFIRM_SECRET=//p' "${FP_HOME}/.env" | head -n1)"
+    fi
+fi
+if [ -z "${FP_CONFIRM_SECRET:-}" ]; then
+    if command -v openssl >/dev/null 2>&1; then
+        FP_CONFIRM_SECRET="$(openssl rand -hex 32)"
+    elif [ -r /dev/urandom ]; then
+        FP_CONFIRM_SECRET="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+    else
+        die "cannot generate FP_CONFIRM_SECRET: neither openssl nor /dev/urandom available"
+    fi
+    log_info "generated FP_CONFIRM_SECRET (32 random bytes, hex)"
+fi
+
 # .env — note 0640 perms (group docker, see below). The admin password
 # is never stored here. Secrets that DO land in .env:
 #   - FP_API_KEY       AI-gateway Bearer service token (added by bootstrap.sh)
@@ -734,6 +753,8 @@ FP_AI_GATEWAY_ENABLED=true
 # SEC-001: shared secret read by both core and ai-gateway containers.
 # Rotate by overwriting this value and 'docker compose up -d'.
 FP_BRIDGE_TOKEN=${FP_BRIDGE_TOKEN}
+# HMAC secret for AI Gateway write-confirmation IDs (multi-worker).
+FP_CONFIRM_SECRET=${FP_CONFIRM_SECRET}
 # Front-door HTTPS declaration. Read by core's --init-auto on first
 # start and persisted to falconpulsar.toml; the env var stays here
 # afterwards as a record of the operator's choice. Flip with care:

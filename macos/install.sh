@@ -429,6 +429,12 @@ if [ -f "${FP_HOME}/.env" ]; then
             log_info "preserved FP_BRIDGE_TOKEN from existing .env"
         fi
     fi
+    if [ -z "${FP_CONFIRM_SECRET:-}" ]; then
+        FP_CONFIRM_SECRET="$(grep -m1 '^FP_CONFIRM_SECRET=' "${FP_HOME}/.env" | cut -d= -f2- || true)"
+        if [ -n "${FP_CONFIRM_SECRET}" ]; then
+            log_info "preserved FP_CONFIRM_SECRET from existing .env"
+        fi
+    fi
 fi
 
 # A carried-forward FP_API_KEY is only valid against the core database it
@@ -458,6 +464,17 @@ if [ -z "${FP_BRIDGE_TOKEN:-}" ]; then
         die "cannot generate FP_BRIDGE_TOKEN: neither openssl nor /dev/urandom available"
     fi
     log_info "generated FP_BRIDGE_TOKEN (32 random bytes, hex)"
+fi
+
+if [ -z "${FP_CONFIRM_SECRET:-}" ]; then
+    if command -v openssl >/dev/null 2>&1; then
+        FP_CONFIRM_SECRET="$(openssl rand -hex 32)"
+    elif [ -r /dev/urandom ]; then
+        FP_CONFIRM_SECRET="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+    else
+        die "cannot generate FP_CONFIRM_SECRET: neither openssl nor /dev/urandom available"
+    fi
+    log_info "generated FP_CONFIRM_SECRET (32 random bytes, hex)"
 fi
 
 # .env — note that the admin password is INTENTIONALLY not stored here.
@@ -497,6 +514,8 @@ FP_GATEWAY_CONFIG=${FP_HOME}/gateway.yaml
 # SEC-001: shared secret read by both core and ai-gateway containers.
 # Rotate by overwriting this value and 'docker compose up -d'.
 FP_BRIDGE_TOKEN=${FP_BRIDGE_TOKEN}
+# HMAC secret for AI Gateway write-confirmation IDs (multi-worker).
+FP_CONFIRM_SECRET=${FP_CONFIRM_SECRET}
 # Front-door HTTPS declaration — see the equivalent block in
 # linux/install.sh for the full rationale.
 FP_COOKIE_SECURE=${FP_COOKIE_SECURE:-true}
