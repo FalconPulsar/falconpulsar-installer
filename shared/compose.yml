@@ -184,6 +184,9 @@ services:
       # the installer/enable flows. If unset, the gateway falls back to
       # storing provider keys in plaintext (legacy mode).
       FP_GATEWAY_SECRET: ${FP_GATEWAY_SECRET:-}
+      # Wave 3: refuse to start AI Gateway if encryption / bridge secrets are empty.
+      # Installer always mints these into .env; this is a belt-and-suspenders gate.
+      FP_REQUIRE_SECRETS: ${FP_REQUIRE_SECRETS:-1}
       # SEC-001: must match the value passed to the core container so the
       # gateway's AuthMiddleware accepts incoming /api/v1/bridge/* calls
       # from core. If unset, the gateway returns 503 on every bridge call
