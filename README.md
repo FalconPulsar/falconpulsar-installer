@@ -13,15 +13,46 @@
 [![release](https://img.shields.io/github/v/release/FalconPulsar/falconpulsar-installer?display_name=tag&sort=semver)](https://github.com/FalconPulsar/falconpulsar-installer/releases)
 
 This repository contains the installers that take a fresh Linux, macOS, or
-Windows machine from zero to a running FalconPulsar stack. **This repo is
-only the installer — for what FalconPulsar is, its features, and how to
-use it, see [falconpulsar.com](https://falconpulsar.com).**
+Windows machine from zero to a running FalconPulsar **plant stack**. **This
+repo is only the installer** — product usage and architecture for each runtime
+component live in those repositories (and on
+[falconpulsar.com](https://falconpulsar.com) when published).
 
-Scope of this repo: prerequisite checks, container-engine setup, stack
+### What gets installed (default plant)
+
+| Component | Image (default registry) | Ports (typical) |
+|-----------|--------------------------|-----------------|
+| **Core** | `falconpulsar/core` | 7433 REST, 7434 WS, 7435 pub/sub |
+| **UI** | `falconpulsar/ui` | 8080 (nginx → Core + Gateway) |
+| **AI Gateway** | `falconpulsar/ai-gateway` | 7436 (often bound to localhost; UI proxies) |
+
+**Not** installed by default: **AI Engine** (agentics), mobile, copilot — optional
+modules with their own repos.
+
+### Build / run a single component by hand
+
+If you are developing or debugging one service without the full installer,
+use that component’s README (manual Docker and from-source steps):
+
+| Component | Repository |
+|-----------|------------|
+| Core | [falconpulsar-core](https://github.com/FalconPulsar/falconpulsar-core#build-from-source-linux) |
+| AI Gateway | [falconpulsar-ai-gateway](https://github.com/FalconPulsar/falconpulsar-ai-gateway#build-from-source-manual) |
+| UI | [falconpulsar-ui](https://github.com/FalconPulsar/falconpulsar-ui#build-from-source-manual) |
+| AI Engine (optional) | [falconpulsar-ai-engine](https://github.com/FalconPulsar/falconpulsar-ai-engine) |
+
+Compose file used by all platforms: [`shared/compose.yml`](shared/compose.yml).
+Important secrets (generated or preserved by install): `FP_API_KEY`,
+`FP_BRIDGE_TOKEN`, `FP_GATEWAY_SECRET`, `FP_CONFIRM_SECRET`, and
+`FP_REQUIRE_SECRETS=1` so the gateway refuses to start without encryption/bridge
+secrets in production.
+
+Scope of **this** repo: prerequisite checks, container-engine setup, stack
 file generation, first-run initialization, lifecycle hooks, and an
 uninstaller. Every step is documented and reversible.
 
-> **Status**: pre-release. v0.x — installer behaviour may change.
+> **Status**: pre-release MVP. v0.x — installer behaviour may change. Public
+> open-source release is planned after the full plant stack reaches MVP.
 
 ---
 
