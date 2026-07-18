@@ -1,8 +1,11 @@
 # FalconPulsar Installer
 
-[![lint](https://github.com/FalconPulsar/falconpulsar-installer/actions/workflows/lint.yml/badge.svg?branch=main)](https://github.com/FalconPulsar/falconpulsar-installer/actions/workflows/lint.yml)
-[![test-linux](https://github.com/FalconPulsar/falconpulsar-installer/actions/workflows/test-linux.yml/badge.svg?branch=main)](https://github.com/FalconPulsar/falconpulsar-installer/actions/workflows/test-linux.yml)
-[![build-windows](https://github.com/FalconPulsar/falconpulsar-installer/actions/workflows/build-windows.yml/badge.svg?branch=main)](https://github.com/FalconPulsar/falconpulsar-installer/actions/workflows/build-windows.yml)
+[![lint](https://github.com/FalconPulsar/falconpulsar-installer/actions/workflows/lint.yml/badge.svg)](https://github.com/FalconPulsar/falconpulsar-installer/actions/workflows/lint.yml)
+[![test-linux](https://github.com/FalconPulsar/falconpulsar-installer/actions/workflows/test-linux.yml/badge.svg)](https://github.com/FalconPulsar/falconpulsar-installer/actions/workflows/test-linux.yml)
+[![build-macos](https://github.com/FalconPulsar/falconpulsar-installer/actions/workflows/build-macos.yml/badge.svg)](https://github.com/FalconPulsar/falconpulsar-installer/actions/workflows/build-macos.yml)
+[![build-windows](https://github.com/FalconPulsar/falconpulsar-installer/actions/workflows/build-windows.yml/badge.svg)](https://github.com/FalconPulsar/falconpulsar-installer/actions/workflows/build-windows.yml)
+[![release](https://github.com/FalconPulsar/falconpulsar-installer/actions/workflows/release.yml/badge.svg)](https://github.com/FalconPulsar/falconpulsar-installer/actions/workflows/release.yml)
+[![Latest release](https://img.shields.io/badge/release-v0.1.4--alpha.21-blue)](https://github.com/FalconPulsar/falconpulsar-installer/releases/tag/v0.1.4-alpha.21)
 
 ![Linux](https://img.shields.io/badge/Linux-supported-success?logo=linux&logoColor=white)
 ![macOS](https://img.shields.io/badge/macOS-supported-success?logo=apple&logoColor=white)
@@ -10,7 +13,6 @@
 ![arch](https://img.shields.io/badge/arch-x64%20%7C%20arm64-informational)
 ![status](https://img.shields.io/badge/status-pre--release-orange)
 [![license](https://img.shields.io/badge/license-AGPL%20v3-blue)](LICENSE)
-[![release](https://img.shields.io/github/v/release/FalconPulsar/falconpulsar-installer?display_name=tag&sort=semver)](https://github.com/FalconPulsar/falconpulsar-installer/releases)
 
 This repository contains the installers that take a fresh Linux, macOS, or
 Windows machine from zero to a running FalconPulsar **plant stack**. **This
