@@ -129,13 +129,21 @@ fi
 # flags below) before the defaults fill in the rest — on a reinstall the
 # non-explicit ones are seeded from the previous .env so custom layouts,
 # port remaps and version pins survive the stack-file rewrite.
-for _fp_var in FP_DATA_DIR FP_GATEWAY_DATA_DIR FP_REST_PORT FP_WS_PORT \
+for _fp_var in FP_DATA_DIR FP_GATEWAY_DATA_DIR FP_ENGINE_DATA_DIR FP_AI_ENGINE_ENABLED FP_REST_PORT FP_WS_PORT \
     FP_PUBSUB_PORT FP_GATEWAY_PORT FP_UI_PORT FP_COOKIE_SECURE FP_UPDATE_MODE; do
     eval "${_fp_var}_EXPLICIT=\${${_fp_var}:+1}"
 done
 unset _fp_var
 FP_DATA_DIR="${FP_DATA_DIR:-${FP_HOME}/data}"
 FP_GATEWAY_DATA_DIR="${FP_GATEWAY_DATA_DIR:-${FP_HOME}/ai-gateway-data}"
+# Optional AI Engine (author/simulate/deploy agents). Off by default; its
+# config + agent state live in the SAME main folder as Core/Gateway.
+FP_ENGINE_DATA_DIR="${FP_ENGINE_DATA_DIR:-${FP_HOME}/ai-engine-data}"
+FP_AI_ENGINE_ENABLED="${FP_AI_ENGINE_ENABLED:-false}"
+# The AI Engine runs behind the "engine" compose profile — activate it only
+# when the user opted in (derived from FP_AI_ENGINE_ENABLED). It is the only
+# profiled service, so this is safe to set.
+if [ "${FP_AI_ENGINE_ENABLED}" = "true" ]; then COMPOSE_PROFILES="engine"; else COMPOSE_PROFILES=""; fi
 FP_INSTALL_MODE="${FP_INSTALL_MODE:-}"        # docker | systemd
 FP_REST_PORT="${FP_REST_PORT:-7433}"
 FP_WS_PORT="${FP_WS_PORT:-7434}"
@@ -375,7 +383,7 @@ fi
 # with it — before we get here.
 if [ -f "${FP_HOME}/.env" ]; then
     _fp_seeded=""
-    for _fp_var in FP_DATA_DIR FP_GATEWAY_DATA_DIR FP_REST_PORT FP_WS_PORT \
+    for _fp_var in FP_DATA_DIR FP_GATEWAY_DATA_DIR FP_ENGINE_DATA_DIR FP_AI_ENGINE_ENABLED FP_REST_PORT FP_WS_PORT \
         FP_PUBSUB_PORT FP_GATEWAY_PORT FP_UI_PORT FP_REGISTRY FP_VERSION \
         FP_COOKIE_SECURE FP_UPDATE_MODE; do
         _fp_explicit=""
@@ -634,6 +642,8 @@ if [ -f "${FP_HOME}/gateway.yaml" ]; then
 fi
 
 install -d -m 0750 -o "$FP_USER" -g "$FP_USER" "$FP_DATA_DIR"
+# AI Engine data dir in the main folder, only when the engine is enabled.
+[ "$FP_AI_ENGINE_ENABLED" = "true" ] && install -d -m 0750 -o "$FP_USER" -g "$FP_USER" "$FP_ENGINE_DATA_DIR"
 
 # Copy root's Docker Hub credentials into the falconpulsar user's home so
 # `sudo -u falconpulsar -g docker -H bash -c 'docker compose pull'` can
@@ -734,6 +744,12 @@ cat >"${FP_HOME}/.env" <<EOF
 FP_ADMIN_USER=${FP_ADMIN_USER}
 FP_DATA_DIR=${FP_DATA_DIR}
 FP_GATEWAY_DATA_DIR=${FP_GATEWAY_DATA_DIR}
+# Optional AI Engine — its config lives in the shared main folder. To turn it
+# on: set FP_AI_ENGINE_ENABLED=true (COMPOSE_PROFILES is derived), then run
+# `docker compose up -d`.
+FP_ENGINE_DATA_DIR=${FP_ENGINE_DATA_DIR}
+FP_AI_ENGINE_ENABLED=${FP_AI_ENGINE_ENABLED}
+COMPOSE_PROFILES=${COMPOSE_PROFILES}
 # Anchor the gateway.yaml mount to the stack dir — compose's default
 # resolves relative to FP_DATA_DIR, which breaks with a custom --data-dir.
 FP_GATEWAY_CONFIG=${FP_HOME}/gateway.yaml

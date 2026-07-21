@@ -114,7 +114,7 @@ jobs:
               # Now run the installer — it will detect docker is present
               # and skip the install step
               FP_ASSUME_YES=1 \
-              FP_ADMIN_PASS="ci-test-password-123" \
+              FP_ADMIN_PASS="ci-$(openssl rand -hex 16)" \
               bash /installer/linux/install.sh --mode docker --yes
 
               # The AI Gateway is a mandatory component — assert the

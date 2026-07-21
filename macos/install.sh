@@ -315,7 +315,7 @@ fp_seed_from_existing_env() {
     log_info "carried ${var}=${val} forward from existing .env"
 }
 if [ -f "${FP_HOME}/.env" ]; then
-    for setting in FP_DATA_DIR FP_GATEWAY_DATA_DIR \
+    for setting in FP_DATA_DIR FP_GATEWAY_DATA_DIR FP_ENGINE_DATA_DIR FP_AI_ENGINE_ENABLED \
                    FP_REST_PORT FP_WS_PORT FP_PUBSUB_PORT FP_GATEWAY_PORT FP_UI_PORT \
                    FP_COOKIE_SECURE FP_UPDATE_MODE; do
         fp_seed_from_existing_env "$setting"
@@ -339,6 +339,14 @@ fi
 # Hard defaults for whatever is still unset (fresh install, sparse .env).
 FP_DATA_DIR="${FP_DATA_DIR:-${FP_HOME}/data}"
 FP_GATEWAY_DATA_DIR="${FP_GATEWAY_DATA_DIR:-${FP_HOME}/ai-gateway-data}"
+# Optional AI Engine (author/simulate/deploy agents). Off by default; its
+# config + agent state live in the SAME main folder as Core/Gateway.
+FP_ENGINE_DATA_DIR="${FP_ENGINE_DATA_DIR:-${FP_HOME}/ai-engine-data}"
+FP_AI_ENGINE_ENABLED="${FP_AI_ENGINE_ENABLED:-false}"
+# The AI Engine runs behind the "engine" compose profile — activate it only
+# when the user opted in (derived from FP_AI_ENGINE_ENABLED, so reinstalls
+# stay consistent). It is the only profiled service, so this is safe to set.
+if [ "${FP_AI_ENGINE_ENABLED}" = "true" ]; then COMPOSE_PROFILES="engine"; else COMPOSE_PROFILES=""; fi
 FP_REST_PORT="${FP_REST_PORT:-7433}"
 FP_WS_PORT="${FP_WS_PORT:-7434}"
 FP_PUBSUB_PORT="${FP_PUBSUB_PORT:-7435}"
@@ -374,6 +382,8 @@ fp_registry_ensure_access
 # ── Step 3: Stack directory ─────────────────────────────────────────────────
 log_step "step 3/6 — stack directory"
 mkdir -p "$FP_HOME" "$FP_DATA_DIR" "$FP_GATEWAY_DATA_DIR"
+# Create the AI Engine's data dir in the main folder only when it's enabled.
+[ "$FP_AI_ENGINE_ENABLED" = "true" ] && mkdir -p "$FP_ENGINE_DATA_DIR"
 log_success "${FP_HOME} ready"
 
 # ── Step 4: compose.yml + .env ──────────────────────────────────────────────
@@ -494,6 +504,12 @@ cat >"${FP_HOME}/.env" <<EOF
 FP_ADMIN_USER=${FP_ADMIN_USER}
 FP_DATA_DIR=${FP_DATA_DIR}
 FP_GATEWAY_DATA_DIR=${FP_GATEWAY_DATA_DIR}
+# Optional AI Engine — its config lives in the shared main folder. To turn it
+# on: set FP_AI_ENGINE_ENABLED=true (COMPOSE_PROFILES is derived), then run
+# `docker compose up -d`.
+FP_ENGINE_DATA_DIR=${FP_ENGINE_DATA_DIR}
+FP_AI_ENGINE_ENABLED=${FP_AI_ENGINE_ENABLED}
+COMPOSE_PROFILES=${COMPOSE_PROFILES}
 FP_UID=${FP_UID}
 FP_GID=${FP_GID}
 FP_REGISTRY=${FP_REGISTRY}

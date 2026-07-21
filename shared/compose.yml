@@ -219,6 +219,50 @@ services:
     networks:
       - falconpulsar
 
+  # ── AI Engine (OPTIONAL) — author / simulate / deploy agents ───────────
+  # Opt-in only: gated behind the "engine" compose profile, so a default
+  # install never starts it. The installer sets FP_AI_ENGINE_ENABLED=true →
+  # adds "engine" to COMPOSE_PROFILES when the user chooses to install it.
+  #
+  # IMPORTANT: like Core and the Gateway, its config + agent state live in the
+  # SHARED main folder (~/falconpulsar/ai-engine-data) via the bind mount
+  # below — never inside the app image/volume. The default resolves to the
+  # sibling of the Core data dir, so it always lands in the main home.
+  ai-engine:
+    image: ${FP_REGISTRY:-falconpulsar}/ai-engine:${FP_VERSION:-latest}
+    container_name: falconpulsar-ai-engine
+    restart: unless-stopped
+    user: "${FP_UID}:${FP_GID}"
+    profiles: ["engine"]
+    ports:
+      # Serves its own Cockpit/Canvas UI. Bound to localhost by default so it
+      # is not exposed on the LAN; set FP_ENGINE_BIND=0.0.0.0 in .env for LAN.
+      - "${FP_ENGINE_BIND:-127.0.0.1}:${FP_ENGINE_PORT:-8085}:8085"
+    volumes:
+      - "${FP_ENGINE_DATA_DIR:-${FP_DATA_DIR}/../ai-engine-data}:/data"
+    depends_on:
+      core:
+        condition: service_healthy
+    environment:
+      FP_PORT: "8085"
+      FP_CORE_URL: http://core:7433
+      FP_CORE_WS: ws://core:7434/ws
+      FP_AI_GATEWAY_URL: http://ai-gateway:7436
+      # Bearer service token (the same one Core mints for the gateway),
+      # written to .env by the installer after first-run init.
+      FP_CORE_TOKEN: ${FP_CORE_TOKEN:-${FP_API_KEY:-}}
+      # Never enable simulation mode on a plant host — it trusts client role
+      # headers (x-fp-role / x-fp-user) and is a full auth bypass.
+      FP_SIM: ${FP_SIM:-}
+    healthcheck:
+      test: ['CMD', 'node', '-e', "fetch('http://127.0.0.1:8085/api/v1/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks:
+      - falconpulsar
+
 # ── Network — bridge between the three services ─────────────────────────
 networks:
   falconpulsar:
