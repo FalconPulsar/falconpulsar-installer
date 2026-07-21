@@ -1,0 +1,46 @@
+# Cap GitHub Releases at the two most recent.
+#
+# Fires whenever ANY release is published — whether cut by CI (this repo's
+# release.yml) or by a manual `gh release create` — so the "keep 2" policy is
+# enforced uniformly no matter how a release is made. Keeps the 2 newest
+# releases and deletes every older one together with its git tag
+# (--cleanup-tag), mirroring the Docker Hub "keep 2 versions" rule in the
+# Deploy workflow's cleanup job.
+#
+# workflow_dispatch lets you prune an existing backlog on demand.
+name: prune-releases
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write   # delete releases and their tags
+
+# Never let two prunes race (e.g. two releases published back to back).
+concurrency:
+  group: prune-releases
+  cancel-in-progress: false
+
+jobs:
+  prune:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Keep only the 2 newest releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Newest-first by publish time (fall back to creation time for
+          # releases that were never formally published), skip the 2 newest,
+          # and delete every older release along with its git tag.
+          gh release list --repo "$GITHUB_REPOSITORY" --limit 300 \
+            --json tagName,createdAt,publishedAt \
+            --jq 'sort_by(.publishedAt // .createdAt) | reverse | .[2:] | .[].tagName' \
+          | while read -r tag; do
+              [ -z "$tag" ] && continue
+              echo "Deleting old release + tag: $tag"
+              gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag
+            done
+          echo "Prune complete — 2 newest releases retained."
