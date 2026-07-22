@@ -136,12 +136,45 @@ if ([string]::IsNullOrEmpty($WslUser) -or $WslUser -eq 'root') {
     $WslUser = "$WslUser".Trim().Trim([char]0)
 }
 if ([string]::IsNullOrEmpty($WslUser) -or $WslUser -eq 'root') {
-    Stop-WithError @"
-Cannot determine a non-root user in $Distro.
-FalconPulsar installs under a human user -- a fresh Ubuntu WSL distro
-prompts for a username on first launch. Run `wsl -d $Distro` once in a
-terminal, create a user, then re-run this installer.
-"@
+    # No human user exists. This is the normal state of a distro WE
+    # provisioned: `wsl --install -d ... --no-launch` (20-install-distro.ps1)
+    # deliberately skips Ubuntu's interactive first-run setup, which is the
+    # only thing that creates a non-root user. So we create one ourselves --
+    # the per-user install needs an owner. Idempotent: this branch only runs
+    # when no non-root user was found, and useradd is guarded by `id -u`.
+    Write-Info "No non-root user in $Distro -- creating 'falconpulsar'..."
+    $mkUserScript = @'
+set -e
+U=falconpulsar
+if ! id -u "$U" >/dev/null 2>&1; then
+    useradd -m -s /bin/bash -U "$U"
+fi
+# sudo group (the installer runs `sudo -u $U ...`); passwordless to match
+# what WSL's own first-user setup grants.
+getent group sudo >/dev/null 2>&1 && usermod -aG sudo "$U"
+mkdir -p /etc/sudoers.d   # not present on minimal images; set -e would abort
+echo "$U ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/falconpulsar
+chmod 0440 /etc/sudoers.d/falconpulsar
+# docker group (the installer uses `sg docker`); create it if the Docker
+# Desktop integration hasn't yet, then add the user.
+getent group docker >/dev/null 2>&1 || groupadd docker
+usermod -aG docker "$U"
+# Make this the distro's default user so `wsl -d $Distro` and the fp CLI
+# spawn as them on subsequent launches. Not required for THIS run (the
+# install uses explicit `sudo -u $U`), so no distro restart is needed now.
+if grep -q '^\[user\]' /etc/wsl.conf 2>/dev/null; then
+    grep -q '^default=' /etc/wsl.conf || sed -i '/^\[user\]/a default='"$U" /etc/wsl.conf
+else
+    printf '\n[user]\ndefault=%s\n' "$U" >> /etc/wsl.conf
+fi
+echo "[ok] created non-root user $U"
+'@
+    $mkRc = Invoke-WslBash -Distro $Distro -Script $mkUserScript -User root
+    if ($mkRc -ne 0) {
+        Stop-WithError "Failed to create a non-root user in $Distro (exit $mkRc)."
+    }
+    $WslUser = 'falconpulsar'
+    Write-Info "Created and selected non-root user 'falconpulsar'"
 }
 $WslHome = "/home/$WslUser/falconpulsar"
 Write-Info ("Install target: user='{0}', stack dir='{1}'" -f $WslUser, $WslHome)

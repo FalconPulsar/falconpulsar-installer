@@ -179,7 +179,17 @@ if command -v docker >/dev/null 2>&1; then
 fi
 "@
         try {
-            $lines = & wsl.exe -d $Distro -u root -- bash -c $probe 2>$null
+            # Pass the multi-line probe as a FILE, not a `bash -c` arg. A
+            # PowerShell here-string carries CRLF newlines and `wsl.exe ...
+            # bash -c <multi-line>` mangles them (arg-splitting + literal \r),
+            # which produced 'bash: line 1: set: +'. Writing a CRLF-stripped
+            # temp file and running `bash /path` is the robust pattern the
+            # rest of the installer uses (cf. Invoke-WslBash in lib.ps1).
+            $probeFile = Join-Path $env:TEMP 'fp-detect-probe.sh'
+            [System.IO.File]::WriteAllText($probeFile, ($probe -replace "`r", ''), (New-Object System.Text.UTF8Encoding $false))
+            $probeWsl = ConvertTo-WslPath $probeFile
+            $lines = & wsl.exe -d $Distro -u root -- bash $probeWsl 2>$null
+            Remove-Item $probeFile -ErrorAction SilentlyContinue
             foreach ($line in $lines) {
                 if ($line -match '^([A-Za-z]+)=(.*)$') {
                     $r[$matches[1]] = $matches[2]
