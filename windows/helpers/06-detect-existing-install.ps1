@@ -58,9 +58,11 @@ if ([string]::IsNullOrEmpty($Distro)) {
             }
             if ($Distro) { break }
         }
-        if (-not $Distro -and $names.Count -ge 1) {
-            # No preferred match -- take first entry
-            $Distro = $names[0]
+        if (-not $Distro -and @($names).Count -ge 1) {
+            # No preferred match -- take first entry. @() guards the
+            # zero-distro case (empty split/filter yields null; .Count on it
+            # throws under Set-StrictMode).
+            $Distro = @($names)[0]
         }
     } catch {
         $Distro = ''

@@ -116,10 +116,17 @@ function Get-WslDistros {
     $output = & wsl.exe --list --quiet 2>$null
     if ($LASTEXITCODE -ne 0) { return @() }
 
-    return $output | ForEach-Object {
+    $result = $output | ForEach-Object {
         # Strip null bytes that the UTF-16 -> ASCII reinterpretation can leave.
         ($_ -replace "`0", '').Trim()
     } | Where-Object { $_ -ne '' }
+    # ALWAYS return a real array. With zero distros the pipeline emits
+    # nothing, so a bare `return $result` hands back AutomationNull — and
+    # under `Set-StrictMode -Version Latest` a caller doing `.Count` on that
+    # throws PropertyNotFoundStrict (this broke clean-server installs). The
+    # leading comma prevents PowerShell from unrolling the empty array back
+    # to null at the call site (a plain `@($result)` return would).
+    return ,@($result)
 }
 
 function Test-WslDistroPresent {

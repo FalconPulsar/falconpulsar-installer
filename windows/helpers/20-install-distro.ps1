@@ -35,7 +35,10 @@ $compatibleDistros = @(
 )
 
 $existing = Get-WslDistros
-if ($existing.Count -gt 0) {
+# @() guards the zero-distro case: under Set-StrictMode a bare .Count on a
+# null/AutomationNull return throws PropertyNotFoundStrict (broke clean
+# installs). Matches the pattern in 05-detect-environment.ps1.
+if (@($existing).Count -gt 0) {
     Write-Info "Existing WSL distros: $($existing -join ', ')"
 } else {
     Write-Info 'No WSL distros currently registered'
