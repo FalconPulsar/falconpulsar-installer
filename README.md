@@ -14,9 +14,9 @@
 [![license](https://img.shields.io/badge/license-AGPL%20v3-blue)](LICENSE)
 
 > **Badges:** lint / test-linux / build-macos / build-windows SVGs are
-> GitHub Actions (visible with private repo access). **Latest release** is
-> live from a public gist, updated by the prune-releases workflow on every release. This repo is the installer only — no
-> Docker Scout image badge.
+> GitHub Actions badges. **Latest release** is live from a public gist,
+> updated by the prune-releases workflow on every release. This repo is the
+> installer only — no Docker Scout image badge.
 
 This repository contains the installers that take a fresh Linux, macOS, or
 Windows machine from zero to a running FalconPulsar **plant stack**. **This
@@ -59,8 +59,7 @@ Scope of **this** repo: prerequisite checks, container-engine setup, stack
 file generation, first-run initialization, lifecycle hooks, and an
 uninstaller. Every step is documented and reversible.
 
-> **Status**: pre-release MVP. v0.x — installer behaviour may change. Public
-> open-source release is planned after the full plant stack reaches MVP.
+> **Status**: pre-release MVP. v0.x — installer behaviour may change.
 
 ---
 
