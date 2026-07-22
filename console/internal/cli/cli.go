@@ -538,36 +538,38 @@ func cmdUninstall() *cobra.Command {
 			// Hand off to the Inno Setup uninstaller on Windows -- it
 			// removes its own files AND calls windows/helpers/uninstall.ps1
 			// which cleans the WSL side. One entry point, both halves done.
-			if isWSL() {
-				return runWindowsUninstaller(purge, yes)
+			if IsWSL() {
+				return RunWindowsUninstaller(purge, yes)
 			}
 
-			// Native Linux / macOS: run the bash uninstaller directly.
-			candidates := []string{
-				filepath.Join(actions.HomeDir(), "uninstall.sh"),
-				"/usr/local/share/falconpulsar/uninstall.sh",
-			}
-			var script string
-			for _, p := range candidates {
-				if _, err := os.Stat(p); err == nil {
-					script = p
-					break
-				}
-			}
-			if script == "" {
+			// Native Linux / macOS: run the bash uninstaller directly. The
+			// installers plant it at ${FP_HOME}/uninstall.sh and nowhere else.
+			home := actions.HomeDir()
+			script := filepath.Join(home, "uninstall.sh")
+			if _, err := os.Stat(script); err != nil {
 				fmt.Fprintln(os.Stderr, "Uninstaller not found at ~/falconpulsar/uninstall.sh.")
 				fmt.Fprintln(os.Stderr, "Re-run the installer to restore it, or run it directly from the installer source tree.")
 				return nil
 			}
 
+			// Stage uninstall.sh (+ its sibling auth.sh) into a private temp
+			// dir so bash keeps a valid source file when the script deletes
+			// its own ${FP_HOME} parent mid-run, and so we never write through
+			// predictable /tmp paths (TOCTOU symlink race). Remove the whole
+			// staging dir afterwards — both files, not just the script.
+			runPath, stageDir := stageUninstaller(script)
+			if stageDir != "" {
+				defer os.RemoveAll(stageDir)
+			}
+
 			// Run the uninstaller with the user's flags. --yes is required
 			// when --purge is set so the interactive "are you sure?" block
 			// doesn't fire, but the bash script still gates on admin auth
-			// (prompts directly on stdin) unless --force is passed.
-			script = copyToTemp(script)
-			defer os.Remove(script)
-
-			scriptArgs := []string{script}
+			// (prompts directly on stdin) unless --force is passed. --home
+			// forwards the console-resolved stack dir so the script targets
+			// exactly what we found (relocated / per-user stacks) instead of
+			// re-inferring it.
+			scriptArgs := []string{runPath}
 			if purge {
 				scriptArgs = append(scriptArgs, "--purge")
 			} else {
@@ -576,6 +578,7 @@ func cmdUninstall() *cobra.Command {
 			if yes {
 				scriptArgs = append(scriptArgs, "--yes")
 			}
+			scriptArgs = append(scriptArgs, "--home", home)
 			fmt.Fprintln(os.Stderr, "Launching uninstaller…")
 			fmt.Fprintln(os.Stderr, "")
 
@@ -592,10 +595,11 @@ func cmdUninstall() *cobra.Command {
 	return cmd
 }
 
-// isWSL returns true when this binary is running inside a WSL distro.
+// IsWSL returns true when this binary is running inside a WSL distro.
 // Both markers are official: the binfmt entry is what lets us run .exe
 // files via interop, and the kernel name carries "microsoft"/"WSL".
-func isWSL() bool {
+// Exported so the TUI can mirror the CLI's WSL uninstall handoff.
+func IsWSL() bool {
 	if _, err := os.Stat("/proc/sys/fs/binfmt_misc/WSLInterop"); err == nil {
 		return true
 	}
@@ -608,7 +612,7 @@ func isWSL() bool {
 	return false
 }
 
-// runWindowsUninstaller execs the Inno Setup uninstaller (unins000.exe)
+// RunWindowsUninstaller execs the Inno Setup uninstaller (unins000.exe)
 // via WSL->Windows interop. It's the only Windows-side tool that can
 // clean Program Files, the Start Menu folder, the Add/Remove Programs
 // entry, and the HKCU Run key. Inno Setup's CurUninstallStepChanged
@@ -617,7 +621,7 @@ func isWSL() bool {
 // FP_UNINSTALL_MODE=purge|keep is forwarded via WSLENV so the Inno
 // Setup [Code] block can skip its interactive Yes/No/Cancel MsgBox
 // when the user already said --purge or default-keep on the fp CLI.
-func runWindowsUninstaller(purge, yes bool) error {
+func RunWindowsUninstaller(purge, yes bool) error {
 	uninst := resolveWindowsUninstaller()
 	if _, err := os.Stat(uninst); err != nil {
 		return fmt.Errorf("Windows uninstaller not found at %s\n"+
@@ -752,20 +756,38 @@ func winPathToWslPath(p string) string {
 	return "/mnt/" + drive + rest
 }
 
-// copyToTemp duplicates the uninstall script to /tmp so bash doesn't die when
-// the script's parent directory gets wiped mid-execution.
-func copyToTemp(src string) string {
-	dst := filepath.Join("/tmp", fmt.Sprintf("fp-uninstall-%d.sh", os.Getpid()))
-	if data, err := os.ReadFile(src); err == nil {
-		_ = os.WriteFile(dst, data, 0700)
-		// Also copy auth.sh alongside if present, so the standalone
-		// uninstaller can still require admin credentials.
-		if auth, err := os.ReadFile(filepath.Join(filepath.Dir(src), "auth.sh")); err == nil {
-			_ = os.WriteFile(filepath.Join("/tmp", "auth.sh"), auth, 0600)
-		}
-		return dst
+// stageUninstaller copies uninstall.sh (and its sibling auth.sh) into a
+// private, unguessable MkdirTemp directory so bash keeps a valid source
+// file even when the script deletes its own ${FP_HOME} parent mid-run.
+//
+// It returns the staged script path and the staging directory; the caller
+// removes the whole directory (both files) when done. On any failure it
+// falls back to running the original script in place and returns an empty
+// stageDir so the caller skips cleanup (never deletes the real script).
+//
+// The random directory name (0700) closes the TOCTOU symlink race that the
+// old fixed /tmp/fp-uninstall-<pid>.sh + /tmp/auth.sh paths were exposed to:
+// a same-user attacker could pre-create those predictable paths as symlinks
+// before our writes. uninstall.sh sources ${SCRIPT_DIR}/auth.sh, so both
+// files must live in the same directory.
+func stageUninstaller(src string) (script, stageDir string) {
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return src, ""
 	}
-	return src
+	dir, err := os.MkdirTemp("", "fp-uninstall-")
+	if err != nil {
+		return src, ""
+	}
+	dst := filepath.Join(dir, "uninstall.sh")
+	if err := os.WriteFile(dst, data, 0700); err != nil {
+		_ = os.RemoveAll(dir)
+		return src, ""
+	}
+	if auth, err := os.ReadFile(filepath.Join(filepath.Dir(src), "auth.sh")); err == nil {
+		_ = os.WriteFile(filepath.Join(dir, "auth.sh"), auth, 0600)
+	}
+	return dst, dir
 }
 
 // ── small ANSI helpers ─────────────────────────────────────────────────────

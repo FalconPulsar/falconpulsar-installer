@@ -143,15 +143,35 @@ if (Test-Path $fpExe) {
     Write-Info 'Created shortcut: FalconPulsar Console'
 }
 
-# All lifecycle shortcuts run in the stack directory (where compose.yml
-# lives) and pass --profile ai: legacy compose compat (pre-mandatory-gateway
-# installs gated the ai-gateway behind an 'ai' profile); no-op on current
-# stacks.
-New-WslShortcut -Name 'Start FalconPulsar'   -BashCommand "cd '$stackHome' && docker compose --profile ai up -d"   -Interactive
-New-WslShortcut -Name 'Stop FalconPulsar'    -BashCommand "cd '$stackHome' && docker compose --profile ai down"    -Interactive
-New-WslShortcut -Name 'Restart FalconPulsar' -BashCommand "cd '$stackHome' && docker compose --profile ai restart" -Interactive
-New-WslShortcut -Name 'Show Status'          -BashCommand "cd '$stackHome' && docker compose --profile ai ps"      -Interactive
-New-WslShortcut -Name 'Tail Logs'            -BashCommand "cd '$stackHome' && docker compose --profile ai logs -f" -Interactive
+# All lifecycle shortcuts run in the stack directory (where compose.yml lives).
+#
+# --profile ai is legacy compose compat (pre-mandatory-gateway installs gated
+# the ai-gateway behind an 'ai' profile; a no-op on current stacks). The
+# optional AI Engine is opt-in and recorded as COMPOSE_PROFILES=engine in the
+# stack's .env. A --profile CLI flag REPLACES .env COMPOSE_PROFILES, so
+# hardcoding only '--profile ai' means 'Start' would NEVER bring up an enabled
+# engine. Read COMPOSE_PROFILES from the .env at shortcut-creation time (the
+# shortcuts are regenerated on every (re)install, so they track the current
+# opt-in) and name every opted-in profile explicitly -- mirroring the macOS
+# menu-bar app's composeProfileArgs().
+$profileArgs = '--profile ai'
+try {
+    $rawProfiles = & wsl.exe -d $Distro -- bash -lc "grep -E '^COMPOSE_PROFILES=' '$stackHome/.env' 2>/dev/null | tail -1 | cut -d= -f2-"
+    $rawProfiles = "$rawProfiles".Trim().Trim([char]0)
+    foreach ($p in ($rawProfiles -split '[,\s]+')) {
+        $p = $p.Trim().Trim('"').Trim("'")
+        if ($p -and $p -ne 'ai') { $profileArgs += " --profile $p" }
+    }
+} catch {
+    Write-Warn "Could not read COMPOSE_PROFILES from .env; using '$profileArgs'"
+}
+Write-Info "Compose profile flags for lifecycle shortcuts: $profileArgs"
+
+New-WslShortcut -Name 'Start FalconPulsar'   -BashCommand "cd '$stackHome' && docker compose $profileArgs up -d"   -Interactive
+New-WslShortcut -Name 'Stop FalconPulsar'    -BashCommand "cd '$stackHome' && docker compose $profileArgs down"    -Interactive
+New-WslShortcut -Name 'Restart FalconPulsar' -BashCommand "cd '$stackHome' && docker compose $profileArgs restart" -Interactive
+New-WslShortcut -Name 'Show Status'          -BashCommand "cd '$stackHome' && docker compose $profileArgs ps"      -Interactive
+New-WslShortcut -Name 'Tail Logs'            -BashCommand "cd '$stackHome' && docker compose $profileArgs logs -f" -Interactive
 
 # Open the stack folder in Explorer via the wsl.localhost UNC path.
 # Note that this requires WSL2 + Win11 (or Win10 build 21354+).

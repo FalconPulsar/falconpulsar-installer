@@ -1327,6 +1327,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         updateIcon(.unknown)
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else { return }
             let purgeFlag = purge ? "--purge" : "--keep"
 
             // Try uninstall.sh in the stack directory first
@@ -1343,6 +1344,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
 
+            let succeeded: Bool
+            var failureDetail = ""
             if let scriptPath = script {
                 // Pass --force: the menu bar already authenticated the admin
                 // in Swift (authenticateWithRetry or YES-bypass), so the bash
@@ -1355,45 +1358,94 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 // SIGTERM this very app, closing the output pipe and killing
                 // the cleanup mid-run. With the flag set the script skips
                 // that step; we quit ourselves after the completion alert.
-                _ = self?.runArgs("/bin/bash", [scriptPath, purgeFlag, "--yes", "--force"],
-                                  extraEnv: ["FP_MENUBAR_UNINSTALL": "1"])
+                //
+                // Branch on the script's exit status: a declined sudo prompt,
+                // an errexit trip, or any non-zero exit must NOT be reported as
+                // a clean uninstall.
+                let result = self.runArgsStatus("/bin/bash", [scriptPath, purgeFlag, "--yes", "--force"],
+                                                extraEnv: ["FP_MENUBAR_UNINSTALL": "1"])
+                succeeded = result.status == 0
+                if !succeeded {
+                    let tail = self.lastLines(of: result.output)
+                    failureDetail = tail.isEmpty
+                        ? "The uninstall script exited with status \(result.status)."
+                        : "The uninstall script exited with status \(result.status):\n\n\(tail)"
+                }
             } else {
-                self?.inlineUninstall(purge: purge)
+                succeeded = self.inlineUninstall(purge: purge)
+                if !succeeded {
+                    failureDetail = "Some components could not be removed (the menu bar app, its login item, or the stack folder may remain). See Console for details."
+                }
             }
 
             DispatchQueue.main.async {
                 let notification = NSAlert()
-                notification.messageText = "Uninstall Complete"
-                if purge {
-                    notification.informativeText = "FalconPulsar has been completely removed."
-                } else {
-                    notification.informativeText = "FalconPulsar has been removed. Your database is preserved at ~/falconpulsar/data"
-                }
-                notification.alertStyle = .informational
                 notification.addButton(withTitle: "OK")
-                notification.runModal()
+                if succeeded {
+                    notification.messageText = "Uninstall Complete"
+                    if purge {
+                        notification.informativeText = "FalconPulsar has been completely removed."
+                    } else {
+                        notification.informativeText = "FalconPulsar has been removed. Your database is preserved at ~/falconpulsar/data"
+                    }
+                    notification.alertStyle = .informational
+                    notification.runModal()
 
-                // Quit the menu bar app
-                self?.pollTimer?.invalidate()
-                self?.statusItem.isVisible = false
-                NSApp.terminate(nil)
+                    // Quit the menu bar app.
+                    self.pollTimer?.invalidate()
+                    self.statusItem.isVisible = false
+                    NSApp.terminate(nil)
+                } else {
+                    notification.messageText = "Uninstall Failed"
+                    notification.informativeText = failureDetail
+                    notification.alertStyle = .warning
+                    notification.runModal()
+
+                    // The stack is (at least partly) still installed, so leave
+                    // the app running for a retry and resume the health polling
+                    // that runUninstall paused at its start.
+                    self.pollHealth()
+                    self.pollTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
+                        self?.pollHealth()
+                    }
+                }
             }
         }
+    }
+
+    /// Last `maxLines` non-empty lines of `output`, for surfacing a script's
+    /// failure tail in an alert without dumping the whole transcript.
+    private func lastLines(of output: String, maxLines: Int = 12) -> String {
+        let lines = output
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { String($0).trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        return lines.suffix(maxLines).joined(separator: "\n")
     }
 
     /// Inline uninstall fallback when no uninstall.sh is found. Each step is
     /// best-effort: failures don't abort the chain because we're tearing down
     /// anyway. The two pipe/xargs-heavy steps (image cleanup, volume prune)
     /// stay on `shell()` because they genuinely need a shell — they don't
-    /// interpolate any Swift-derived path.
-    private func inlineUninstall(purge: Bool) {
+    /// interpolate any Swift-derived path. Returns false when a component that
+    /// should be gone clearly remains (the app bundle, its login item, or —
+    /// on purge — the stack folder), so the caller can report the failure.
+    private func inlineUninstall(purge: Bool) -> Bool {
         let fm = FileManager.default
         let home = NSHomeDirectory()
         let stackDir = "\(home)/falconpulsar"
+        var ok = true
 
-        // 1. compose down (plus --volumes on purge). Profile flags: see
-        // composeProfileArgs().
-        var downArgs = ["compose"] + composeProfileArgs() + ["down", "--remove-orphans"]
+        // For TEARDOWN we want BOTH known profiles enabled unconditionally so
+        // profile-gated services (the AI Engine) are in the compose model even
+        // if FP_AI_ENGINE_ENABLED reads false right now — uninstall removes
+        // everything regardless of the current enable state. Do NOT swap this
+        // for composeProfileArgs() (which gates --profile engine on the live
+        // enable flag); this mirrors the shared uninstall strategy.
+        let teardownProfiles = ["--profile", "ai", "--profile", "engine"]
+
+        // 1. compose down (plus --volumes on purge).
+        var downArgs = ["compose"] + teardownProfiles + ["down", "--remove-orphans"]
         if purge { downArgs.append("--volumes") }
         let (dockerBin, dockerDownArgv) = dockerInvocation(downArgs)
         if fm.fileExists(atPath: stackDir) {
@@ -1402,10 +1454,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // 2. Remove project images + any falconpulsar/* images. Pipes/xargs
         // make this string-shaped; no Swift-interpolated paths involved.
-        // Profile flags (see composeProfileArgs()), so profile-gated images
-        // are included even against a profile-gated compose.yml.
+        // Both teardown profiles, so profile-gated images are included even
+        // against a profile-gated compose.yml.
         _ = shell("""
-            IMAGES="$(cd ~/falconpulsar 2>/dev/null && docker compose \(composeProfileArgs().joined(separator: " ")) config --images 2>/dev/null | sort -u)"
+            IMAGES="$(cd ~/falconpulsar 2>/dev/null && docker compose \(teardownProfiles.joined(separator: " ")) config --images 2>/dev/null | sort -u)"
             if [ -n "$IMAGES" ]; then echo "$IMAGES" | xargs docker rmi -f 2>/dev/null || true; fi
             docker images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | grep -E '^falconpulsar/' | xargs -r docker rmi -f 2>/dev/null || true
             """)
@@ -1423,6 +1475,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // orphan those keys.
         if purge {
             try? fm.removeItem(atPath: stackDir)
+            if fm.fileExists(atPath: stackDir) { ok = false }
         } else {
             try? fm.removeItem(atPath: "\(stackDir)/compose.yml")
             try? fm.removeItem(atPath: "\(stackDir)/.docker")
@@ -1436,6 +1489,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         ]
         for path in appPaths {
             try? fm.removeItem(atPath: path)
+            if fm.fileExists(atPath: path) { ok = false }
         }
 
         // 6. Tear down the LaunchAgent.
@@ -1444,12 +1498,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let plistPath = "\(home)/Library/LaunchAgents/com.falconpulsar.menubar.plist"
         _ = runArgs("/bin/launchctl", ["unload", plistPath])
         try? fm.removeItem(atPath: plistPath)
+        if fm.fileExists(atPath: plistPath) { ok = false }
 
         // 7. Drop the Launch Services registration so Finder forgets the app.
         _ = runArgs(
             "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister",
             ["-u", "/Applications/FalconPulsar Menu Bar.app"]
         )
+
+        return ok
     }
 
     @objc func quitApp() {
@@ -1525,6 +1582,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @discardableResult
     private func runArgs(_ launchPath: String, _ args: [String], cwd: String? = nil,
                          extraEnv: [String: String] = [:]) -> String {
+        return runArgsStatus(launchPath, args, cwd: cwd, extraEnv: extraEnv).output
+    }
+
+    /// Like `runArgs` but also surfaces the child's exit status, for callers
+    /// that must branch on success vs. failure (the uninstall reporting path)
+    /// rather than treat the run as best-effort. `status` is the process
+    /// termination status, or -1 if the process could not be launched.
+    private func runArgsStatus(_ launchPath: String, _ args: [String], cwd: String? = nil,
+                               extraEnv: [String: String] = [:]) -> (status: Int32, output: String) {
         let process = Process()
         let pipe = Pipe()
         process.standardOutput = pipe
@@ -1548,9 +1614,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         do {
             try process.run()
         } catch {
-            return "runArgs failed to launch \(launchPath): \(error)"
+            return (-1, "runArgs failed to launch \(launchPath): \(error)")
         }
-        return drainAndWait(process, pipe)
+        let output = drainAndWait(process, pipe)
+        return (process.terminationStatus, output)
     }
 
     /// Resolve the docker CLI binary, mirroring the resolution order used

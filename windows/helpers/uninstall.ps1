@@ -5,6 +5,8 @@
 #
 #   Default (no -Purge):
 #     - Stop and remove Docker containers
+#     - Remove Docker images (BOTH modes -- images re-download on reinstall,
+#       so there is nothing to preserve by keeping them; matches macOS/Linux)
 #     - Remove compose.yml (product-managed; re-provisioned on reinstall)
 #     - Remove staged installer files at /opt/falconpulsar-installer
 #     - Remove Start Menu shortcuts
@@ -19,7 +21,7 @@
 #     - Everything above, plus:
 #     - Delete /home/falconpulsar entirely (database, config, all data)
 #     - Remove the falconpulsar system user
-#     - Remove Docker images
+#     - Remove Docker volumes and the compose network
 #
 # Never removes:
 #   - The WSL distro itself (it may host other things)
@@ -68,10 +70,24 @@ trap {
 
 Write-Step 'Uninstalling FalconPulsar from WSL'
 
-# Honour the sentinel
+# Honour the sentinel. If the (cleanable) %TEMP% sentinel is gone, fall back
+# to the durable {app}\tray-config.txt the installer writes at install time
+# (installer.iss SaveStringToFile; TrayApp.cs reads it too). uninstall.ps1
+# runs from {app}\helpers, so {app} is the parent of $PSScriptRoot. Without
+# this fallback, a wiped %TEMP% plus a custom distro name would leave $Distro
+# at the {#WslDistroName} default and silently skip ALL WSL-side cleanup.
 $sentinel = Join-Path $env:TEMP 'falconpulsar-distro.txt'
 if (Test-Path $sentinel) {
     $Distro = (Get-Content $sentinel -Raw).Trim()
+} else {
+    $trayConfig = Join-Path (Split-Path -Parent $PSScriptRoot) 'tray-config.txt'
+    if (Test-Path $trayConfig) {
+        $durableDistro = (Get-Content $trayConfig -Raw).Trim()
+        if (-not [string]::IsNullOrEmpty($durableDistro)) {
+            $Distro = $durableDistro
+            Write-Info "Distro resolved from tray-config.txt: $Distro"
+        }
+    }
 }
 
 if (-not (Test-WslDistroPresent -Name $Distro)) {
@@ -166,8 +182,13 @@ echo "[info] === cleanup pass: `$HOME_DIR (purge=`$PURGE) ==="
 if ! command -v docker >/dev/null 2>&1; then
     echo '[info] docker not installed in distro -- skipping container/image cleanup'
 else
-    # --profile ai: legacy compose compat (pre-mandatory-gateway installs
-    # gated the ai-gateway behind an 'ai' profile); no-op on current stacks.
+    # --profile ai is legacy compose compat (pre-mandatory-gateway installs
+    # gated the ai-gateway behind an 'ai' profile; a no-op on current stacks).
+    # We deliberately do NOT also name --profile engine here: a --profile CLI
+    # flag REPLACES .env COMPOSE_PROFILES, and 'down' with only 'ai' active
+    # leaves an enabled engine container Up (verified). The falconpulsar-*
+    # name-sweep further below is the backstop that removes the engine (and
+    # any orphan) regardless of which profile was opted into.
     COMPOSE_FLAGS='--profile ai down --remove-orphans'
     [ "`$PURGE" = "1" ] && COMPOSE_FLAGS="`$COMPOSE_FLAGS --volumes"
 
@@ -258,7 +279,7 @@ set +e
 for H in $homeList; do
     rm -rf "`$H" 2>/dev/null && echo "[info] `$H removed"
 done
-# Legacy service-user cleanup: kill linger, remove systemd unit, userdel.
+# Legacy service-user cleanup: stop lingering, then userdel the service user.
 loginctl disable-linger falconpulsar 2>/dev/null
 if id falconpulsar >/dev/null 2>&1; then
     userdel --force falconpulsar 2>/dev/null

@@ -253,6 +253,12 @@ Root: HKCU; Subkey: "SOFTWARE\Microsoft\Windows\CurrentVersion\Run"; \
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{commonprograms}\FalconPulsar"
+; tray-config.txt is written post-install via SaveStringToFile (see
+; CurStepChanged), so it is NOT logged by [Files] and would otherwise be left
+; behind. Remove it explicitly, then clear {app} if nothing else remains so a
+; full purge does not leave the install directory sitting empty.
+Type: files; Name: "{app}\tray-config.txt"
+Type: dirifempty; Name: "{app}"
 
 [UninstallRun]
 ; Uninstall is now handled by CurUninstallStepChanged in [Code]
@@ -2457,8 +2463,9 @@ begin
         'Click YES to remove everything (containers, data, configuration, ' +
         'database, Start Menu shortcuts). This cannot be undone.' + #13#10 + #13#10 +
         'Click NO to keep your data and database but remove the application ' +
-        'files, containers, and shortcuts. You can reinstall later and your ' +
-        'data will be preserved.' + #13#10 + #13#10 +
+        'files, containers, Docker images, and shortcuts. You can reinstall ' +
+        'later and your data will be preserved (the images re-download on ' +
+        'reinstall).' + #13#10 + #13#10 +
         'Click CANCEL to abort the uninstall.',
         mbConfirmation, MB_YESNOCANCEL);
 
@@ -2490,8 +2497,38 @@ begin
       // at least the user sees a PowerShell console so they can tell something
       // is happening instead of staring at a frozen progress bar. The actual
       // auth dialog is TopMost anyway.
-      Exec('powershell.exe', FullArgs,
-        ExpandConstant('{app}\helpers'), SW_SHOWNORMAL, ewWaitUntilTerminated, ResultCode);
+      if not Exec('powershell.exe', FullArgs,
+        ExpandConstant('{app}\helpers'), SW_SHOWNORMAL, ewWaitUntilTerminated, ResultCode) then
+      begin
+        // powershell.exe could not be launched at all. Do NOT let Inno fall
+        // through and delete the Windows-side files while the WSL stack is
+        // still fully present -- that is a worse, harder-to-recover state.
+        MsgBox('Could not launch the uninstall helper (powershell.exe).' + #13#10 + #13#10 +
+          'The uninstall was stopped so your containers and data are left intact.' + #13#10 +
+          'Resolve the issue and retry from Windows Settings > Apps > FalconPulsar.',
+          mbError, MB_OK);
+        Abort;
+      end;
+      // uninstall.ps1 exits non-zero when the admin gate fails or the user
+      // cancels it (uninstall.ps1 exit 1). Honour that exit code: a failed or
+      // cancelled auth gate must stop the Windows-side deletion too, not just
+      // the WSL cleanup -- otherwise the gate protects nothing. (The
+      // FP_UNINSTALL_MODE=keep/purge non-interactive path still runs the gate
+      // unless -Force, so this correctly aborts there too on auth failure.)
+      if ResultCode <> 0 then
+        Abort;
+    end
+    else
+    begin
+      // The WSL-side helper is missing, so containers/images/data inside WSL
+      // cannot be removed. Warn instead of silently deleting only the
+      // Windows-side files and leaving an orphaned stack running in WSL.
+      MsgBox('The WSL uninstall helper was not found at:' + #13#10 +
+        HelperPath + #13#10 + #13#10 +
+        'Docker containers, images, and data inside WSL were NOT removed.' + #13#10 +
+        'Remove them manually, e.g.:' + #13#10 +
+        '  wsl -d {#WslDistroName} -- sh -c "cd ~/falconpulsar && docker compose down"',
+        mbInformation, MB_OK);
     end;
   end;
 end;

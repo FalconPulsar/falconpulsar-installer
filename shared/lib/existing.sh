@@ -295,17 +295,21 @@ fp_apply_existing_action() {
         reinstall)
             log_info "Reinstall — stopping containers, rewriting stack files, preserving data"
             if [ -f "${home}/compose.yml" ]; then
-                # --profile ai: legacy compose compat (pre-mandatory-gateway
-                # installs gated the gateway behind a profile); no-op on
-                # current stacks.
-                ( cd "$home" && docker compose --profile ai down 2>/dev/null ) || true
+                # --profile ai --profile engine: a --profile flag REPLACES the
+                # .env COMPOSE_PROFILES, so both must be named to pull every
+                # gated service into the `down` model — "ai" for legacy
+                # pre-mandatory-gateway stacks, "engine" for the optional
+                # ai-engine (without it the engine is left Up, stranding the
+                # network and blocking the recreate below).
+                ( cd "$home" && docker compose --profile ai --profile engine down 2>/dev/null ) || true
             fi
             ;;
         fresh)
             log_info "Fresh install — removing everything"
             if [ -f "${home}/compose.yml" ]; then
-                # --profile ai: legacy compose compat, see above.
-                ( cd "$home" && docker compose --profile ai down --remove-orphans --volumes 2>/dev/null ) || true
+                # --profile ai --profile engine: see the reinstall note above —
+                # both profiles so the ai-engine is torn down too.
+                ( cd "$home" && docker compose --profile ai --profile engine down --remove-orphans --volumes 2>/dev/null ) || true
             fi
             # Best-effort image + orphan volume cleanup.
             # Image removal is gated by FP_REMOVE_CACHED_IMAGES so the user

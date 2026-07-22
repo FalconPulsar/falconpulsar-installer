@@ -5,16 +5,20 @@
 #
 # Removes everything the install.sh put in place:
 #
-#   - Stops and removes the docker containers + the falconpulsar bridge network
+#   - Stops and removes the docker containers (including the optional
+#     ai-engine) + the falconpulsar bridge network
+#   - Removes the FalconPulsar Docker images (compose-declared, plus any
+#     leftover falconpulsar/* from older installs)
 #   - Disables the systemd user unit (if installed) and disables linger
-#   - Deletes ${FP_HOME} (compose.yml, .env, data/, ai-gateway-data/)
-#     ONLY when --purge is passed (interactive runs confirm once first)
+#   - Deletes ${FP_HOME} (compose.yml, .env, data/, ai-gateway-data/,
+#     ai-engine-data/) and any custom data dirs pointed to by .env that live
+#     outside ${FP_HOME} — ONLY when --purge is passed (interactive runs
+#     confirm once first)
 #   - Removes the falconpulsar system user + group (service-user installs,
 #     --purge only)
 #
 # Does NOT touch:
 #   - Docker Engine itself (we don't know if you installed it for FP only)
-#   - Pulled images on disk (use `docker image prune` if you want them gone)
 #
 # Usage:
 #   sudo bash uninstall.sh                    # keep data (default)
@@ -48,7 +52,25 @@ if [ -f "${REPO_ROOT}/shared/lib/common.sh" ]; then
         # shellcheck source=../shared/lib/fpcli.sh
         . "${REPO_ROOT}/shared/lib/fpcli.sh"
     else
-        fp_remove_path_append() { :; }
+        # Planted ${FP_HOME}/uninstall.sh and the `fp uninstall` /tmp copy run
+        # without shared/lib alongside — provide a REAL implementation inline
+        # (mirrors fpcli.sh:fp_remove_path_append) so the PATH line the
+        # installer appended is actually stripped, not silently skipped.
+        fp_remove_path_append() {
+            local target_home rc tmp
+            for target_home in "$@"; do
+                [ -n "$target_home" ] || continue
+                for rc in "${target_home}/.bashrc" "${target_home}/.bash_profile" \
+                          "${target_home}/.zshrc" "${target_home}/.profile" \
+                          "${target_home}/.config/fish/config.fish"; do
+                    [ -f "$rc" ] || continue
+                    grep -qsF "Added by FalconPulsar installer" "$rc" || continue
+                    tmp="${rc}.fp-uninstall.tmp"
+                    awk 'BEGIN{skip=0} /^# Added by FalconPulsar installer$/{skip=2;next} skip>0{skip--;next} {print}' \
+                        "$rc" > "$tmp" && mv "$tmp" "$rc"
+                done
+            done
+        }
     fi
 else
     log_step()    { echo; echo "==> $1"; }
@@ -93,10 +115,25 @@ else
         [ -e /proc/sys/fs/binfmt_misc/WSLInterop ] && return 0
         grep -qiE 'microsoft|wsl' /proc/version 2>/dev/null
     }
-    # Inline stub when running standalone (script copied to /tmp). The
-    # full implementation lives in shared/lib/fpcli.sh and is sourced
-    # via the if-branch above when the script runs from the repo tree.
-    fp_remove_path_append() { :; }
+    # Real inline implementation for the standalone case (the planted
+    # ${FP_HOME}/uninstall.sh and the `fp uninstall` /tmp copy have no
+    # shared/lib alongside). Mirrors fpcli.sh:fp_remove_path_append so the
+    # installer-appended PATH line is actually stripped, not silently skipped.
+    fp_remove_path_append() {
+        local target_home rc tmp
+        for target_home in "$@"; do
+            [ -n "$target_home" ] || continue
+            for rc in "${target_home}/.bashrc" "${target_home}/.bash_profile" \
+                      "${target_home}/.zshrc" "${target_home}/.profile" \
+                      "${target_home}/.config/fish/config.fish"; do
+                [ -f "$rc" ] || continue
+                grep -qsF "Added by FalconPulsar installer" "$rc" || continue
+                tmp="${rc}.fp-uninstall.tmp"
+                awk 'BEGIN{skip=0} /^# Added by FalconPulsar installer$/{skip=2;next} skip>0{skip--;next} {print}' \
+                    "$rc" > "$tmp" && mv "$tmp" "$rc"
+            done
+        done
+    }
 fi
 
 trap 'on_error $LINENO' ERR
@@ -273,41 +310,69 @@ FP_UID="$(id -u "$FP_USER")"
 cd / 2>/dev/null
 
 log_step "stopping the stack"
-# --profile ai: legacy compose compat (pre-mandatory-gateway installs gated
-# ai-gateway behind the "ai" profile); no-op on current stacks.
+# --profile ai --profile engine: a --profile CLI flag REPLACES the .env
+# COMPOSE_PROFILES, so BOTH known profiles must be named for their services
+# to be in the `down` model — "ai" for legacy pre-mandatory-gateway stacks
+# that hid ai-gateway behind it, "engine" for the optional ai-engine.
+# Without "engine" the ai-engine container is left Up and keeps the bridge
+# network in use. The name-sweep + network fallback below are the backstop.
 if [ -f "${FP_HOME}/compose.yml" ]; then
     if [ "$FP_PURGE" -eq 1 ]; then
         # --volumes removes named Docker volumes declared in compose.yml
-        run_as_fp_user "cd '${FP_HOME}' && docker compose --profile ai down --remove-orphans --volumes" || \
+        run_as_fp_user "cd '${FP_HOME}' && docker compose --profile ai --profile engine down --remove-orphans --volumes" || \
             log_warn "docker compose down failed -- continuing anyway"
     else
-        run_as_fp_user "cd '${FP_HOME}' && docker compose --profile ai down --remove-orphans" || \
+        run_as_fp_user "cd '${FP_HOME}' && docker compose --profile ai --profile engine down --remove-orphans" || \
             log_warn "docker compose down failed -- continuing anyway"
     fi
 else
     log_info "no compose.yml in ${FP_HOME}, skipping docker compose down"
 fi
 
+# Name-sweep backstop: guarantee no falconpulsar-* container survives the
+# down. A stale profile, a missing compose.yml, or a container started
+# outside compose can all strand one (most often the ai-engine). Do this
+# BEFORE image removal so `docker rmi` actually deletes the images instead
+# of merely untagging one still referenced by a running container.
+run_as_fp_user "docker ps -aq --filter name=falconpulsar- | xargs -r docker rm -f" >/dev/null 2>&1 || true
+# Explicit network fallback: `down` leaves the bridge network behind when a
+# container blocked its removal. Safe once every container above is gone.
+run_as_fp_user "docker network rm falconpulsar" >/dev/null 2>&1 || true
+
 log_step "removing Docker images"
 # Wrap in `set +e` -- failing image queries with errexit+pipefail abort the
 # whole script. GNU xargs does have -r but we use `while read` for parity.
 set +e
+FP_IMAGE_RM_FAILED=0
 if [ -f "${FP_HOME}/compose.yml" ]; then
-    # --profile ai: legacy compose compat — without it, a pre-mandatory-
-    # gateway compose.yml hides the ai-gateway image (~1.6 GB) from the
-    # query and it survives the uninstall. No-op on current stacks.
-    IMAGES="$(run_as_fp_user "cd '${FP_HOME}' && docker compose --profile ai config --images" 2>/dev/null | sort -u)"
+    # --profile ai --profile engine: a --profile flag REPLACES the .env
+    # COMPOSE_PROFILES, so both must be named to enumerate every gated
+    # image — "ai" for a legacy compose.yml that hid the ai-gateway image
+    # (~1.6 GB), "engine" for the optional ai-engine image. Without them
+    # those images survive the uninstall.
+    IMAGES="$(run_as_fp_user "cd '${FP_HOME}' && docker compose --profile ai --profile engine config --images" 2>/dev/null | sort -u)"
     if [ -n "$IMAGES" ]; then
-        echo "$IMAGES" | while IFS= read -r img; do
-            [ -n "$img" ] && run_as_fp_user "docker rmi -f '$img'" >/dev/null 2>&1
-        done
+        # Process substitution (not a pipe): a `while` on the right of a
+        # pipe runs in a subshell, so FP_IMAGE_RM_FAILED increments would
+        # be lost. Reading from < <(...) keeps the counter in this shell.
+        while IFS= read -r img; do
+            [ -z "$img" ] && continue
+            run_as_fp_user "docker rmi -f '$img'" >/dev/null 2>&1 || \
+                FP_IMAGE_RM_FAILED=$((FP_IMAGE_RM_FAILED + 1))
+        done < <(printf '%s\n' "$IMAGES")
     fi
 fi
-run_as_fp_user "docker images --format '{{.Repository}}:{{.Tag}}'" 2>/dev/null | \
-    grep -E '^falconpulsar/' | while IFS= read -r img; do
-    [ -n "$img" ] && run_as_fp_user "docker rmi -f '$img'" >/dev/null 2>&1
-done
+while IFS= read -r img; do
+    [ -z "$img" ] && continue
+    run_as_fp_user "docker rmi -f '$img'" >/dev/null 2>&1 || \
+        FP_IMAGE_RM_FAILED=$((FP_IMAGE_RM_FAILED + 1))
+done < <(run_as_fp_user "docker images --format '{{.Repository}}:{{.Tag}}'" 2>/dev/null | grep -E '^falconpulsar/')
 set -e
+if [ "$FP_IMAGE_RM_FAILED" -eq 0 ]; then
+    log_success "Docker images removed"
+else
+    log_warn "some images could not be removed: ${FP_IMAGE_RM_FAILED} (they may still be in use)"
+fi
 
 if [ "$FP_PURGE" -eq 1 ]; then
     log_step "pruning orphan volumes"
@@ -368,12 +433,51 @@ fi
 # to auto-answer yes on every run.
 if [ "$FP_PURGE" -eq 1 ]; then
     log_step "removing ${FP_HOME}"
+
+    # Custom data dirs: an operator may have pointed FP_DATA_DIR /
+    # FP_GATEWAY_DATA_DIR / FP_ENGINE_DATA_DIR at a location OUTSIDE
+    # ${FP_HOME} (e.g. a bigger disk). Those survive `rm -rf ${FP_HOME}`, so
+    # read the concrete paths the installer wrote to .env (same sed pattern
+    # install.sh uses) and delete any that resolve outside the stack dir.
+    # MUST run before .env is removed just below.
+    _fp_external_dirs=()
+    if [ -f "${FP_HOME}/.env" ]; then
+        _fp_home_abs="$(cd "${FP_HOME}" 2>/dev/null && pwd -P || echo "${FP_HOME}")"
+        for _fp_dvar in FP_DATA_DIR FP_GATEWAY_DATA_DIR FP_ENGINE_DATA_DIR; do
+            _fp_dval="$(sed -n "s/^${_fp_dvar}=//p" "${FP_HOME}/.env" | tail -n1 | tr -d '\r')"
+            [ -n "$_fp_dval" ] || continue
+            case "$_fp_dval" in
+                /*) ;;            # absolute — evaluate it
+                *)  continue ;;   # relative/blank — resolves under the stack dir
+            esac
+            _fp_dabs="$(cd "$_fp_dval" 2>/dev/null && pwd -P || echo "$_fp_dval")"
+            case "$_fp_dabs" in
+                "$_fp_home_abs"|"$_fp_home_abs"/*) continue ;;  # inside ${FP_HOME}
+                /|"") continue ;;                                # never / or empty
+            esac
+            _fp_external_dirs+=("$_fp_dabs")
+        done
+    fi
+
     # Remove child directories first to shrink what the final rm has to do.
     # :? guards against FP_HOME being unset/empty — would otherwise rm /bin.
-    rm -rf "${FP_HOME:?}/bin" "${FP_HOME:?}/.docker" "${FP_HOME:?}/ai-gateway-data" 2>/dev/null || true
+    rm -rf "${FP_HOME:?}/bin" "${FP_HOME:?}/.docker" "${FP_HOME:?}/ai-gateway-data" "${FP_HOME:?}/ai-engine-data" 2>/dev/null || true
     rm -f "${FP_HOME:?}/compose.yml" "${FP_HOME:?}/.env" 2>/dev/null || true
     rm -rf "${FP_HOME:?}"
     log_success "deleted ${FP_HOME}"
+
+    # External custom data dirs (if any) live outside ${FP_HOME} and so were
+    # untouched by the removals above.
+    if [ ${#_fp_external_dirs[@]} -gt 0 ]; then
+        for _fp_ext in "${_fp_external_dirs[@]}"; do
+            [ -e "$_fp_ext" ] || continue
+            if rm -rf "${_fp_ext:?}" 2>/dev/null; then
+                log_success "deleted custom data dir ${_fp_ext}"
+            else
+                log_warn "could not fully remove custom data dir ${_fp_ext}"
+            fi
+        done
+    fi
 
     if [ "$FP_INSTALL_MODEL" = "service-user" ]; then
         log_step "removing user ${FP_USER}"

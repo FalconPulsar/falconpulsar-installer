@@ -1201,12 +1201,14 @@ namespace FalconPulsar.Tray
 
         private void UninstallFalconPulsar()
         {
-            // Find the Inno Setup uninstaller
-            var uninstExe = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
-                "FalconPulsar", "unins000.exe");
+            // Resolve the Inno Setup uninstaller. Inno's wizard lets the user
+            // choose a custom install directory, so the ProgramFiles default is
+            // only a fallback -- the authoritative location is the
+            // UninstallString value Inno writes at install time. Mirrors the fp
+            // CLI's resolveWindowsUninstaller (console/internal/cli/cli.go).
+            var uninstExe = ResolveUninstaller();
 
-            if (File.Exists(uninstExe))
+            if (!string.IsNullOrEmpty(uninstExe) && File.Exists(uninstExe))
             {
                 Process.Start(new ProcessStartInfo(uninstExe) { UseShellExecute = true });
             }
@@ -1219,6 +1221,46 @@ namespace FalconPulsar.Tray
                     MessageBoxButtons.OK,
                     MessageBoxIcon.Information);
             }
+        }
+
+        // Locate unins000.exe via the Inno Setup UninstallString so a custom
+        // install directory is honoured, falling back to the ProgramFiles
+        // default when the registry lookup fails. The AppId GUID must match
+        // AppId in windows/installer.iss. HKLM because the installer requires
+        // admin. Mirrors resolveWindowsUninstaller in the fp CLI.
+        private static string ResolveUninstaller()
+        {
+            const string uninstallSubKey =
+                @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\" +
+                "{8E0B7C2F-3F4D-4B9E-9C6A-1D5F8A2B9C71}_is1";
+
+            // Try the native 64-bit view then the 32-bit (WOW6432Node) view so
+            // the tray app's own bitness doesn't decide which view we read.
+            foreach (var view in new[] { RegistryView.Registry64, RegistryView.Registry32 })
+            {
+                try
+                {
+                    using var baseKey = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, view);
+                    using var key = baseKey.OpenSubKey(uninstallSubKey);
+                    if (key?.GetValue("UninstallString") is string raw && raw.Length > 0)
+                    {
+                        // Inno writes it quoted: "C:\...\unins000.exe" -- strip
+                        // the surrounding quotes (mirrors the fp CLI).
+                        var path = raw.Trim().Trim('"');
+                        if (!string.IsNullOrEmpty(path) && File.Exists(path))
+                            return path;
+                    }
+                }
+                catch
+                {
+                    // Registry view unavailable / access denied -- try the next
+                    // view, then fall through to the ProgramFiles default.
+                }
+            }
+
+            return Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+                "FalconPulsar", "unins000.exe");
         }
 
         private void ExitApp()

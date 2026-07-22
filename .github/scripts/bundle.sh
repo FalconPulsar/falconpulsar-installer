@@ -75,10 +75,13 @@ BUNDLE_HEADER
 
 # ── Embed shared/lib/*.sh ────────────────────────────────────────────────────
 # Pick only the libs each flavor actually sources. The uninstall flavor is
-# lean: uninstall.sh only needs common.sh (fatal-path helpers) and
-# auth.sh (admin-password challenge). The install flavor needs the full set.
+# lean: uninstall.sh needs common.sh (fatal-path helpers), auth.sh
+# (admin-password challenge), and fpcli.sh (fp_remove_path_append, which
+# strips the installer's PATH line from the user's shell rc — without it
+# uninstall.sh falls back to a no-op stub and the rc line is orphaned).
+# The install flavor needs the full set.
 if [ "$PLATFORM" = "linux-uninstall" ]; then
-    LIB_LIST="common.sh auth.sh"
+    LIB_LIST="common.sh auth.sh fpcli.sh"
 else
     LIB_LIST="common.sh checks.sh prompts.sh bootstrap.sh registry_auth.sh fpcli.sh existing.sh auth.sh"
 fi

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -550,6 +551,17 @@ func (a *App) confirmPurge() {
 }
 
 func (a *App) runUninstall(purge bool) {
+	// On WSL the install has BOTH a Linux side (containers, /home stack dir)
+	// AND a Windows side (Tray app, fp.exe wrapper, Start Menu, Add/Remove
+	// Programs entry, HKCU Run key). The bash uninstall.sh inside WSL can
+	// only touch the Linux half. Hand off to the Inno Setup uninstaller on
+	// Windows — it removes its own files AND calls uninstall.ps1 which cleans
+	// the WSL side. One entry point, both halves. Mirrors `fp uninstall`.
+	if cli.IsWSL() {
+		a.runWindowsUninstall(purge)
+		return
+	}
+
 	// Find uninstall.sh (installer drops it into ~/falconpulsar).
 	home := actions.HomeDir()
 	script := filepath.Join(home, "uninstall.sh")
@@ -591,59 +603,88 @@ func (a *App) runUninstall(purge bool) {
 		_ = os.WriteFile(authTmp, data, 0600)
 	}
 
+	// Run the staged copy so bash doesn't die when $FP_HOME is deleted.
+	runPath := script
+	if _, err := os.Stat(tmp); err == nil {
+		runPath = tmp
+	}
+
 	flag := "--keep"
 	if purge {
 		flag = "--purge"
 	}
-	a.showMessage("Uninstalling…",
-		"Running uninstall.sh "+flag+" --yes\nPlease wait — this may take up to a minute.",
-		false)
 
-	go func() {
-		// Run the /tmp copy so bash doesn't die when $FP_HOME is deleted.
-		runPath := script
-		if _, err := os.Stat(tmp); err == nil {
-			runPath = tmp
-		}
-		// --force: the TUI runs inside alt-screen mode, so prompting for
-		// admin credentials via bash `read </dev/tty` would race with tview's
-		// input handler. The TUI already guards uninstall with a DELETE-type
-		// confirmation, so skipping the bash auth gate here is safe — the
-		// user is already locally authenticated by having shell access +
-		// fp binary access.
-		cmd := exec.Command("bash", runPath, flag, "--yes", "--force")
+	// --force: skip the bash admin-auth gate. The TUI already guards
+	// uninstall with a DELETE-type confirmation, so the user is already
+	// locally authenticated by having shell access + fp binary access.
+	// --home forwards the console-resolved stack dir so the script targets
+	// exactly what we found (relocated / per-user stacks) instead of
+	// re-inferring it.
+	argv := []string{"bash", runPath, flag, "--yes", "--force", "--home", home}
+
+	// Native Linux's DEFAULT service-user model requires root: uninstall.sh
+	// calls require_root BEFORE the --force bypass, so execing bash directly
+	// as the invoking (non-root) user dies "must run as root". Run it under
+	// sudo. macOS uses require_not_root, so it must NOT be sudoed; WSL is
+	// handled above. We Suspend the TUI below so sudo can prompt for the
+	// password on the real terminal.
+	if runtime.GOOS == "linux" {
+		argv = append([]string{"sudo"}, argv...)
+	}
+
+	// Run in the foreground with real stdio (via Suspend) rather than
+	// capturing output in a modal: sudo (Linux) needs a tty to prompt for
+	// the password, and the user sees the uninstall progress live.
+	var runErr error
+	a.tv.Suspend(func() {
+		fmt.Println()
+		cmd := exec.Command(argv[0], argv[1:]...)
 		cmd.Dir = "/" // cwd outside $FP_HOME
-		out, err := cmd.CombinedOutput()
+		cmd.Stdin = os.Stdin
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		runErr = cmd.Run()
 		_ = os.RemoveAll(stageDir) // best-effort cleanup of the staging dir
-		a.tv.QueueUpdateDraw(func() {
-			a.pages.RemovePage("modal")
-			if err != nil {
-				a.showMessage("Uninstall failed",
-					fmt.Sprintf("%v\n\n%s", err, truncate(string(out), 1500)),
-					true)
-				return
-			}
-			finalMsg := "FalconPulsar has been removed. Your data at ~/falconpulsar/data is preserved."
-			if purge {
-				finalMsg = "FalconPulsar has been completely removed, including your data directory."
-			}
-			a.showMessage("Uninstall complete",
-				finalMsg+"\n\nThe console will now exit.",
-				true)
-			// Give the user a moment to read, then terminate.
-			go func() {
-				time.Sleep(3 * time.Second)
-				a.tv.QueueUpdateDraw(func() { a.tv.Stop() })
-			}()
-		})
-	}()
+		fmt.Println()
+		if runErr != nil {
+			fmt.Fprintf(os.Stderr, "Uninstall reported an error: %v\n", runErr)
+		}
+		fmt.Println("Press Enter to continue…")
+		_, _ = fmt.Scanln()
+	})
+
+	if runErr != nil {
+		a.showMessage("Uninstall failed",
+			fmt.Sprintf("%v\n\nSee the uninstaller output printed above for details.", runErr),
+			true)
+		return
+	}
+	// Success: the stack (and this fp binary) are gone — exit the console.
+	a.tv.Stop()
 }
 
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
+// runWindowsUninstall mirrors the CLI's WSL handoff (cli.RunWindowsUninstaller):
+// it launches the Inno Setup uninstaller which removes the Windows half and
+// drives uninstall.ps1 for the WSL cleanup. The TUI is suspended so the
+// uninstaller's output reaches the real terminal. yes=true because the TUI
+// already gated this behind its own confirmation, so the Inno Setup MsgBox
+// should not fire again.
+func (a *App) runWindowsUninstall(purge bool) {
+	var runErr error
+	a.tv.Suspend(func() {
+		fmt.Println()
+		runErr = cli.RunWindowsUninstaller(purge, true)
+		fmt.Println()
+		fmt.Println("Press Enter to continue…")
+		_, _ = fmt.Scanln()
+	})
+	if runErr != nil {
+		a.showMessage("Uninstall failed",
+			fmt.Sprintf("%v\n\nSee the uninstaller output printed above for details.", runErr),
+			true)
+		return
 	}
-	return s[:n] + "\n…(truncated)"
+	a.tv.Stop()
 }
 
 func (a *App) doExport() {
@@ -808,7 +849,6 @@ func (a *App) showHelp() {
 			"  [#00AAFF]F3[-]    Stop stack\n" +
 			"  [#00AAFF]F4[-]    Restart stack\n" +
 			"  [#00AAFF]F5[-]    View logs (all services)\n" +
-			"  [#00AAFF]F6[-]    Edit core config\n" +
 			"  [#00AAFF]F7[-]    Export configuration (admin)\n" +
 			"  [#00AAFF]F8[-]    Import configuration (admin)\n" +
 			"  [#00AAFF]F9[-]    Open menu bar\n" +
