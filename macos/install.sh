@@ -506,7 +506,8 @@ FP_DATA_DIR=${FP_DATA_DIR}
 FP_GATEWAY_DATA_DIR=${FP_GATEWAY_DATA_DIR}
 # Optional AI Engine — its config lives in the shared main folder. To turn it
 # on: set FP_AI_ENGINE_ENABLED=true (COMPOSE_PROFILES is derived), then run
-# `docker compose up -d`.
+# "docker compose up -d". (No backticks here: this heredoc is unquoted, so
+# backticks would EXECUTE the command while writing .env.)
 FP_ENGINE_DATA_DIR=${FP_ENGINE_DATA_DIR}
 FP_AI_ENGINE_ENABLED=${FP_AI_ENGINE_ENABLED}
 COMPOSE_PROFILES=${COMPOSE_PROFILES}

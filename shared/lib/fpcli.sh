@@ -168,11 +168,12 @@ fp_download_with_pat() {
     local dest="$3"
     local seen_code="$4"
 
-    # Split incoming "owner/name" so we can prompt for the owner
-    # separately. Many enterprise customers fork FalconPulsar into
-    # their own org and need to point the installer at their fork —
-    # the PAT they're about to paste is on their account, not on ours.
-    local default_owner="${repo%%/*}"
+    # Keep the repo *name* from the incoming "owner/name" so a bare-owner
+    # answer at the prompt can be completed to "owner/name". Many enterprise
+    # customers fork FalconPulsar into their own org and need to point the
+    # installer at their fork — the PAT they're about to paste is on their
+    # account, not on ours. (The owner default is recomputed inside the
+    # prompt loop as current_owner, since $repo can change between attempts.)
     local default_name="${repo##*/}"
 
     log_warn "GitHub returned ${seen_code} for ${repo} — the release appears to be private."
