@@ -307,14 +307,20 @@ cat > "$INSTALLER_BUNDLE/Contents/Info.plist" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>CFBundleExecutable</key><string>FalconPulsarInstaller</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleIdentifier</key><string>com.falconpulsar.installer</string>
   <key>CFBundleName</key><string>FalconPulsar Installer</string>
   <key>CFBundleVersion</key><string>${VERSION}</string>
   <key>CFBundleShortVersionString</key><string>${VERSION}</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
+  <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>NSHighResolutionCapable</key><true/>
 </dict></plist>
 PLIST
+# Without CFBundlePackageType=APPL (+ PkgInfo), Gatekeeper rejects the bundle
+# with "the code is valid but does not seem to be an app" and users get the
+# "Apple could not verify ... is free of malware" block on first open.
+printf 'APPL????' > "$INSTALLER_BUNDLE/Contents/PkgInfo"
 
 # ── Step 4: Embed Menu Bar.app in Installer.app/Contents/Resources ──────────
 log "embedding Menu Bar.app in Installer.app Resources"
@@ -328,14 +334,17 @@ cat > "$MB_BUNDLE/Contents/Info.plist" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>CFBundleExecutable</key><string>FalconPulsarMenuBar</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleIdentifier</key><string>com.falconpulsar.menubar</string>
   <key>CFBundleName</key><string>FalconPulsar</string>
   <key>CFBundleVersion</key><string>${VERSION}</string>
   <key>CFBundleShortVersionString</key><string>${VERSION}</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
+  <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>LSUIElement</key><true/>
 </dict></plist>
 PLIST
+printf 'APPL????' > "$MB_BUNDLE/Contents/PkgInfo"
 
 # ── Step 5: Codesign inner-first-then-outer ─────────────────────────────────
 # Order matters: codesign hashes embedded signatures into the enclosing
