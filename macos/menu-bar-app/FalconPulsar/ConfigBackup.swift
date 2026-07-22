@@ -8,11 +8,13 @@ import CryptoKit
 //  Authoritative spec lives in console/internal/configbackup/backup.go.
 //  The macOS/Windows/Linux implementations all produce + consume the same
 //  binary envelope below; the v2 payload also includes asset-types, series
-//  (with engineering+alarms inline), relationships, and annotations.
+//  (with engineering+alarms inline), relationships, and annotations, and the
+//  v3 payload adds the admin config-bundle (users/roles/tokens/layouts with
+//  secrets).
 // =============================================================================
 //  Outer framing (binary):
 //    [0..3]   Magic = "FPCF"                 (4 bytes)
-//    [4]      Format version                 (1 byte; writes: 2, accepts: 1, 2)
+//    [4]      Format version                 (1 byte; writes: 3, accepts: 1, 2, 3)
 //    [5..20]  PBKDF2 salt                    (16 bytes)
 //    [21..32] AES-GCM nonce/IV               (12 bytes)
 //    [33..]   AES-256-GCM ciphertext of the zip payload
@@ -39,12 +41,37 @@ import CryptoKit
 //    api/mappings.json             ← GET /api/v1/mappings
 //    api/relationships.json        ← GET /api/v1/relationships     (NEW in v2)
 //    api/annotations.json          ← GET /api/v1/annotations       (NEW in v2)
+//    api/config-bundle.json        ← GET /api/v1/admin/config-bundle (NEW in v3)
+//                                     the complete-server secrets: user password
+//                                     hashes+salts, MFA secrets, API-token
+//                                     records, roles, and layout/favorite/label/
+//                                     preference KV — applied first on import.
+// =============================================================================
+//  Format version compatibility:
+//    v1: 5 sections (users, roles, datasources, mappings, assets). Import
+//        still works.
+//    v2: adds asset-types, series, relationships, annotations. Imports of v1
+//        files succeed (the missing sections are skipped silently).
+//    v3: adds config-bundle.json. On import it is applied first (restoring
+//        users/roles/tokens/layouts verbatim, with secrets); the users+roles
+//        REST sections are then skipped. A v3 file on a v1/v2-only client is
+//        rejected at the version-byte check.
 // =============================================================================
 
 enum ConfigBackup {
     static let magic: [UInt8] = [0x46, 0x50, 0x43, 0x46]  // "FPCF"
     /// Version this build *writes*. Older versions are still accepted on read.
-    static let formatVersion: UInt8 = 2
+    ///
+    /// v3 adds api/config-bundle.json — the admin-only "complete server"
+    /// bundle from GET /api/v1/admin/config-bundle: user password hashes +
+    /// salts, MFA secrets, API-token records, roles, and the canvas
+    /// layout/favorite/label/preference KV. It is the ONLY source of the
+    /// secrets a real "restore a server" needs, so a v3 restore rebuilds a
+    /// server with the SAME passwords, tokens, MFA, and dashboards. The
+    /// bundle is applied first on import; when present, the users+roles REST
+    /// sections are skipped (the bundle already restored them verbatim, with
+    /// secrets).
+    static let formatVersion: UInt8 = 3
     /// Oldest format this build can decrypt and parse.
     static let minReadableFormatVersion: UInt8 = 1
     static let pbkdf2Iterations: UInt32 = 100_000
@@ -344,6 +371,22 @@ enum ConfigBackup {
             }
         }
 
+        // v3: the complete server bundle — password hashes, MFA secrets, API
+        // tokens, roles, layouts, favorites, labels, preferences. This is the
+        // ONLY source of the secrets a real "restore a server" needs; the whole
+        // backup is AES-encrypted so these never touch disk in the clear. Fetch
+        // it last, after the plain REST sections. A server too old to expose
+        // the endpoint (404) simply yields no bundle and the backup degrades
+        // to v2 behaviour on import — so any non-2xx / network error is skipped
+        // silently. The client treats the response as an opaque blob; it moves
+        // the bytes verbatim (GET body → zip → POST body) without parsing.
+        let bundleURL = URL(string: "\(coreBaseURL)/api/v1/admin/config-bundle")!
+        var bundleReq = URLRequest(url: bundleURL)
+        bundleReq.addValue("Bearer \(creds.token)", forHTTPHeaderField: "Authorization")
+        if let (bundle, _) = try? syncRequest(bundleReq), !bundle.isEmpty {
+            fm.createFile(atPath: "\(apiDir)/config-bundle.json", contents: bundle)
+        }
+
         // Manifest
         let hostName = Host.current().localizedName ?? "unknown"
         let df = ISO8601DateFormatter()
@@ -405,6 +448,32 @@ enum ConfigBackup {
         // ({"users":[...]}, {"series":[...]}), fall back to bare-array,
         // then a generic {"items":[...]} wrapper.
         let apiDir = "\(workDir)/api"
+
+        // v3: apply the complete server bundle FIRST — it restores users (with
+        // their password hashes + MFA), roles, API tokens, and the canvas
+        // layout/favorite/label/preference KV verbatim via the admin endpoint.
+        // The bytes are POSTed opaquely (no parsing/transform). When it applies,
+        // the users+roles REST sections below are skipped so a verbatim,
+        // password-preserving restore isn't overwritten by the password-less
+        // REST create path (which would only add duplicates / 409s).
+        var bundleApplied = false
+        let bundleFilePath = "\(apiDir)/config-bundle.json"
+        if fm.fileExists(atPath: bundleFilePath),
+           let bundleData = try? Data(contentsOf: URL(fileURLWithPath: bundleFilePath)) {
+            let bundleURL = URL(string: "\(coreBaseURL)/api/v1/admin/config-bundle")!
+            var req = URLRequest(url: bundleURL)
+            req.httpMethod = "POST"
+            req.addValue("Bearer \(creds.token)", forHTTPHeaderField: "Authorization")
+            req.addValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.httpBody = bundleData
+            if (try? syncRequest(req)) != nil {
+                bundleApplied = true
+                NSLog("FalconPulsar: config-bundle restored (users w/ passwords, MFA, API tokens, roles, layouts) — skipping REST users+roles sections")
+            } else {
+                NSLog("FalconPulsar: config-bundle POST FAILED — users/passwords/tokens/layouts NOT restored; falling back to REST users+roles")
+            }
+        }
+
         let sections: [(file: String, path: String, key: String)] = [
             ("roles.json",         "/api/v1/roles",         "roles"),
             ("asset-types.json",   "/api/v1/asset-types",   "asset_types"),
@@ -417,6 +486,12 @@ enum ConfigBackup {
             ("annotations.json",   "/api/v1/annotations",   "annotations"),
         ]
         for sec in sections {
+            // When the v3 bundle applied, users + roles were restored verbatim
+            // (with password hashes + secrets). Re-running the REST create path
+            // for them would only add password-less duplicates / 409s.
+            if bundleApplied && (sec.key == "users" || sec.key == "roles") {
+                continue
+            }
             let filePath = "\(apiDir)/\(sec.file)"
             guard fm.fileExists(atPath: filePath),
                   let json = try? Data(contentsOf: URL(fileURLWithPath: filePath)) else {

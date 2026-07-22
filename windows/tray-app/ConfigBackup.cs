@@ -20,7 +20,7 @@ namespace FalconPulsar.Tray
     //
     //  Outer framing (binary):
     //    [0..3]   Magic = "FPCF"                 (4 bytes)
-    //    [4]      Format version                  (1 byte; writes: 2, accepts: 1, 2)
+    //    [4]      Format version                  (1 byte; writes: 3, accepts: 1, 2, 3)
     //    [5..20]  PBKDF2 salt                    (16 bytes)
     //    [21..32] AES-GCM nonce/IV               (12 bytes)
     //    [33..]   AES-256-GCM ciphertext of the zip payload
@@ -34,13 +34,39 @@ namespace FalconPulsar.Tray
     //    manifest.json, files/{compose.yml,.env,gateway.yaml},
     //    api/{roles,users,asset-types,assets,datasources,series,mappings,
     //         relationships,annotations}.json
+    //    api/config-bundle.json  ← GET /api/v1/admin/config-bundle (new in v3):
+    //         the complete-server secrets — user password hashes+salts, MFA
+    //         secrets, API-token records, roles, and layout/favorite/label/
+    //         preference KV. Treated as an OPAQUE blob (bytes GET → zip → POST),
+    //         never parsed. Applied first on import.
     //    (asset-types, series, relationships, annotations are new in v2.)
+    //
+    //  Format version compatibility:
+    //    v1: 5 sections (users, roles, datasources, mappings, assets).
+    //    v2: adds asset-types, series, relationships, annotations. v1 files
+    //        still import (missing sections skipped silently).
+    //    v3: adds config-bundle.json. On import it is applied FIRST (restoring
+    //        users/roles/tokens/layouts verbatim, with secrets); the users+roles
+    //        REST sections are then skipped. A v3 file is rejected at the
+    //        version-byte check by a v1/v2-only client.
     // =========================================================================
 
     public static class ConfigBackup
     {
-        /// <summary>Format version this build *writes*. Older versions are still accepted on read.</summary>
-        public const byte FormatVersion = 2;
+        /// <summary>
+        /// Format version this build *writes*. Older versions are still
+        /// accepted on read (see Decrypt validation).
+        ///
+        /// v3 adds api/config-bundle.json — the admin-only "complete server"
+        /// bundle from GET /api/v1/admin/config-bundle: user password hashes +
+        /// salts, MFA secrets, API-token records, roles, and the canvas
+        /// layout/favorite/label/preference KV. It is the ONE class of data
+        /// normal REST never returns, so a v3 restore rebuilds a server with the
+        /// SAME passwords, tokens, MFA, and dashboards. The bundle is applied
+        /// first on import; when present, the users+roles REST sections are
+        /// skipped (the bundle already restored them verbatim, with secrets).
+        /// </summary>
+        public const byte FormatVersion = 3;
 
         /// <summary>Oldest format this build can decrypt and parse.</summary>
         public const byte MinReadableFormatVersion = 1;
@@ -307,6 +333,34 @@ namespace FalconPulsar.Tray
                                               $"{{\"{sec.key}\":[]}}");
                         }
                     }
+
+                    // v3: the complete server bundle — password hashes, MFA
+                    // secrets, API tokens, roles, layouts, favorites, labels,
+                    // preferences. This is the ONLY source of the secrets a real
+                    // "restore a server" needs; the whole backup is AES-encrypted
+                    // so these never touch disk in the clear. Treated as an
+                    // OPAQUE blob: GET body → zip entry → POST body on import,
+                    // never parsed. A server too old to expose the endpoint (404)
+                    // simply yields no bundle and the backup degrades to v2
+                    // behaviour on import. This is the LAST api/* entry added
+                    // before the zip is created.
+                    try
+                    {
+                        using var bundleResp = await http.GetAsync(
+                            $"{CoreBaseUrl}/api/v1/admin/config-bundle");
+                        if (bundleResp.IsSuccessStatusCode)
+                        {
+                            var bundle = await bundleResp.Content.ReadAsByteArrayAsync();
+                            if (bundle.Length > 0)
+                                File.WriteAllBytes(
+                                    Path.Combine(apiDir, "config-bundle.json"), bundle);
+                        }
+                    }
+                    catch
+                    {
+                        // Older Core without the endpoint, or a transient
+                        // failure — skip silently; backup degrades to v2.
+                    }
                 }
 
                 // falconpulsar_version mirrors the assembly version (set at
@@ -399,17 +453,45 @@ namespace FalconPulsar.Tray
                     }
                 }
 
-                // Push API data in dependency order. v2-aware: includes the
-                // new sections if present in the zip. Old v1 backups simply
-                // skip the missing files. For each item we strip server-
-                // assigned fields (id, created_at, point_count, ...) so the
-                // target server mints fresh IDs by natural key.
+                // Push API data in dependency order. v3-aware: includes the
+                // v2 sections if present in the zip, and applies the v3
+                // config-bundle first (below). Old v1 backups simply skip the
+                // missing files. For each item we strip server-assigned fields
+                // (id, created_at, point_count, ...) so the target server mints
+                // fresh IDs by natural key.
                 var apiDir = Path.Combine(workDir, "api");
                 if (Directory.Exists(apiDir))
                 {
                     using var http = new HttpClient();
                     http.DefaultRequestHeaders.Authorization =
                         new AuthenticationHeaderValue("Bearer", creds.Token);
+
+                    // v3: apply the complete server bundle FIRST — it restores
+                    // users (with their password hashes + MFA), roles, API
+                    // tokens, and the canvas layout/favorite/label/preference KV
+                    // verbatim via the admin endpoint. When it applies, the
+                    // users+roles REST sections below are skipped so a verbatim,
+                    // password-preserving restore isn't overwritten by the
+                    // password-less REST create path. The bundle is an OPAQUE
+                    // blob: its bytes are POSTed verbatim, never parsed.
+                    bool bundleApplied = false;
+                    var bundleFile = Path.Combine(apiDir, "config-bundle.json");
+                    if (File.Exists(bundleFile))
+                    {
+                        try
+                        {
+                            var bundleBytes = await File.ReadAllBytesAsync(bundleFile);
+                            var bundleBody = new ByteArrayContent(bundleBytes);
+                            bundleBody.Headers.ContentType =
+                                new MediaTypeHeaderValue("application/json");
+                            var bundleResp = await http.PostAsync(
+                                $"{CoreBaseUrl}/api/v1/admin/config-bundle", bundleBody);
+                            if (bundleResp.IsSuccessStatusCode)
+                                bundleApplied = true;
+                        }
+                        catch { /* best-effort; fall through to the REST sections */ }
+                    }
+
                     var sections = new (string file, string path, string key)[] {
                         ("roles.json",         "/api/v1/roles",         "roles"),
                         ("asset-types.json",   "/api/v1/asset-types",   "asset_types"),
@@ -423,6 +505,12 @@ namespace FalconPulsar.Tray
                     };
                     foreach (var sec in sections)
                     {
+                        // When the v3 bundle applied, users + roles were restored
+                        // verbatim (with password hashes + secrets). Re-running the
+                        // REST create path for them would only add password-less
+                        // duplicates / 409s.
+                        if (bundleApplied && (sec.key == "users" || sec.key == "roles"))
+                            continue;
                         var file = Path.Combine(apiDir, sec.file);
                         if (!File.Exists(file)) continue;
                         try

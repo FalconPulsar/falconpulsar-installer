@@ -27,14 +27,21 @@
 //	api/mappings.json            ← GET /api/v1/mappings
 //	api/relationships.json       ← GET /api/v1/relationships    (NEW in v2)
 //	api/annotations.json         ← GET /api/v1/annotations      (NEW in v2)
+//	api/config-bundle.json       ← GET /api/v1/admin/config-bundle (NEW in v3)
+//	                                the complete-server secrets: user password
+//	                                hashes+salts, MFA secrets, API-token
+//	                                records, roles, and layout/favorite/label/
+//	                                preference KV — applied first on import.
 //
 // Format version compatibility:
 //
 //	v1: 5 sections (users, roles, datasources, mappings, assets). Import still works.
 //	v2: adds asset-types, series, relationships, annotations. Imports of v1 files
-//	    succeed (the missing sections are skipped silently). Imports of v2 files
-//	    on older clients that only know v1 are rejected at the magic-byte check
-//	    by the version byte mismatch.
+//	    succeed (the missing sections are skipped silently).
+//	v3: adds config-bundle.json. On import it is applied first (restoring
+//	    users/roles/tokens/layouts verbatim, with secrets); the users+roles
+//	    REST sections are then skipped. A v3 file on a v1/v2-only client is
+//	    rejected at the version-byte check.
 package configbackup
 
 import (
@@ -63,7 +70,16 @@ import (
 const (
 	// FormatVersion is the version this build *writes*. Older versions are
 	// still accepted on import (see decrypt() validation).
-	FormatVersion = 2
+	//
+	// v3 adds api/config-bundle.json — the admin-only "complete server"
+	// bundle from GET /api/v1/admin/config-bundle: user password hashes +
+	// salts, MFA secrets, API-token records, roles, and the canvas
+	// layout/favorite/label/preference KV. It is the ONE class of data that
+	// normal REST never returns, so a v3 restore rebuilds a server with the
+	// SAME passwords, tokens, MFA, and dashboards. The bundle is applied
+	// first on import; when present, the users+roles REST sections are
+	// skipped (the bundle already restored them verbatim, with secrets).
+	FormatVersion = 3
 
 	// MinReadableFormatVersion is the oldest format we can still decrypt
 	// and parse.
@@ -109,6 +125,16 @@ func (s ImportSummary) HumanReadable() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Import complete: %d created, %d skipped (already existed), %d errors.\n",
 		s.TotalCreated, s.TotalSkipped, s.TotalErrors)
+	if st, ok := s.Sections["config-bundle"]; ok {
+		if st.Errors > 0 {
+			fmt.Fprintf(&b, "  • %-13s  FAILED — users/passwords/tokens/layouts NOT restored\n", "config-bundle")
+			for _, msg := range st.ErrorDetails {
+				fmt.Fprintf(&b, "      ! %s\n", msg)
+			}
+		} else {
+			fmt.Fprintf(&b, "  • %-13s  restored (users w/ passwords, MFA, API tokens, roles, layouts)\n", "config-bundle")
+		}
+	}
 	for _, name := range []string{
 		"roles", "users", "asset-types", "assets",
 		"datasources", "series", "mappings", "relationships", "annotations",
@@ -259,6 +285,16 @@ func Export(ctx context.Context, output string, cli *api.Client, user, pass stri
 		_ = writeZipFile(zw, "api/"+ep.name, data)
 	}
 
+	// v3: the complete server bundle — password hashes, MFA secrets, API
+	// tokens, roles, layouts, favorites, labels, preferences. This is the
+	// ONLY source of the secrets a real "restore a server" needs; the whole
+	// backup is AES-encrypted so these never touch disk in the clear. A
+	// server too old to expose the endpoint (404) simply yields no bundle
+	// and the backup degrades to v2 behaviour on import.
+	if bundle, err := cli.GetRaw(ctx, "/api/v1/admin/config-bundle"); err == nil && len(bundle) > 0 {
+		_ = writeZipFile(zw, "api/config-bundle.json", bundle)
+	}
+
 	if err := zw.Close(); err != nil {
 		return err
 	}
@@ -315,6 +351,29 @@ func Import(ctx context.Context, input string, cli *api.Client, user, pass strin
 	// never see the stack as AI-disabled.
 	sanitizeRestoredEnv(filepath.Join(home, ".env"))
 
+	// v3: apply the complete server bundle FIRST — it restores users (with
+	// their password hashes + MFA), roles, API tokens, and the canvas
+	// layout/favorite/label/preference KV verbatim via the admin endpoint.
+	// When it applies, the users+roles REST sections below are skipped so a
+	// verbatim, password-preserving restore isn't overwritten by the
+	// password-less REST create path.
+	bundleApplied := false
+	if f, ok := entries["api/config-bundle.json"]; ok {
+		if raw, err := readZipFile(f); err == nil {
+			if _, err := cli.PostJSON(ctx, "/api/v1/admin/config-bundle", json.RawMessage(raw)); err == nil {
+				bundleApplied = true
+				summary.Sections["config-bundle"] = SectionStats{Created: 1}
+				summary.TotalCreated++
+			} else {
+				summary.Sections["config-bundle"] = SectionStats{
+					Errors:       1,
+					ErrorDetails: []string{err.Error()},
+				}
+				summary.TotalErrors++
+			}
+		}
+	}
+
 	// Push API data in dependency order. Each section is applied with
 	// per-item retry/skip handling so one bad record doesn't abort the
 	// rest. The first 5 error messages per section are retained so the
@@ -347,6 +406,12 @@ func Import(ctx context.Context, input string, cli *api.Client, user, pass strin
 		{"relationships", "relationships.json", "/api/v1/relationships"},
 		{"annotations", "annotations.json", "/api/v1/annotations"},
 	} {
+		// When the v3 bundle applied, users + roles were restored verbatim
+		// (with password hashes + secrets). Re-running the REST create path
+		// for them would only add password-less duplicates / 409s.
+		if bundleApplied && (ep.section == "users" || ep.section == "roles") {
+			continue
+		}
 		f, ok := entries["api/"+ep.file]
 		if !ok {
 			continue
