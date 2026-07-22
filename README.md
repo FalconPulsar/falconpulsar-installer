@@ -5,7 +5,7 @@
 [![build-macos](https://github.com/FalconPulsar/falconpulsar-installer/actions/workflows/build-macos.yml/badge.svg)](https://github.com/FalconPulsar/falconpulsar-installer/actions/workflows/build-macos.yml)
 [![build-windows](https://github.com/FalconPulsar/falconpulsar-installer/actions/workflows/build-windows.yml/badge.svg)](https://github.com/FalconPulsar/falconpulsar-installer/actions/workflows/build-windows.yml)
 [![release](https://github.com/FalconPulsar/falconpulsar-installer/actions/workflows/release.yml/badge.svg)](https://github.com/FalconPulsar/falconpulsar-installer/actions/workflows/release.yml)
-[![Latest release](https://img.shields.io/badge/release-v0.1.4--alpha.21-blue)](https://github.com/FalconPulsar/falconpulsar-installer/releases/tag/v0.1.4-alpha.21)
+[![Latest release](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/icterusicterus/894cadcfc17cc70a488bdfe8917f5df2/raw/release-installer.json)](https://github.com/FalconPulsar/falconpulsar-installer/releases)
 
 ![Linux](https://img.shields.io/badge/Linux-supported-success?logo=linux&logoColor=white)
 ![macOS](https://img.shields.io/badge/macOS-supported-success?logo=apple&logoColor=white)
@@ -15,8 +15,8 @@
 [![license](https://img.shields.io/badge/license-AGPL%20v3-blue)](LICENSE)
 
 > **Badges:** lint / test-linux / build-macos / build-windows / release SVGs are
-> GitHub Actions (visible with private repo access). **Latest release** is a
-> static pin while the org is private. This repo is the installer only — no
+> GitHub Actions (visible with private repo access). **Latest release** is
+> live from a public gist, updated by the prune-releases workflow on every release. This repo is the installer only — no
 > Docker Scout image badge.
 
 This repository contains the installers that take a fresh Linux, macOS, or

@@ -44,3 +44,34 @@ jobs:
               gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag
             done
           echo "Prune complete — 2 newest releases retained."
+
+      - name: Update release badge (gist endpoint)
+        # The README's release badge is a shields.io ENDPOINT badge that reads
+        # release-<repo>.json from the shared badge gist — the same pattern as
+        # the Docker Scout grade badge (see scout.yml). Publishing the newest
+        # remaining tag AFTER pruning keeps the badge live-correct with zero
+        # README commits, works while the repo is private, and can never point
+        # at a pruned release. Repos with no releases show "none".
+        # NOTE: GIST_TOKEN is an org secret with "private repos" visibility —
+        # when this repo goes public, bump the secret's visibility to "all"
+        # (or switch the README to shields' dynamic github/v/release badge,
+        # which needs no token once the repo is public).
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GIST_TOKEN: ${{ secrets.GIST_TOKEN }}
+        run: |
+          set -euo pipefail
+          SHORT="${GITHUB_REPOSITORY#*/falconpulsar-}"
+          TAG=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 100 \
+            --json tagName,createdAt,publishedAt \
+            --jq 'sort_by(.publishedAt // .createdAt) | reverse | (.[0].tagName // empty)')
+          if [ -n "$TAG" ]; then MSG="$TAG"; COLOR="blue"; else MSG="none"; COLOR="lightgrey"; fi
+          BADGE=$(jq -cn --arg m "$MSG" --arg c "$COLOR" \
+            '{schemaVersion:1, label:"release", message:$m, color:$c}')
+          PAYLOAD=$(jq -cn --arg fn "release-${SHORT}.json" --arg content "$BADGE" \
+            '{files: {($fn): {content: $content}}}')
+          curl -sf -X PATCH "https://api.github.com/gists/894cadcfc17cc70a488bdfe8917f5df2" \
+            -H "Authorization: token $GIST_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -d "$PAYLOAD" >/dev/null
+          echo "release badge → ${MSG}"
