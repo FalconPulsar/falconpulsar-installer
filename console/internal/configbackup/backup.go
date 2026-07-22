@@ -4,7 +4,7 @@
 // ConfigBackup.cs in the repo for the authoritative spec.
 //
 //	[0..3]   Magic = "FPCF"        (4 bytes)
-//	[4]      Format version       (1 byte; current: 2, accepts: 1, 2)
+//	[4]      Format version       (1 byte; current: 3, accepts: 1, 2, 3)
 //	[5..20]  PBKDF2 salt           (16 bytes)
 //	[21..32] AES-GCM nonce         (12 bytes)
 //	[33..]   AES-256-GCM ciphertext of the zip payload
