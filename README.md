@@ -21,8 +21,8 @@
 This repository contains the installers that take a fresh Linux, macOS, or
 Windows machine from zero to a running FalconPulsar **plant stack**. **This
 repo is only the installer** — product usage and architecture for each runtime
-component live in those repositories (and on
-[falconpulsar.com](https://falconpulsar.com) when published).
+component live in those repositories and on
+[falconpulsar.com](https://falconpulsar.com).
 
 ### What gets installed (default plant)
 
