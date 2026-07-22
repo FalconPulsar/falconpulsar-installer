@@ -33,8 +33,10 @@ component live in those repositories (and on
 | **UI** | `falconpulsar/ui` | 8080 (nginx → Core + Gateway) |
 | **AI Gateway** | `falconpulsar/ai-gateway` | 7436 (often bound to localhost; UI proxies) |
 
-**Not** installed by default: **AI Engine** (agentics), mobile, copilot — optional
-modules with their own repos.
+**Not started by default**: the **AI Engine** (agentics) is offered as an
+opt-in during install on every platform (`FP_AI_ENGINE_ENABLED=true` adds the
+engine compose profile; UI on `localhost:8085`, data in
+`~/falconpulsar/ai-engine-data`). Mobile and copilot remain separate repos.
 
 ### Build / run a single component by hand
 
@@ -114,8 +116,8 @@ and double-click. The GUI installer handles WSL2, Ubuntu, Docker, and the
 stack end-to-end. Requires Windows 10 22H2 or Windows 11 with virtualization
 (VT-x / AMD-V) enabled in the BIOS.
 
-To uninstall: **Settings → Apps → FalconPulsar → Uninstall**, or from the
-Start Menu → FalconPulsar → Uninstall, or `fp uninstall` from any
+To uninstall: **Settings → Apps → FalconPulsar → Uninstall**, the tray
+icon's "Uninstall FalconPulsar…" entry, or `fp uninstall` from any
 PowerShell / cmd window.
 
 ---
@@ -125,8 +127,8 @@ PowerShell / cmd window.
 | Platform | Minimum | Recommended | Prerequisites |
 |---|---|---|---|
 | **Linux** | 2 CPU, 4 GB RAM, 10 GB disk | 4 CPU, 16 GB RAM | Container engine is auto-installed |
-| **macOS** | 4 GB RAM, 10 GB disk | 8 GB RAM | Docker Desktop / Colima / OrbStack / Rancher Desktop |
-| **Windows** | 4 GB RAM, 10 GB disk | 8 GB RAM | Win 10 22H2+ or Win 11, VT-x / AMD-V in BIOS |
+| **macOS** | 8 GB RAM, 10 GB disk | 16 GB RAM | Docker Desktop / Colima / OrbStack / Rancher Desktop |
+| **Windows** | 8 GB RAM, 10 GB disk | 16 GB RAM | Win 10 22H2+ or Win 11, VT-x / AMD-V in BIOS |
 
 Full matrix (OS versions, kernel requirements, architecture notes) is in
 [REQUIREMENTS.md](REQUIREMENTS.md).
@@ -154,7 +156,8 @@ End to end, all three installers do the same six things:
    (the FalconPulsar Gateway — a required component on every platform;
    it powers Workspace commands, standing watches, and the AI assistant.
    LLM providers and models are optional and configured post-install in
-   ConfigHub). Wait for healthchecks to pass.
+   ConfigHub), plus `ai-engine` when the optional AI Engine was
+   selected. Wait for healthchecks to pass.
 6. **Register lifecycle management** — optional systemd user unit on
    Linux, `restart: unless-stopped` on macOS, Start Menu shortcuts +
    system tray auto-start on Windows.
@@ -200,7 +203,7 @@ The installer ends when the stack is up and healthchecks pass. You can:
 | Platform | Command |
 |---|---|
 | **Linux** | The `uninstall-linux.sh` one-liner from [Install → Linux](#linux), or `sudo bash /home/falconpulsar/uninstall.sh` (planted by the installer). <br> Add `--purge` to also delete the database. |
-| **macOS** | Run the installer `.app` again and choose Uninstall, or: <br> `bash ~/falconpulsar/uninstall.sh` |
+| **macOS** | Use the FalconPulsar menu bar app's "Uninstall FalconPulsar…" entry, or: <br> `bash ~/falconpulsar/uninstall.sh` |
 | **Windows** | Settings → Apps → FalconPulsar → Uninstall, or the tray's "Uninstall" entry, or `fp uninstall` in any shell. |
 
 All paths ultimately run the same cleanup: stop and remove the
@@ -219,7 +222,10 @@ If the guide doesn't cover your issue, please
 [open an issue](https://github.com/FalconPulsar/falconpulsar-installer/issues/new/choose)
 with the installer log attached. Log locations:
 
-- Linux / macOS: `/tmp/falconpulsar-install.log`
+- macOS GUI installer and the Linux / macOS uninstallers:
+  `/tmp/falconpulsar-install.log`
+- Terminal (`curl | bash`) installs print to the console — capture with
+  `… | sudo bash 2>&1 | tee install.log`
 - Windows: `%TEMP%\falconpulsar-install.log`
 
 ---
@@ -246,7 +252,9 @@ Linux server.
 
 The companion `fp` CLI (Go, in `console/`) is cross-compiled and shipped
 with each installer. On Windows it's a thin Go wrapper that execs the
-Linux `fp` binary inside WSL.
+Linux `fp` binary inside WSL. Beyond `fp status` and `fp uninstall`, it
+provides `fp open [ui|engine]`, `fp tui`, `fp update`, `fp logs`, and
+`fp config edit` / `inspect` / `export` / `import`.
 
 For the full reference — function call order, per-helper breakdown,
 environment variable table, CI pipeline matrix, and real-world gotchas — see
@@ -309,7 +317,8 @@ falconpulsar-installer/
 │       ├── bootstrap.sh         first-run admin + token bootstrap
 │       ├── auth.sh              admin-password challenge
 │       ├── registry_auth.sh     docker-registry login probe
-│       ├── fpcli.sh             fp CLI installer (local symlink)
+│       ├── fpcli.sh             fp CLI installer (downloads/copies to
+│       │                        ~/falconpulsar/bin + PATH append)
 │       └── existing.sh          detect prior installs
 │
 └── .github/
@@ -324,12 +333,16 @@ falconpulsar-installer/
 ### Linting
 
 ```bash
-shellcheck linux/install.sh linux/uninstall.sh linux/bootstrap.sh \
-           macos/install.sh macos/uninstall.sh \
-           shared/lib/*.sh
+shellcheck -x -P shared/lib -e SC1091 \
+    linux/install.sh linux/uninstall.sh linux/bootstrap.sh \
+    macos/install.sh macos/uninstall.sh \
+    scripts/sync-version.sh \
+    shared/lib/common.sh shared/lib/checks.sh shared/lib/prompts.sh \
+    shared/lib/bootstrap.sh shared/lib/registry_auth.sh shared/lib/auth.sh \
+    shared/lib/fpcli.sh shared/lib/existing.sh
 ```
 
-CI runs the same commands on every push.
+CI runs the same command on every push.
 
 ### Smoke-testing the Linux installer locally
 
@@ -382,9 +395,15 @@ prereleases — while only prerelease tags exist they return 404, so the
 [Install](#install) section resolves the newest release via the GitHub
 API instead.
 
+Only the **two newest releases are retained** — the prune-releases
+workflow deletes older releases and their tags, so assets and download
+URLs for older versions disappear.
+
 The macOS DMG is signed with a Developer ID Application certificate and
 notarized by Apple — double-clicking the download does not trigger a
-Gatekeeper warning. Maintainers cutting a release should read
+Gatekeeper warning. The DMG is **best-effort**: if notarization fails,
+the release still publishes without it, and a warning annotation on the
+release run marks the gap. Maintainers cutting a release should read
 **[RELEASING.md](RELEASING.md)** for the secret setup and verification
 steps.
 
