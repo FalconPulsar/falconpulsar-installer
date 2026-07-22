@@ -50,10 +50,12 @@ enum InstallRunner {
         }
 
         // Initialize log
+        let appVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString")
+            as? String ?? "unknown"
         let header = """
         ================================================================
           FalconPulsar macOS Installer Log
-          Version: 0.1.0
+          Version: \(appVersion)
           Date: \(timestamp())
         ================================================================
 
@@ -158,30 +160,16 @@ enum InstallRunner {
             return
         }
 
-        // Pre-step: handle existing installation based on chosen action
+        // Pre-step: log the chosen action but DO NOT mutate anything here.
+        // Teardown is delegated to install.sh (fp_apply_existing_action),
+        // which runs AFTER its admin-authorization gate. Stopping containers
+        // from the GUI first (a) killed Core before the gate could verify
+        // the admin password against it, and (b) left the stack down when
+        // authorization failed. The bash side also does the teardown
+        // correctly (--profile ai --profile engine, volume sweep, cached
+        // image cleanup gated by FP_REMOVE_CACHED_IMAGES).
         if !state.existing.isEmpty {
-            log("[info] Install action: \(state.installAction.rawValue)")
-            switch state.installAction {
-            case .fresh:
-                log("[info] Fresh install — tearing down existing stack and deleting data")
-                let home = "\(NSHomeDirectory())/falconpulsar"
-                _ = ShellRunner.run("cd '\(home)' && \(dockerPath) compose down -v 2>&1", timeout: 60)
-                for c in state.existing.containers {
-                    _ = ShellRunner.run("\(dockerPath) rm -f '\(c)' 2>&1")
-                }
-                _ = ShellRunner.run("/bin/rm -rf '\(home)'")
-                log("[info] Stack and data removed")
-            case .reinstall:
-                log("[info] Reinstall — stopping containers (data preserved)")
-                let home = "\(NSHomeDirectory())/falconpulsar"
-                _ = ShellRunner.run("cd '\(home)' && \(dockerPath) compose down 2>&1", timeout: 60)
-            case .upgrade:
-                log("[info] Upgrade — stack files and data left untouched")
-            }
-            if state.removeCachedImages {
-                log("[info] Removing cached FalconPulsar images")
-                _ = ShellRunner.run("\(dockerPath) images --filter reference='*falconpulsar*' -q | xargs \(dockerPath) rmi -f 2>&1")
-            }
+            log("[info] Install action: \(state.installAction.rawValue) (teardown handled by the installer after authorization)")
         }
 
         // Fast path: upgrade-in-place (existing stack dir is intact) — refresh
@@ -364,6 +352,11 @@ enum InstallRunner {
             // derives COMPOSE_PROFILES=engine and creates the engine data
             // dir when this is true.
             "export FP_AI_ENGINE_ENABLED=\(state.aiEngineEnabled ? "true" : "false")",
+            // Cached-image cleanup is performed by fp_apply_existing_action
+            // (bash), not by the GUI — pass the checkbox through. Bash
+            // defaults to "true", so the unchecked state must be exported
+            // explicitly.
+            "export FP_REMOVE_CACHED_IMAGES=\(state.removeCachedImages ? "true" : "false")",
             // Front-door HTTPS declaration. Drives the Secure flag and
             // __Host- prefix on session cookies. The bash installer's
             // `prompt_transport_mode` reads this and skips the prompt.

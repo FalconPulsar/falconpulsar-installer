@@ -19,12 +19,19 @@
 # Writes the authenticated username to stderr on success.
 # =============================================================================
 
+# JSON-escape a value for embedding inside a double-quoted JSON string.
+# Without this, a password containing " or \ produced invalid JSON and the
+# login failed as "Incorrect username or password" even when correct.
+fp_auth_json_escape() {
+    printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
+}
+
 fp_authenticate_admin() {
     local max_attempts="${1:-3}"
     local port="${FP_REST_PORT:-7433}"
     local base="http://127.0.0.1:${port}"
     local attempt=0
-    local user pass login_resp jwt me_resp role http_code
+    local user pass login_resp login_code jwt me_resp role http_code
 
     if ! command -v curl >/dev/null 2>&1; then
         printf '[error] curl is required for admin authentication\n' >&2
@@ -64,18 +71,34 @@ fp_authenticate_admin() {
         fi
 
         # Login (via stdin so the password never appears in `ps`).
-        login_resp=$(printf '{"username":"%s","password":"%s"}' "$user" "$pass" | \
-            curl -fsS -X POST \
+        # Capture the HTTP status alongside the body: a 401 means wrong
+        # credentials, but a transport failure (Core stopping / stopped)
+        # must NOT be reported as a wrong password.
+        login_resp=$(printf '{"username":"%s","password":"%s"}' \
+                "$(fp_auth_json_escape "$user")" "$(fp_auth_json_escape "$pass")" | \
+            curl -sS -X POST \
                 -H 'Content-Type: application/json' \
                 --data-binary @- \
+                -w '\n%{http_code}' \
+                --max-time 10 \
                 "${base}/api/v1/auth/login" 2>/dev/null || true)
+        login_code=${login_resp##*$'\n'}
+        login_resp=${login_resp%$'\n'*}
 
         jwt=$(printf '%s' "$login_resp" | \
               sed -nE 's/.*"token"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' | head -n1)
 
         if [ -z "$jwt" ]; then
-            printf '[error] Incorrect username or password.\n' >&2
-            continue
+            case "$login_code" in
+                401|403)
+                    printf '[error] Incorrect username or password.\n' >&2
+                    continue
+                    ;;
+                *)
+                    printf '[warn] Core stopped responding during authentication (HTTP %s) — cannot verify.\n' "${login_code:-000}" >&2
+                    return 2
+                    ;;
+            esac
         fi
 
         me_resp=$(curl -fsS -H "Authorization: Bearer ${jwt}" \
@@ -128,14 +151,27 @@ fp_verify_admin_credentials() {
         return 2
     fi
 
-    login_resp=$(printf '{"username":"%s","password":"%s"}' "$user" "$pass" | \
-        curl -fsS -X POST \
+    local login_code
+    login_resp=$(printf '{"username":"%s","password":"%s"}' \
+            "$(fp_auth_json_escape "$user")" "$(fp_auth_json_escape "$pass")" | \
+        curl -sS -X POST \
             -H 'Content-Type: application/json' \
             --data-binary @- \
+            -w '\n%{http_code}' \
+            --max-time 10 \
             "${base}/api/v1/auth/login" 2>/dev/null || true)
+    login_code=${login_resp##*$'\n'}
+    login_resp=${login_resp%$'\n'*}
     jwt=$(printf '%s' "$login_resp" | \
           sed -nE 's/.*"token"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' | head -n1)
     if [ -z "$jwt" ]; then
+        case "$login_code" in
+            401|403) ;;  # genuine credential rejection — fall through to rc 1
+            *)
+                printf '[warn] Core stopped responding during authentication (HTTP %s) — cannot verify.\n' "${login_code:-000}" >&2
+                return 2
+                ;;
+        esac
         printf '[error] Incorrect username or password.\n' >&2
         return 1
     fi
