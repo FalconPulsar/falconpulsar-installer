@@ -276,6 +276,32 @@ cp "$ICNS_TMP" "$INSTALLER_BUNDLE/Contents/Resources/AppIcon.icns"
 # Embed fp binary so the wizard can install it offline, no GitHub round-trip.
 cp console/dist/fp-macos-arm64 "$INSTALLER_BUNDLE/Contents/Resources/fp"
 chmod +x "$INSTALLER_BUNDLE/Contents/Resources/fp"
+
+# ── Step 3b: Stage the bash installer payload into Resources ───────────────
+# The wizard shells out to macos/install.sh for fresh installs, reinstalls,
+# and upgrade migrations. InstallRunner searches ONLY bundle-relative paths
+# (the /tmp and home-directory fallbacks were removed as a security fix),
+# so without these files a DMG install on a clean Mac has nothing to run.
+# The file set mirrors what .github/scripts/bundle.sh embeds for the macos
+# flavor: install.sh + shared/lib/*.sh + compose.yml + nginx.conf +
+# gateway.yaml. uninstall.sh rides along so install.sh can drop an on-disk
+# uninstaller into ~/falconpulsar (it copies ${SCRIPT_DIR}/uninstall.sh).
+log "staging bash installer payload into Resources (macos/ + shared/)"
+RES_DIR="$INSTALLER_BUNDLE/Contents/Resources"
+mkdir -p "$RES_DIR/macos" "$RES_DIR/shared/lib"
+for f in install.sh uninstall.sh; do
+    [ -f "macos/$f" ] || die "missing macos/$f (needed in the installer payload)"
+    cp "macos/$f" "$RES_DIR/macos/$f"
+    chmod +x "$RES_DIR/macos/$f"
+done
+for lib in common.sh checks.sh prompts.sh bootstrap.sh registry_auth.sh fpcli.sh existing.sh auth.sh; do
+    [ -f "shared/lib/$lib" ] || die "missing shared/lib/$lib (sourced by install.sh)"
+    cp "shared/lib/$lib" "$RES_DIR/shared/lib/$lib"
+done
+for f in compose.yml nginx.conf gateway.yaml; do
+    [ -f "shared/$f" ] || die "missing shared/$f (copied to \$FP_HOME by install.sh)"
+    cp "shared/$f" "$RES_DIR/shared/$f"
+done
 cat > "$INSTALLER_BUNDLE/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

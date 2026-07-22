@@ -297,6 +297,59 @@ prompt_transport_mode() {
     export FP_COOKIE_SECURE
 }
 
+# Ask the operator whether to install the optional AI Engine — the agent
+# runtime used to author, simulate and deploy agents. It runs as one extra
+# container behind the "engine" compose profile, and its config + agent
+# state live in the SAME main folder as Core/Gateway.
+#
+# Sets FP_AI_ENGINE_ENABLED to "true" or "false" and derives
+# COMPOSE_PROFILES from it ("engine" or empty). The engine is the only
+# profiled service, so overwriting COMPOSE_PROFILES here is safe.
+#
+# Honors FP_AI_ENGINE_ENABLED pre-set in the environment (or via installer
+# flags) — the installers record that in FP_AI_ENGINE_ENABLED_EXPLICIT
+# before their defaults / .env carry-forward fill the variable in, and an
+# explicit choice skips the prompt entirely. A value merely carried
+# forward from a surviving .env (reinstall) only flips the prompt's
+# default, so the previous choice is sticky but still overridable.
+# Honors FP_ASSUME_YES=1 by keeping the current value without prompting.
+prompt_ai_engine() {
+    if [ "${FP_AI_ENGINE_ENABLED_EXPLICIT:-}" = "1" ]; then
+        FP_AI_ENGINE_ENABLED="${FP_AI_ENGINE_ENABLED:-false}"
+        log_info "AI Engine install: ${FP_AI_ENGINE_ENABLED} (FP_AI_ENGINE_ENABLED pre-set in environment)"
+    elif [ "${FP_ASSUME_YES:-0}" = "1" ]; then
+        FP_AI_ENGINE_ENABLED="${FP_AI_ENGINE_ENABLED:-false}"
+        log_info "FP_ASSUME_YES=1 — AI Engine install: ${FP_AI_ENGINE_ENABLED}"
+    else
+        printf '\n%sOptional AI Engine%s\n' "${FP_C_BOLD}" "${FP_C_RESET}" >&2
+        printf 'The AI Engine is an optional add-on: the agent runtime used to author,\n' >&2
+        printf 'simulate and deploy agents. It runs as one extra container, and its\n' >&2
+        printf 'configuration and agent state live in the shared stack folder alongside\n' >&2
+        printf 'Core and the AI Gateway. You can enable it later by setting\n' >&2
+        printf 'FP_AI_ENGINE_ENABLED=true in .env and re-running "docker compose up -d".\n\n' >&2
+        local engine_default="default-no"
+        # Sticky reinstall: a previous install's choice (carried forward
+        # from the surviving .env) becomes the prompt default.
+        if [ "${FP_AI_ENGINE_ENABLED:-false}" = "true" ]; then
+            engine_default="default-yes"
+        fi
+        if confirm "Install the optional AI Engine?" "$engine_default"; then
+            FP_AI_ENGINE_ENABLED=true
+        else
+            FP_AI_ENGINE_ENABLED=false
+        fi
+    fi
+
+    # Derive the compose profile from the choice — downstream consumers
+    # (engine data dir creation, the .env write) read both variables.
+    if [ "${FP_AI_ENGINE_ENABLED}" = "true" ]; then
+        COMPOSE_PROFILES="engine"
+    else
+        COMPOSE_PROFILES=""
+    fi
+    export FP_AI_ENGINE_ENABLED COMPOSE_PROFILES
+}
+
 prompt_admin_credentials() {
     prompt_string "admin username" FP_ADMIN_USER "admin"
 

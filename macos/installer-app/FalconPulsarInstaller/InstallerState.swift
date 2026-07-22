@@ -6,6 +6,7 @@ enum InstallerPage: Int, CaseIterable {
     case existing
     case legal
     case registry
+    case options
     case credentials
     case installing
     case conclusion
@@ -30,6 +31,10 @@ struct ExistingInstall {
     var dataDirSize: String = ""
     var dataDirExists: Bool = false
     var menuBarInstalled: Bool = false
+    // FP_AI_ENGINE_ENABLED parsed from the surviving .env (nil when the
+    // file or key is absent). Used to make the AI Engine checkbox sticky
+    // across reinstalls/upgrades.
+    var envAIEngineEnabled: Bool? = nil
 
     var isEmpty: Bool {
         !stackDirExists && containers.isEmpty && images.isEmpty && !dataDirExists && !menuBarInstalled
@@ -60,6 +65,14 @@ class InstallerState: ObservableObject {
     // linux/install.sh's `prompt_transport_mode` for the equivalent
     // CLI prompt.
     @Published var cookieSecure = true
+
+    // Optional AI Engine (agent runtime). Off by default — the checkbox on
+    // the Options page opts in, which install.sh turns into
+    // FP_AI_ENGINE_ENABLED=true / COMPOSE_PROFILES=engine. Sticky on
+    // reinstall: detectExistingInstall seeds it from the surviving .env
+    // unless the user has already toggled it this session.
+    @Published var aiEngineEnabled = false
+    var aiEngineUserSet = false
 
     // Environment detection
     @Published var dockerFound = false
@@ -145,6 +158,21 @@ class InstallerState: ObservableObject {
                 found.dataDirSize = sz.trimmingCharacters(in: .whitespacesAndNewlines)
             }
 
+            // Sticky AI Engine opt-in: read FP_AI_ENGINE_ENABLED from the
+            // surviving .env so a reinstall defaults the checkbox to what
+            // the operator chose last time. Last occurrence wins, matching
+            // docker compose's env-file semantics (and install.sh's own
+            // fp_seed_from_existing_env).
+            if let envText = try? String(contentsOfFile: "\(stackDir)/.env", encoding: .utf8) {
+                let key = "FP_AI_ENGINE_ENABLED="
+                if let line = envText.split(separator: "\n")
+                    .map({ $0.trimmingCharacters(in: .whitespacesAndNewlines) })
+                    .last(where: { $0.hasPrefix(key) }) {
+                    found.envAIEngineEnabled = (String(line.dropFirst(key.count))
+                        .trimmingCharacters(in: .whitespacesAndNewlines) == "true")
+                }
+            }
+
             if let docker = ShellRunner.findDocker() {
                 let (psAll, _) = ShellRunner.run("\(docker) ps -a --filter name=falconpulsar- --format '{{.Names}}' 2>/dev/null")
                 found.containers = psAll.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
@@ -168,6 +196,12 @@ class InstallerState: ObservableObject {
                     self?.installAction = .upgrade
                 } else {
                     self?.installAction = .fresh
+                }
+                // Seed the AI Engine checkbox from the surviving .env, but
+                // never clobber a choice the user already made this session
+                // (detection re-runs when navigating back to earlier pages).
+                if let sticky = found.envAIEngineEnabled, self?.aiEngineUserSet != true {
+                    self?.aiEngineEnabled = sticky
                 }
             }
         }

@@ -15,6 +15,7 @@ struct InstallerView: View {
                 case .existing: ExistingInstallPage(state: state)
                 case .legal: LegalPage(state: state)
                 case .registry: RegistryPage(state: state)
+                case .options: OptionsPage(state: state)
                 case .credentials: CredentialsPage(state: state)
                 case .installing: InstallingPage(state: state)
                 case .conclusion: ConclusionPage(state: state)
@@ -405,6 +406,63 @@ struct RegistryPage: View {
     }
 }
 
+// MARK: - Options Page
+
+struct OptionsPage: View {
+    @ObservedObject var state: InstallerState
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Options")
+                .font(.title2.bold())
+            Text("Configure how FalconPulsar is deployed. The defaults are right for most installs.")
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+
+            Toggle(isOn: $state.cookieSecure) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Use HTTPS at the front door (recommended)")
+                        .font(.callout.bold())
+                    Text("Session cookies will be marked Secure and use the __Host- prefix — required for any deployment reachable via HTTPS. Uncheck only for HTTP-only LAN deployments accessed by IP. Without HTTPS, session cookies are vulnerable to network sniffing.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .toggleStyle(.checkbox)
+
+            Divider().padding(.vertical, 4)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("AI Capabilities")
+                    .font(.callout.bold())
+                Text("Installed with every FalconPulsar stack — powers Workspace commands, standing watches, and the AI assistant. No API key needed; AI models are configured later in ConfigHub.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Toggle(isOn: Binding(
+                get: { state.aiEngineEnabled },
+                set: { state.aiEngineEnabled = $0; state.aiEngineUserSet = true }
+            )) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Install the optional AI Engine")
+                        .font(.callout.bold())
+                    Text("Optional agent runtime — adds one container to the stack. You can enable it later by re-running the installer.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .toggleStyle(.checkbox)
+
+            Spacer()
+        }
+        .padding(30)
+    }
+}
+
 // MARK: - Credentials Page
 
 struct CredentialsPage: View {
@@ -484,29 +542,6 @@ struct CredentialsPage: View {
                     .foregroundColor(.red)
                     .font(.callout)
             }
-
-            Divider().padding(.vertical, 4)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text("AI Capabilities")
-                    .font(.callout.bold())
-                Text("Installed with every FalconPulsar stack — powers Workspace commands, standing watches, and the AI assistant. No API key needed; AI models are configured later in ConfigHub.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            Toggle(isOn: $state.cookieSecure) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Use HTTPS at the front door (recommended)")
-                        .font(.callout.bold())
-                    Text("Session cookies will be marked Secure and use the __Host- prefix — required for any deployment reachable via HTTPS. Uncheck only for HTTP-only LAN deployments accessed by IP. Without HTTPS, session cookies are vulnerable to network sniffing.")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            .toggleStyle(.checkbox)
 
             Spacer()
         }

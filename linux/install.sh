@@ -253,22 +253,6 @@ EOF
 
 require_root
 
-# ── Preflight: install missing base tools (curl, sg, hostname, useradd, …) ──
-# Minimal Ubuntu / Debian / RHEL / openSUSE cloud images don't ship the
-# tools the installer treats as universal. Without this step, the install
-# silently fails partway through (e.g. curl missing → can't download
-# Docker, or sg missing → docker compose calls return "command not found"
-# in the middle of the stack startup).
-#
-# Runs FIRST after require_root because every subsequent check_*, prompt_*,
-# and registry_* call depends on at least one of these tools. Idempotent —
-# no-op when everything is already present (which it will be on most
-# established workstations).
-fp_preflight_packages
-
-# ── Legal acknowledgement (must come before any system change) ──────────────
-prompt_legal_acknowledgement
-
 # ── Step 1: Pre-flight checks ───────────────────────────────────────────────
 # Note on ordering: the port check used to run here and aborted with
 # `die "port conflict"` if any FalconPulsar port was bound. That made
@@ -284,6 +268,39 @@ check_arch
 check_kernel
 check_ram
 check_disk "$(dirname "$FP_HOME")"
+
+# ── Existing installation detection + Upgrade/Reinstall/Fresh choice ──
+# Read-only at this point: inventory + the menu choice only. The teardown
+# the choice implies (fp_apply_existing_action), the admin auth gate and
+# the upgrade fast-path all run AFTER the legal acknowledgement and the
+# Docker checks below — no system mutation happens before Legal. Docker
+# may not be installed yet on a fresh box: fp_detect_existing_install
+# probes for the docker CLI defensively, so the inventory then lists
+# stack files only (container/image counts appear once docker exists).
+log_step "checking for existing installation"
+fp_detect_existing_install "$FP_HOME"
+if fp_has_existing_install; then
+    fp_prompt_existing_action "$FP_HOME"
+else
+    log_info "no existing install detected — proceeding with fresh install"
+fi
+
+# ── Legal acknowledgement (must come before any system change) ──────────────
+prompt_legal_acknowledgement
+
+# ── Preflight: install missing base tools (curl, sg, hostname, useradd, …) ──
+# Minimal Ubuntu / Debian / RHEL / openSUSE cloud images don't ship the
+# tools the installer treats as universal. Without this step, the install
+# silently fails partway through (e.g. curl missing → can't download
+# Docker, or sg missing → docker compose calls return "command not found"
+# in the middle of the stack startup).
+#
+# Runs FIRST after the legal acknowledgement — it installs packages, so
+# it must never precede Legal; everything above this point is read-only.
+# Every subsequent check_*, prompt_*, and registry_* call depends on at
+# least one of these tools. Idempotent — no-op when everything is already
+# present (which it will be on most established workstations).
+fp_preflight_packages
 
 # ── Step 2: Install Docker if missing ───────────────────────────────────────
 log_step "step 2/8 — Docker Engine"
@@ -302,12 +319,11 @@ if ! check_docker_daemon; then
     systemctl enable --now docker || die "failed to start Docker daemon"
 fi
 
-# ── Existing installation detection + Upgrade/Reinstall/Fresh choice ──
-log_step "checking for existing installation"
-fp_detect_existing_install "$FP_HOME"
+# ── Existing installation: authorize + apply the chosen action ─────────────
+# The Upgrade/Reinstall/Fresh choice was collected before Legal (read-only
+# inventory + menu, next to the step-1 checks). Its side effects happen
+# here, with Legal accepted and Docker available.
 if fp_has_existing_install; then
-    fp_prompt_existing_action "$FP_HOME"
-
     # Admin authentication gate — upgrades and reinstalls can overwrite a
     # running production stack, so require the existing admin's password.
     # Skipped when there's no compose.yml (no real stack to auth against —
@@ -368,8 +384,6 @@ if fp_has_existing_install; then
         chown -R "${FP_USER}:${FP_USER}" "${FP_HOME}/bin" 2>/dev/null || true
         exit 0
     fi
-else
-    log_info "no existing install detected — proceeding with fresh install"
 fi
 
 # ── Carry the previous configuration forward from a surviving .env ─────────
@@ -608,7 +622,12 @@ esac
 # ── Step 6: Generate compose.yml + .env + gateway.yaml ──────────────────────
 log_step "step 6/8 — stack files in ${FP_HOME}"
 
+# Options: front-door HTTPS, then the optional AI Engine. prompt_ai_engine
+# re-derives COMPOSE_PROFILES from the (possibly sticky) choice — the
+# engine data dir creation and the .env write below consume the
+# post-prompt values. Admin credentials are always the LAST input.
 prompt_transport_mode
+prompt_ai_engine
 prompt_admin_credentials
 
 install -m 0644 -o "$FP_USER" -g "$FP_USER" \

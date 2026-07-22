@@ -51,6 +51,14 @@ REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 FP_REGISTRY_FROM_ENV="${FP_REGISTRY:-}"
 FP_VERSION_FROM_ENV="${FP_VERSION:-}"
 
+# Same idea for the AI Engine choice: prompt_ai_engine (prompts.sh) skips
+# its question entirely when the operator pre-set FP_AI_ENGINE_ENABLED in
+# the environment, while a value merely seeded from a surviving .env
+# further down only flips the prompt's default. Snapshot explicitness
+# before the defaults / carry-forward fill the variable in.
+# shellcheck disable=SC2034  # consumed by prompt_ai_engine in prompts.sh
+FP_AI_ENGINE_ENABLED_EXPLICIT="${FP_AI_ENGINE_ENABLED:+1}"
+
 # shellcheck source=../shared/lib/common.sh
 . "${REPO_ROOT}/shared/lib/common.sh"
 # shellcheck source=../shared/lib/checks.sh
@@ -116,9 +124,6 @@ ${FP_C_BOLD}${FP_C_CYAN}
 ╚═══════════════════════════════════════════════════════════════╝
 ${FP_C_RESET}
 EOF
-
-# ── Legal acknowledgement (must come before any system change) ──────────────
-prompt_legal_acknowledgement
 
 # ── Step 1: Pre-flight ──────────────────────────────────────────────────────
 # Note on ordering: the port check used to run here and aborted with
@@ -212,11 +217,26 @@ fi
 check_compose_v2 || die "docker compose v2 plugin not available — your runtime is too old or misconfigured"
 
 # ── Existing installation detection + Upgrade/Reinstall/Fresh choice ──
+# Read-only at this point: inventory + the menu choice only. The teardown
+# the choice implies (fp_apply_existing_action), the admin auth gate and
+# the upgrade fast-path all run AFTER the legal acknowledgement below —
+# no system mutation happens before Legal.
 log_step "checking for existing installation"
 fp_detect_existing_install "$FP_HOME"
 if fp_has_existing_install; then
     fp_prompt_existing_action "$FP_HOME"
+else
+    log_info "no existing install detected — proceeding with fresh install"
+fi
 
+# ── Legal acknowledgement (must come before any system change) ──────────────
+prompt_legal_acknowledgement
+
+# ── Existing installation: authorize + apply the chosen action ─────────────
+# The Upgrade/Reinstall/Fresh choice was collected before Legal (read-only
+# inventory + menu above). Its side effects happen here, with Legal
+# accepted.
+if fp_has_existing_install; then
     # Admin authentication gate — upgrades and reinstalls can overwrite a
     # running production stack, so require the existing admin's password
     # first. FP_FORCE=1 in the parent env skips this for automation.
@@ -288,8 +308,6 @@ if fp_has_existing_install; then
         fp_install_cli "$FP_HOME" "${FP_VERSION:-0.1.0}"
         exit 0
     fi
-else
-    log_info "no existing install detected — proceeding with fresh install"
 fi
 
 # ── Carry sticky settings forward from the existing .env ───────────────────
@@ -374,10 +392,29 @@ fi
 log_step "verifying required TCP ports are free"
 fp_check_ports_interactive FP_REST_PORT FP_WS_PORT FP_PUBSUB_PORT FP_GATEWAY_PORT FP_UI_PORT
 
-# Verify we can pull images from the configured registry. If the registry
-# requires authentication, fp_registry_ensure_access prompts the user for
-# credentials (or a different registry) and runs `docker login`.
+# Container registry — wizard-style prompt (parity with the Linux installer
+# and the Mac SwiftUI RegistryPage / Windows Inno Setup RegistryPage).
+# Collects URL + optional credentials + optional skip + does a live "test
+# connection" probe BEFORE the installer commits to anything. After this
+# returns, fp_registry_ensure_access is effectively a no-op safety net.
+#
+# Skipped automatically (no prompt) when FP_ASSUME_YES=1 or when
+# FP_REGISTRY_SKIP was pre-set in the environment (CI, headless installs,
+# parent installer).
+fp_registry_prompt_settings
+
+# Verify we can pull images from the configured registry. After
+# fp_registry_prompt_settings above, this is usually a no-op; it's kept as
+# a safety net for non-interactive runs that supplied bad env credentials.
 fp_registry_ensure_access
+
+# Options: front-door HTTPS, then the optional AI Engine. prompt_ai_engine
+# re-derives COMPOSE_PROFILES from the (possibly sticky) choice — the
+# engine data dir creation and the .env write below consume the
+# post-prompt values. Admin credentials are always the LAST input.
+prompt_transport_mode
+prompt_ai_engine
+prompt_admin_credentials
 
 # ── Step 3: Stack directory ─────────────────────────────────────────────────
 log_step "step 3/6 — stack directory"
@@ -388,9 +425,6 @@ log_success "${FP_HOME} ready"
 
 # ── Step 4: compose.yml + .env ──────────────────────────────────────────────
 log_step "step 4/6 — stack files"
-
-prompt_transport_mode
-prompt_admin_credentials
 
 cp "${REPO_ROOT}/shared/compose.yml" "${FP_HOME}/compose.yml"
 cp "${REPO_ROOT}/shared/nginx.conf" "${FP_HOME}/nginx.conf"

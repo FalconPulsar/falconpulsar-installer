@@ -9,18 +9,23 @@
 ; What the installer does (in order):
 ;
 ;   1. Pre-flight: Windows version, edition, x64, virtualization enabled
-;   2. Custom welcome page
-;   3. Custom admin-credentials page (username + password, double-entry)
-;   4. Standard install location page (defaults to %PROGRAMFILES%\FalconPulsar)
-;   5. Copies the bash installer + shared libs into the install dir
-;   6. Runs the staged PowerShell helpers (00 → 50)
+;   2. Custom welcome page (read-only environment detection)
+;   3. Existing-install choice (Upgrade / Reinstall / Fresh, when detected)
+;   4. Custom legal acknowledgement page (the ONLY legal step)
+;   5. Distro selection (only when 2+ WSL distros exist), then registry page
+;   6. Standard install location page (defaults to %PROGRAMFILES%\FalconPulsar)
+;   7. Tasks page (HTTPS front door + optional AI Engine)
+;   8. Custom admin-credentials page (username + password, double-entry) --
+;      always the LAST input before Ready
+;   9. Copies the bash installer + shared libs into the install dir
+;  10. Runs the staged PowerShell helpers (00 → 50)
 ;        - check Windows prerequisites
 ;        - enable WSL2 if not present (may require reboot)
 ;        - install / detect Ubuntu 24.04 distro
 ;        - configure systemd in the distro
 ;        - run the bundled bash installer inside WSL
 ;        - register Start Menu shortcuts
-;   7. Finish page with the URL to the local Web UI
+;  11. Finish page with the URL to the local Web UI
 ;
 ; The installer is idempotent: re-running it after a Windows reboot picks up
 ; where it left off because every helper checks state before acting.
@@ -80,7 +85,11 @@ WizardImageStretch=no
 UninstallDisplayIcon={app}\assets\falcon.ico
 Compression=lzma2/max
 SolidCompression=yes
-LicenseFile=assets\license.rtf
+; No LicenseFile= here on purpose: the custom 4-document Legal page (see
+; CreateLegalPage in [Code]) is the SINGLE legal step in the wizard. A
+; LicenseFile= directive would add Inno Setup's built-in wpLicense page as
+; a duplicate legal gate later in the flow. assets\license.rtf is still
+; shipped to {app}\assets via [Files] for offline reference.
 
 ; The installer is unsigned for v0.1 — see README-windows-build.md.
 ; To sign, populate these:
@@ -202,6 +211,19 @@ Name: "cookiesecure"; \
     GroupDescription: "Security:"; \
     Flags: checkedonce
 
+; Optional AI Engine (agent runtime). Default UNCHECKED on every fresh
+; install -- plain `unchecked` (NOT checkedonce) so Inno Setup's recorded
+; task state from a prior run still pre-fills a re-run, and the .env-driven
+; sticky logic in NextButtonClick (Existing page) can override it with the
+; ground truth read from the surviving WSL .env (FP_AI_ENGINE_ENABLED=true
+; pre-checks the box on Upgrade/Reinstall). The selection is forwarded to
+; 40-run-fp-installer.ps1 as -AiEngine true|false, which exports
+; FP_AI_ENGINE_ENABLED into the bash installer's env file.
+Name: "aiengine"; \
+    Description: "Install the optional AI Engine (agent runtime — adds one container; can be enabled later)"; \
+    GroupDescription: "Optional components:"; \
+    Flags: unchecked
+
 [Run]
 ; Open the Web UI in the default browser at the end (postinstall checkbox).
 ; The actual install steps are run from the [Code] section below in
@@ -240,9 +262,11 @@ Type: filesandordirs; Name: "{commonprograms}\FalconPulsar"
 // =============================================================================
 // Pascal Script -- custom pages, prereq checks, install orchestrator
 //
-// Wizard flow:
-//   Welcome -> Legal -> Distro Selection (if multiple) -> Registry
-//   -> Credentials -> Directory -> Install -> Finish
+// Wizard flow (canonical sequence -- credentials are ALWAYS the last input):
+//   Welcome -> Existing Install (if detected) -> Legal
+//   -> Distro Selection (if multiple) -> Registry -> Directory
+//   -> Tasks (HTTPS + optional AI Engine) -> Credentials -> Ready
+//   -> Install -> Finish
 //
 // Environment detection runs at InitializeSetup via 05-detect-environment.ps1
 // which writes %TEMP%\falconpulsar-detect.txt. The results drive:
@@ -312,6 +336,11 @@ var
   ExistingHasContainers: Boolean;
   ExistingHasImages: Boolean;
   ExistingInventoryText: String;
+
+  // Sticky AI-Engine opt-in: True when the existing-install scan found
+  // FP_AI_ENGINE_ENABLED=true in the surviving WSL .env. Drives the
+  // pre-check of the 'aiengine' task on Upgrade/Reinstall paths.
+  AiEngineFromEnv: Boolean;
 
 // Create the installation checklist on the Installing (progress) page.
 // Called once at the start of the install phase.
@@ -719,6 +748,7 @@ var
   RegistryPassArg: String;
   RegistrySkipArg: String;
   CookieSecureArg: String;
+  AiEngineArg: String;
   Distro: String;
   DistroArg: String;
   DockerExePath: String;
@@ -747,6 +777,20 @@ begin
       CookieSecureArg := '-CookieSecure "true"'
     else
       CookieSecureArg := '-CookieSecure "false"';
+
+    // Optional AI Engine checkbox. Default unchecked — see [Tasks] above.
+    // Forwarded as FP_AI_ENGINE_ENABLED to the bash installer (which maps
+    // true to COMPOSE_PROFILES=engine, creates the engine data dir, and
+    // pulls/starts the engine image via the compose profile).
+    if WizardIsTaskSelected('aiengine') then
+    begin
+      AiEngineArg := '-AiEngine "true"';
+      LogInfo('AI Engine opt-in: yes');
+    end else
+    begin
+      AiEngineArg := '-AiEngine "false"';
+      LogInfo('AI Engine opt-in: no');
+    end;
 
     if IsUpgrade and (InstallAction = 'upgrade') then
     begin
@@ -876,7 +920,7 @@ begin
         AdminUserArg + ' ' + AdminPassArg + ' ' +
         RegistryArg + ' ' + RegistryUserArg + ' ' +
         RegistryPassArg + ' ' + RegistrySkipArg + ' ' +
-        CookieSecureArg + ' ' +
+        CookieSecureArg + ' ' + AiEngineArg + ' ' +
         '-InstallAction "' + InstallAction + '"',
         'Installing FalconPulsar inside WSL (this may take 5-10 minutes)...') then begin UpdateStep(4, 'fail'); Abort; end;
     UpdateStep(4, 'done');
@@ -1145,7 +1189,7 @@ begin
 end;
 
 // Create the container registry page.
-// New page shown between the legal page and the credentials page. Lets
+// Shown between the distro-selection insert and the directory page. Lets
 // the user pick a registry (default: falconpulsar on Docker Hub), enter
 // credentials if needed, test the connection, or skip entirely.
 // Create the distro selection page. Only shown when 2+ distros are
@@ -1416,6 +1460,8 @@ var
   Sentinel: String;
   Content: AnsiString;
   WslStackPath: String;
+  ProbeDistro: String;
+  BashCmd: String;
 begin
   ExistingDetectionDone := False;
   ExistingHasPrior      := False;
@@ -1423,6 +1469,7 @@ begin
   ExistingHasContainers := False;
   ExistingHasImages     := False;
   ExistingInventoryText := '';
+  AiEngineFromEnv       := False;
 
   // Extract to temp so we can run before {app} exists.
   ExtractTemporaryFile('lib.ps1');
@@ -1510,6 +1557,27 @@ begin
 
   if ExistingInventoryText = '' then
     ExistingInventoryText := '  (nothing detected)';
+
+  // Sticky AI-Engine opt-in: read FP_AI_ENGINE_ENABLED from the surviving
+  // WSL .env. Read-only probe (grep exit code only), run the same way the
+  // other WSL probes are (wsl.exe -d <distro> -u root -- bash -c ...), so
+  // it is safe to execute before the Legal page. The result pre-checks the
+  // 'aiengine' task on Upgrade/Reinstall in NextButtonClick.
+  if SentinelGet(Content, 'WslEnv') = 'yes' then
+  begin
+    ProbeDistro := SentinelGet(Content, 'Distro');
+    if ProbeDistro <> '' then
+    begin
+      BashCmd := 'grep -q ''^FP_AI_ENGINE_ENABLED=true'' ''' + WslStackPath + '/.env''';
+      if Exec('wsl.exe', '-d ' + ProbeDistro + ' -u root -- bash -c "' + BashCmd + '"',
+              '', SW_HIDE, ewWaitUntilTerminated, RC) then
+        AiEngineFromEnv := (RC = 0);
+    end;
+  end;
+  if AiEngineFromEnv then
+    LogInfo('Existing .env: FP_AI_ENGINE_ENABLED=true (AI Engine task will be pre-checked on Upgrade/Reinstall)')
+  else
+    LogInfo('Existing .env: AI Engine not enabled (or no .env found)');
 
   if ExistingHasPrior then
     LogInfo('Existing-install detection complete: prior state found')
@@ -1958,6 +2026,10 @@ begin
 end;
 
 // Create the credentials page as a fully custom TWizardPage.
+// Anchored after wpSelectTasks so admin credentials are ALWAYS the last
+// input in the wizard (canonical sequence: ... -> Directory -> Tasks ->
+// Credentials -> Ready). All validation lives in NextButtonClick and is
+// keyed on CredentialsPage.ID, so it is unaffected by the page position.
 procedure CreateCredentialsPage();
 var
   Y: Integer;
@@ -1969,7 +2041,7 @@ var
   GenButton: TNewButton;
 begin
   CredentialsPage := CreateCustomPage(
-    RegistryPage.ID,
+    wpSelectTasks,
     'FalconPulsar Admin Credentials',
     'Set the administrator account for the Web UI');
 
@@ -2127,8 +2199,12 @@ begin
   WizardForm.StatusLabel.Caption := '';
 
   // Create all pages. CreateExistingInstallPage MUST run before
-  // CreateLegalPage so the page order ends up:
-  //   Welcome -> ExistingInstall (skipped if none) -> Legal -> ...
+  // CreateLegalPage (both anchor after wpWelcome; creation order decides)
+  // so the flow ends up on the canonical sequence:
+  //   Welcome -> ExistingInstall (skipped if none) -> Legal
+  //   -> Distro (if 2+) -> Registry -> Directory -> Tasks
+  //   -> Credentials (anchored after wpSelectTasks; always the last
+  //      input) -> Ready
   CreateExistingInstallPage();
   CreateLegalPage();
   CreateDistroPage();
@@ -2156,18 +2232,36 @@ begin
         Exit;
       end;
       InstallAction := 'fresh';
-      // Fresh install = clean slate. Force-recheck the cookiesecure
-      // task so a user who unchecked it on a prior install doesn't
-      // silently inherit "HTTP-only" into their fresh install. The
-      // `checkedonce` flag in [Tasks] would otherwise leave the box
-      // unchecked here. WizardSelectTasks programmatically re-checks
-      // it (and only it; other tasks are unaffected by this call).
-      WizardSelectTasks('cookiesecure');
+      // Fresh install = clean slate. Force both tasks back to their safe
+      // defaults: re-check cookiesecure so a user who unchecked it on a
+      // prior install doesn't silently inherit "HTTP-only", and de-select
+      // aiengine (opt-in, default unchecked) so a prior opt-in isn't
+      // silently inherited either. The `checkedonce`/persisted task state
+      // would otherwise pre-fill both boxes here. WizardSelectTasks uses
+      // /MERGETASKS syntax (a leading ! de-selects); tasks not named in
+      // the call are unaffected.
+      WizardSelectTasks('cookiesecure,!aiengine');
     end
     else if ExistingReinstallRadio.Checked then
-      InstallAction := 'reinstall'
+    begin
+      InstallAction := 'reinstall';
+      // Sticky AI-Engine opt-in: pre-check the task when the existing
+      // install's .env recorded FP_AI_ENGINE_ENABLED=true, so the Tasks
+      // page opens reflecting the real installed state.
+      if AiEngineFromEnv then
+        WizardSelectTasks('aiengine');
+    end
     else
+    begin
       InstallAction := 'upgrade';
+      // Same stickiness on upgrade -- keeps the checkbox honest. The
+      // upgrade fast-path itself carries FP_AI_ENGINE_ENABLED forward in
+      // the stack's surviving .env regardless (40-run-fp-installer.ps1
+      // deliberately does not export it on that path), so the engine
+      // choice is never re-asked or clobbered by an upgrade.
+      if AiEngineFromEnv then
+        WizardSelectTasks('aiengine');
+    end;
     LogInfo('User chose install action: ' + InstallAction);
   end;
 

@@ -34,6 +34,13 @@ param(
     # 'true' = HTTPS at front door (default, recommended).
     # 'false' = HTTP-only deployment; cookies emit without Secure flag.
     [string] $CookieSecure = 'true',
+    # 'true' = install the optional AI Engine (agent runtime -- one extra
+    # container via the compose 'engine' profile). Wired from the
+    # 'aiengine' [Tasks] checkbox in installer.iss; default unchecked.
+    # Exported to the bash installer as FP_AI_ENGINE_ENABLED on the
+    # full-install path only -- the upgrade fast-path deliberately lets
+    # the surviving .env value carry forward instead (see below).
+    [string] $AiEngine = 'false',
     [string] $InstallAction = ''
 )
 
@@ -207,6 +214,7 @@ if (-not $InstallAction) {
     else              { $InstallAction = 'fresh' }
 }
 Write-Info "Install action: $InstallAction"
+Write-Info "AI Engine opt-in: $AiEngine"
 
 if ($InstallAction -eq 'upgrade' -and $hasExisting -and -not $hasLegacyInstall) {
     Write-Info 'Upgrading in place -- delegating to the bundled bash installer'
@@ -237,6 +245,10 @@ trap 'rm -f "`$ENVFILE"' EXIT
 # FP_REGISTRY is deliberately NOT exported here: compose gives process env
 # precedence over the project .env, so exporting it would clobber a custom
 # registry mirror recorded in the stack's .env during the in-place upgrade.
+# FP_AI_ENGINE_ENABLED is deliberately NOT exported here for the same
+# reason: the upgrade fast-path carries the stack's .env forward, so the
+# engine opt-in recorded there survives untouched (sticky; never re-asked
+# or clobbered on upgrade).
 cat > "`$ENVFILE" <<'FPEOF'
 export FP_ADMIN_USER='$upgUser'
 export FP_ADMIN_PASS='$upgPw'
@@ -627,6 +639,9 @@ $regEscaped  = $Registry -replace "'", "'\''"
 $regUserEscaped = $RegistryUser -replace "'", "'\''"
 $regPassEscaped = $RegistryPass -replace "'", "'\''"
 $regSkipVal = if ($RegistrySkip) { '1' } else { '0' }
+# Normalize to exactly 'true'/'false' -- the value feeds the bash
+# installer's COMPOSE_PROFILES=engine decision, so nothing fuzzy goes in.
+$aiEngineVal = if ($AiEngine -eq 'true') { 'true' } else { 'false' }
 
 $runScript = @"
 set -e
@@ -647,6 +662,7 @@ export FP_REGISTRY_PASS='$regPassEscaped'
 export FP_REGISTRY_SKIP='$regSkipVal'
 export FP_INSTALL_ACTION='$InstallAction'
 export FP_COOKIE_SECURE='$CookieSecure'
+export FP_AI_ENGINE_ENABLED='$aiEngineVal'
 export FP_INVOKING_USER='$WslUser'
 FPEOF
 . "`$ENVFILE"

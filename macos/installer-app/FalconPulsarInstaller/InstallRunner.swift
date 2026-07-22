@@ -66,6 +66,7 @@ enum InstallRunner {
         log("[info] Registry: \(state.registryUrl)")
         log("[info] Admin user: \(state.adminUser)")
         log("[info] Admin password: (not logged)")
+        log("[info] AI Engine opt-in: \(state.aiEngineEnabled ? "yes" : "no")")
 
         // Step 0: Pre-flight checks
         updateStep(0, .running)
@@ -142,6 +143,21 @@ enum InstallRunner {
             }
         }
 
+        // Resolve the bash installer payload BEFORE any teardown below — a
+        // fresh install must not delete the existing stack only to discover
+        // the scripts are missing (all-or-nothing policy). Upgrades are
+        // exempt: their fast path never needs install.sh, and the fall-
+        // through to the full installer happens before any mutation.
+        if state.installAction != .upgrade && findInstallScript() == nil {
+            log("[error] install.sh not found in the app bundle")
+            updateStep(0, .failed)
+            finish(state: state, success: false, error:
+                "Installer scripts not found in the app bundle. " +
+                "Re-download FalconPulsar-Setup.dmg and try again, or install from Terminal: " +
+                "curl -fsSL https://get.falconpulsar.com/macos | bash")
+            return
+        }
+
         // Pre-step: handle existing installation based on chosen action
         if !state.existing.isEmpty {
             log("[info] Install action: \(state.installAction.rawValue)")
@@ -176,6 +192,9 @@ enum InstallRunner {
         let stackHome = "\(NSHomeDirectory())/falconpulsar"
         var upgradeFastPath = state.installAction == .upgrade
             && FileManager.default.fileExists(atPath: "\(stackHome)/compose.yml")
+        // The upgrade fast-path never re-asks about the optional AI Engine —
+        // it honors whatever the surviving .env says (sticky opt-in).
+        var fastPathEngineEnabled = false
         if upgradeFastPath {
             let envText = (try? String(contentsOfFile: "\(stackHome)/.env", encoding: .utf8)) ?? ""
             let composeText = (try? String(contentsOfFile: "\(stackHome)/compose.yml", encoding: .utf8)) ?? ""
@@ -186,6 +205,13 @@ enum InstallRunner {
             if !hasApiKey || !hasGatewayService {
                 log("[info] Existing stack lacks AI-Gateway provisioning — running the full installer to migrate")
                 upgradeFastPath = false
+            }
+            let engineKey = "FP_AI_ENGINE_ENABLED="
+            if let line = envText.split(separator: "\n")
+                .map({ $0.trimmingCharacters(in: .whitespacesAndNewlines) })
+                .last(where: { $0.hasPrefix(engineKey) }) {
+                fastPathEngineEnabled = (String(line.dropFirst(engineKey.count))
+                    .trimmingCharacters(in: .whitespacesAndNewlines) == "true")
             }
         }
         if upgradeFastPath {
@@ -244,10 +270,14 @@ enum InstallRunner {
 
             // "--profile ai" is legacy compose compat (pre-mandatory-gateway
             // installs gate ai-gateway behind that profile); it is a no-op on
-            // current compose files.
+            // current compose files. "--profile engine" is added when the
+            // surviving .env opted into the AI Engine — CLI --profile flags
+            // REPLACE COMPOSE_PROFILES from .env, so without it an enabled
+            // engine would silently be skipped by pull/up.
+            let profileFlags = "--profile ai" + (fastPathEngineEnabled ? " --profile engine" : "")
             updateStep(4, .running)
-            log("[info] Running: docker compose --profile ai pull")
-            let (out1, pullCode) = ShellRunner.run("cd '\(stackHome)' && \(dockerPath) compose --profile ai pull 2>&1", timeout: 600)
+            log("[info] Running: docker compose \(profileFlags) pull")
+            let (out1, pullCode) = ShellRunner.run("cd '\(stackHome)' && \(dockerPath) compose \(profileFlags) pull 2>&1", timeout: 600)
             log(out1)
             if pullCode != 0 {
                 log("[warn] docker compose pull exited \(pullCode) — continuing with cached images")
@@ -255,8 +285,8 @@ enum InstallRunner {
             updateStep(4, .passed)
 
             updateStep(5, .running)
-            log("[info] Running: docker compose --profile ai up -d")
-            let (out2, code) = ShellRunner.run("cd '\(stackHome)' && \(dockerPath) compose --profile ai up -d 2>&1", timeout: 180)
+            log("[info] Running: docker compose \(profileFlags) up -d")
+            let (out2, code) = ShellRunner.run("cd '\(stackHome)' && \(dockerPath) compose \(profileFlags) up -d 2>&1", timeout: 180)
             log(out2)
             if code != 0 {
                 updateStep(5, .failed)
@@ -285,25 +315,9 @@ enum InstallRunner {
         updateStep(3, .running)
         log("[info] Step 4/7: Running bash installer...")
 
-        // Find the installer scripts
-        let bundlePath = Bundle.main.bundlePath
-        let possiblePaths = [
-            "\(bundlePath)/../macos/install.sh",
-            "\(bundlePath)/Contents/Resources/macos/install.sh",
-            "\(NSHomeDirectory())/dev/falconpulsar-workspace/falconpulsar-installer/macos/install.sh",
-            "/tmp/falconpulsar-installer/macos/install.sh"
-        ]
-
-        var installScript: String?
-        for p in possiblePaths {
-            let resolved = (p as NSString).standardizingPath
-            if FileManager.default.fileExists(atPath: resolved) {
-                installScript = resolved
-                break
-            }
-        }
-
-        guard let scriptPath = installScript else {
+        // Find the installer scripts (bundle-relative only — see
+        // findInstallScript for why there are no world-writable fallbacks).
+        guard let scriptPath = findInstallScript() else {
             log("[error] install.sh not found in any expected location")
             updateStep(3, .failed)
             finish(state: state, success: false, error:
@@ -346,6 +360,10 @@ enum InstallRunner {
             // .env. The installer itself no longer branches on it — AI
             // capabilities are always installed.
             "export FP_AI_GATEWAY_ENABLED=true",
+            // Optional AI Engine opt-in from the Options page. install.sh
+            // derives COMPOSE_PROFILES=engine and creates the engine data
+            // dir when this is true.
+            "export FP_AI_ENGINE_ENABLED=\(state.aiEngineEnabled ? "true" : "false")",
             // Front-door HTTPS declaration. Drives the Secure flag and
             // __Host- prefix on session cookies. The bash installer's
             // `prompt_transport_mode` reads this and skips the prompt.
@@ -469,15 +487,34 @@ enum InstallRunner {
         }
     }
 
+    /// Locates the bash installer entry point. Only bundle-relative paths
+    /// are searched: Contents/Resources/macos (staged by build-dmg.sh) and
+    /// the repo layout next to a dev build of the .app. World-writable
+    /// fallbacks like /tmp/falconpulsar-installer were deliberately removed —
+    /// anything there could be planted by another local user and would run
+    /// with this user's privileges.
+    private static func findInstallScript() -> String? {
+        let bundlePath = Bundle.main.bundlePath
+        let candidates = [
+            "\(bundlePath)/Contents/Resources/macos/install.sh",
+            "\(bundlePath)/../macos/install.sh"
+        ]
+        for p in candidates {
+            let resolved = (p as NSString).standardizingPath
+            if FileManager.default.fileExists(atPath: resolved) {
+                return resolved
+            }
+        }
+        return nil
+    }
+
     /// Locates the shared/ directory of the installer payload (sibling of
     /// macos/), trying the same candidate roots used to find install.sh.
     private static func findSharedDir() -> String? {
         let bundlePath = Bundle.main.bundlePath
         let candidates = [
-            "\(bundlePath)/../shared",
             "\(bundlePath)/Contents/Resources/shared",
-            "\(NSHomeDirectory())/dev/falconpulsar-workspace/falconpulsar-installer/shared",
-            "/tmp/falconpulsar-installer/shared"
+            "\(bundlePath)/../shared"
         ]
         for p in candidates {
             let resolved = (p as NSString).standardizingPath
