@@ -413,6 +413,7 @@ jobs:
       needs.build-windows-exe.result == 'success'
     permissions:
       contents: write
+      actions: write   # dispatch prune-releases.yml after publishing
     steps:
       - name: Download shell bundles
         uses: actions/download-artifact@v5
@@ -533,3 +534,13 @@ jobs:
             --repo "${GITHUB_REPOSITORY}" \
             $PRERELEASE_FLAGS \
             dist/*
+
+      - name: Trigger release retention prune
+        # A release published with the workflow's own GITHUB_TOKEN does NOT
+        # emit a `release: published` trigger for other workflows (GitHub's
+        # recursion guard), so prune-releases.yml never fires for CI-cut
+        # releases. workflow_dispatch is exempt from that guard — dispatch it
+        # explicitly so retention (keep 2 newest) also applies here.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow run prune-releases.yml --repo "${GITHUB_REPOSITORY}"
