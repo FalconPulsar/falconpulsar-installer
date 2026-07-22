@@ -895,7 +895,7 @@ func (a *App) checkForUpdates() {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		res := actions.CheckUpdates(ctx)
+		res := actions.CheckUpdates(ctx, cli.Version)
 		a.tv.QueueUpdateDraw(func() { a.renderUpdateCheckModal(res) })
 	}()
 }
@@ -905,6 +905,12 @@ func (a *App) checkForUpdates() {
 //   - any probe error: show details + a "Retry" button
 //   - any update available: show per-component diff + "Apply now"
 //   - all up to date: show one line + "Close"
+//
+// Two sections: container images (however many CheckUpdates returned —
+// the optional AI Engine row appears when the stack runs the engine),
+// then host components (fp CLI vs the published installer release).
+// Host updates are NOT covered by "Apply now" (that's `docker compose
+// pull`); the row points at the installer releases page instead.
 func (a *App) renderUpdateCheckModal(res actions.UpdateCheckResult) {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Registry: [::b]%s[-:-:-]   Tag: [::b]%s[-:-:-]\n\n", res.Registry, res.Tag)
@@ -931,6 +937,24 @@ func (a *App) renderUpdateCheckModal(res actions.UpdateCheckResult) {
 		}
 	}
 	fmt.Fprintln(&b)
+	fmt.Fprintf(&b, "[::b]Host components[-:-:-]\n")
+	for _, host := range res.HostComponents {
+		switch {
+		case host.ErrorKind != "":
+			fmt.Fprintf(&b, "  [#F59E0B]?[-]  %-18s %s\n", host.Name, host.Error)
+		case host.UpdateAvailable:
+			fmt.Fprintf(&b, "  [#10B981]⬆[-]  %-18s v%s available (installed v%s)\n",
+				host.Name, host.LatestVersion, host.InstalledVersion)
+		default:
+			fmt.Fprintf(&b, "  [#10B981]✓[-]  %-18s up to date (v%s)\n",
+				host.Name, host.InstalledVersion)
+		}
+	}
+	if res.HostAny {
+		fmt.Fprintf(&b, "       [#6B7280]%s[-]\n", res.InstallerReleaseURL)
+		fmt.Fprintf(&b, "       [#6B7280]Run the latest installer's Upgrade to update host components.[-]\n")
+	}
+	fmt.Fprintln(&b)
 	switch {
 	case res.AnyError:
 		fmt.Fprintln(&b, "[#F59E0B]One or more registry probes failed.[-]")
@@ -946,6 +970,12 @@ func (a *App) renderUpdateCheckModal(res actions.UpdateCheckResult) {
 			fmt.Fprintln(&b, "Update mode: [::b]manual[-:-:-] (no automatic apply).")
 			fmt.Fprintln(&b, "[#6B7280]Press [::b]a[-:-:-] to apply now, [::b]Esc[-:-:-] to close.[-]")
 		}
+	case res.HostAny:
+		fmt.Fprintln(&b, "Container images are up to date; a host component update is available (see above).")
+		fmt.Fprintln(&b, "[#6B7280]Press [::b]Esc[-:-:-] to close.[-]")
+	case res.HostProbeFailed:
+		fmt.Fprintln(&b, "Container images are up to date. Host component status unknown (no internet access).")
+		fmt.Fprintln(&b, "[#6B7280]Press [::b]Esc[-:-:-] to close.[-]")
 	default:
 		fmt.Fprintln(&b, "[#10B981]All components are up to date.[-]")
 		fmt.Fprintln(&b, "[#6B7280]Press [::b]Esc[-:-:-] to close.[-]")
@@ -972,7 +1002,18 @@ func (a *App) renderUpdateCheckModal(res actions.UpdateCheckResult) {
 		}
 		return ev
 	})
-	a.pushModal("Check for updates", tv, 76, 18)
+	// Content height is variable now (optional AI Engine row, host
+	// section, per-row error detail lines) — size the modal to the text
+	// instead of a fixed 18, clamped so a pathological error blob can't
+	// swallow the screen.
+	contentH := strings.Count(b.String(), "\n") + 1
+	if contentH < 14 {
+		contentH = 14
+	}
+	if contentH > 28 {
+		contentH = 28
+	}
+	a.pushModal("Check for updates", tv, 76, contentH)
 
 	// Auto-apply countdown — only fires if mode=auto, updates available,
 	// no probe errors, and the modal is still on top after 30s. Operator

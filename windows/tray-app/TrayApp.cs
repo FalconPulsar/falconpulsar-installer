@@ -50,6 +50,21 @@ namespace FalconPulsar.Tray
         private ToolStripMenuItem _stopItem;
         private ToolStripMenuItem _restartItem;
         private ToolStripMenuItem _autoStartItem;
+        private ToolStripMenuItem _autoUpdateCheckItem;
+        private ToolStripMenuItem _updateAvailableItem;
+
+        // ── Automatic update checking (FP_UPDATE_CHECK_AUTO) ──
+        // Armed only while the flag is ON; see EnsureAutoUpdateTimers.
+        // Checking is read-only — applying updates is always an explicit
+        // user action. Mirrors the macOS menu bar app.
+        private System.Windows.Forms.Timer _updateInitialTimer;  // one-shot, ~2 min after launch
+        private System.Windows.Forms.Timer _updateDailyTimer;    // hourly gate, ≤1 check/24h
+        private DateTime _lastAutoUpdateCheck = DateTime.MinValue;
+        private bool _updateCheckAutoEnabled;
+        private bool _autoUpdateCheckRunning;
+        // Passive indicator state (tray tooltip suffix + hidden menu row).
+        private bool _updateAvailable;
+        private string _updateAvailableVersion = "";
 
         // WSL stack location, resolved once at tray startup. The installer
         // writes `falconpulsar-home.txt` next to the distro sentinel; if
@@ -87,6 +102,12 @@ namespace FalconPulsar.Tray
             _pollTimer = new System.Windows.Forms.Timer { Interval = 15000 };
             _pollTimer.Tick += async (s, e) => await PollHealth();
             _pollTimer.Start();
+
+            // Arm the automatic update-check timers when the .env flag is
+            // already ON at launch. OFF (the default) arms nothing — zero
+            // background update traffic.
+            _updateCheckAutoEnabled = UpdateCheckAutoEnabled;
+            EnsureAutoUpdateTimers();
 
             _ = PollHealth();
         }
@@ -211,6 +232,15 @@ namespace FalconPulsar.Tray
             string.Equals(EnvValue("FP_AI_ENGINE_ENABLED")?.Trim(), "true",
                 StringComparison.OrdinalIgnoreCase);
 
+        // Automatic update *checking* opt-in: FP_UPDATE_CHECK_AUTO=true in
+        // the stack .env means "check in the background"; absent or any
+        // other value = OFF (the default). Checking never applies anything.
+        // Trim + case-insensitive matches the EngineEnabled convention so
+        // a hand-edited "True" still counts (mirrors macOS).
+        private bool UpdateCheckAutoEnabled =>
+            string.Equals(EnvValue("FP_UPDATE_CHECK_AUTO")?.Trim(), "true",
+                StringComparison.OrdinalIgnoreCase);
+
         // Our own version, read from the assembly. Set at build time by
         // <Version> in FalconPulsarTray.csproj, and overridable from CI
         // via `dotnet publish -p:Version=$VER`. Falls back to "dev" on
@@ -220,6 +250,20 @@ namespace FalconPulsar.Tray
                 .GetExecutingAssembly()
                 .GetName()
                 .Version?.ToString(3) ?? "dev";
+
+        // Full product version used for the tray's own row in the update
+        // dialog's host section. Application.ProductVersion surfaces
+        // AssemblyInformationalVersion — the MSBuild <Version> property,
+        // which CI injects via -p:Version (build-windows.yml/release.yml).
+        // Two caveats NormalizeVersion/HostVersionsEquivalent handle:
+        //   • the .NET 8 SDK appends "+<git-sha>" build metadata when
+        //     building inside a git checkout (CI does) — stripped;
+        //   • CI strips -alpha/-beta/-rc suffixes (System.Version can't
+        //     represent them), so a release tray only knows "0.1.4" while
+        //     the latest-release feed says "0.1.4-alpha.28" — see
+        //     HostVersionsEquivalent for the numeric-core fallback.
+        private static string TrayProductVersion =>
+            NormalizeVersion(Application.ProductVersion);
 
         private ContextMenuStrip BuildMenu()
         {
@@ -286,6 +330,27 @@ namespace FalconPulsar.Tray
                 async (s, e) => await CheckForUpdatesAsync());
             checkUpdates.Image = CreateGlyphIcon("\uE896", Color.FromArgb(70, 70, 70));  // Download
             menu.Items.Add(checkUpdates);
+
+            // Passive indicator row \u2014 hidden until an automatic background
+            // check finds something ("Update available: vX"); clicking it
+            // runs the normal Check-for-Updates flow above. It never
+            // applies anything by itself (no popups, no downloads).
+            _updateAvailableItem = new ToolStripMenuItem("Update available", null,
+                async (s, e) => await CheckForUpdatesAsync());
+            _updateAvailableItem.Image = CreateGlyphIcon("\uE74A", Color.FromArgb(243, 140, 25));  // Up arrow, warm orange
+            _updateAvailableItem.Visible = false;
+            menu.Items.Add(_updateAvailableItem);
+
+            // Toggles FP_UPDATE_CHECK_AUTO in the stack .env (replace an
+            // existing line in place or append one; other lines untouched).
+            // ON: check at most once per 24h plus once ~2 minutes after
+            // launch, surfacing results only through the passive indicator
+            // above. OFF (default): no timers run \u2014 zero background update
+            // traffic. Mirrors the macOS menu bar app.
+            _autoUpdateCheckItem = new ToolStripMenuItem("Automatically check for updates", null,
+                async (s, e) => await ToggleUpdateCheckAutoAsync());
+            _autoUpdateCheckItem.Checked = UpdateCheckAutoEnabled;
+            menu.Items.Add(_autoUpdateCheckItem);
             menu.Items.Add(new ToolStripSeparator());
 
             // Tools
@@ -364,6 +429,11 @@ namespace FalconPulsar.Tray
             // Re-read the AI Engine opt-in each poll (cheap .env read) so
             // enabling/disabling it takes effect without restarting the tray.
             _engineEnabled = EngineEnabled;
+
+            // Same for the auto update-check flag: a hand-edit of .env
+            // arms/disarms the timers without restarting the tray.
+            _updateCheckAutoEnabled = UpdateCheckAutoEnabled;
+            EnsureAutoUpdateTimers();
 
             if (_dockerDaemonUp)
             {
@@ -450,8 +520,25 @@ namespace FalconPulsar.Tray
                     tooltip = "FalconPulsar: Checking...";
                     break;
             }
+            // Passive update indicator: tooltip suffix + hidden menu row.
+            // Set only by an update check (automatic or manual) — never a
+            // popup. Suffix kept short: NotifyIcon.Text has a hard length
+            // cap and the longest base tooltip is already 44 chars.
+            if (_updateAvailable)
+                tooltip += " (update available)";
+
             _trayIcon.Icon = CreateStatusIcon(color);
             _trayIcon.Text = tooltip;
+
+            _updateAvailableItem.Visible = _updateAvailable;
+            if (_updateAvailable)
+                _updateAvailableItem.Text = string.IsNullOrEmpty(_updateAvailableVersion)
+                    ? "Update available"
+                    : $"Update available: v{_updateAvailableVersion}";
+
+            // Keep the toggle's check state in sync with .env (it can be
+            // hand-edited outside the tray).
+            _autoUpdateCheckItem.Checked = _updateCheckAutoEnabled;
 
             // AI Engine row + "Open AI Engine" only show on engine-enabled
             // installs; re-toggled every pass so .env edits apply without
@@ -560,6 +647,23 @@ namespace FalconPulsar.Tray
             }
         }
 
+        // Shared by the manual Check-for-Updates flow and the automatic
+        // background check so both run the exact same command.
+        private ProcessStartInfo FpUpdateJsonPsi() => new ProcessStartInfo
+        {
+            FileName = "wsl.exe",
+            // Path inside WSL: $HOME/falconpulsar/bin/fp. We resolve
+            // $HOME inside the WSL distro because the user that owns
+            // the install may differ from the Windows username.
+            // `fp update --json` (no `--check` flag — check is the
+            // default mode of `fp update`; the binary only knows
+            // `--apply` and `--json`).
+            Arguments = $"-d {_distro} -- bash -lc \"$HOME/falconpulsar/bin/fp update --json 2>/dev/null\"",
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            CreateNoWindow = true
+        };
+
         /// <summary>
         /// "Check for Updates..." menu handler. Shells out to
         /// `fp update --json` inside WSL (check is the default mode; the
@@ -580,21 +684,7 @@ namespace FalconPulsar.Tray
             string json;
             try
             {
-                var psi = new ProcessStartInfo
-                {
-                    FileName = "wsl.exe",
-                    // Path inside WSL: $HOME/falconpulsar/bin/fp. We resolve
-                    // $HOME inside the WSL distro because the user that owns
-                    // the install may differ from the Windows username.
-                    // `fp update --json` (no `--check` flag — check is the
-                    // default mode of `fp update`; the binary only knows
-                    // `--apply` and `--json`).
-                    Arguments = $"-d {_distro} -- bash -lc \"$HOME/falconpulsar/bin/fp update --json 2>/dev/null\"",
-                    UseShellExecute = false,
-                    RedirectStandardOutput = true,
-                    CreateNoWindow = true
-                };
-                using var proc = Process.Start(psi)!;
+                using var proc = Process.Start(FpUpdateJsonPsi())!;
                 json = await proc.StandardOutput.ReadToEndAsync();
                 await proc.WaitForExitAsync();
             }
@@ -636,7 +726,20 @@ namespace FalconPulsar.Tray
                 return;
             }
 
+            // The tray knows its own version natively — the fp CLI only
+            // reports its own row, so we append ours client-side before
+            // rendering (contract for the host_components section).
+            AppendTrayHostRow(summary);
+
+            // A manual check refreshes the passive indicator too, so the
+            // tray badge self-clears once everything is up to date again.
+            SetPassiveUpdateIndicator(summary);
+            UpdateUI();
+
             // Build the per-component summary line for the dialog body.
+            // The loop renders whatever components[] contains, so the
+            // optional "AI Engine" image row (engine-enabled installs
+            // only) needs no special casing here.
             var lines = new List<string>
             {
                 $"Registry: {summary.Registry}   Tag: {summary.Tag}",
@@ -653,13 +756,46 @@ namespace FalconPulsar.Tray
                 else
                     lines.Add($"  ✓  {c.Name}: up to date");
             }
+
+            // Host section — present only when the fp CLI is new enough to
+            // report host_components (older binaries: omitted entirely).
+            // Row wording matches the macOS menu bar app: "✓ X: up to
+            // date" / "↑ X: vY available" / "? X: unknown — no internet
+            // access".
+            if (summary.HostComponents.Count > 0)
+            {
+                lines.Add("");
+                lines.Add("Host components:");
+                foreach (var h in summary.HostComponents)
+                {
+                    var latest = NormalizeVersion(h.LatestVersion);
+                    if (!string.IsNullOrEmpty(h.ErrorKind))
+                        lines.Add($"  ?  {h.Name}: unknown — no internet access");
+                    else if (!IsRealVersion(latest))
+                        // Probe succeeded but no release exists yet ("none")
+                        // — match the Go CLI/TUI rendering: up to date.
+                        lines.Add($"  ✓  {h.Name}: up to date");
+                    else if (h.UpdateAvailable)
+                        lines.Add($"  ↑  {h.Name}: v{latest} available");
+                    else
+                        lines.Add($"  ✓  {h.Name}: up to date");
+                }
+            }
             string body = string.Join("\n", lines);
+
+            // One info line when a host update exists; the actual apply is
+            // always the user downloading + running the new installer —
+            // nothing here (or anywhere) applies host updates automatically.
+            string hostInfo = summary.HostAny
+                ? "\n\nHost components (fp CLI, tray app) update via the latest installer."
+                : "";
 
             if (summary.AnyError)
             {
                 var res = MessageBox.Show(
-                    body + "\n\nRegistry probe failed (often: expired credentials).\n" +
-                           "The installer can re-authenticate. Run it now?",
+                    body + hostInfo +
+                    "\n\nRegistry probe failed (often: expired credentials).\n" +
+                    "The installer can re-authenticate. Run it now?",
                     "Registry probe failed",
                     MessageBoxButtons.OKCancel, MessageBoxIcon.Warning);
                 if (res == DialogResult.OK)
@@ -667,24 +803,72 @@ namespace FalconPulsar.Tray
                 return;
             }
 
-            if (!summary.Any)
+            if (summary.Any)
             {
-                MessageBox.Show(body, "All components are up to date",
-                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+                // Container updates available. Prompt to apply. (v1: same
+                // prompt regardless of FP_UPDATE_MODE because auto-mode in
+                // v1 only fires when the tray app is open, and showing a
+                // confirmation with a 30s countdown isn't worth the extra
+                // UI complexity for this commit. The user explicitly opens
+                // this menu — that's a manual click.)
+                var applyRes = MessageBox.Show(
+                    body + hostInfo + "\n\nApply container updates now?",
+                    "Update available",
+                    MessageBoxButtons.YesNo, MessageBoxIcon.Information);
+                if (applyRes == DialogResult.Yes)
+                    OpenApplyTerminal();
+                // Host updates ride the installer, not fp update --apply —
+                // offer the releases page separately.
+                if (summary.HostAny)
+                    OfferInstallerReleasePage(summary);
                 return;
             }
 
-            // Updates available. Prompt to apply. (v1: same prompt regardless
-            // of FP_UPDATE_MODE because auto-mode in v1 only fires when the
-            // tray app is open, and showing a confirmation with a 30s
-            // countdown isn't worth the extra UI complexity for this commit.
-            // The user explicitly opens this menu — that's a manual click.)
-            var applyRes = MessageBox.Show(
-                body + "\n\nApply updates now?",
-                "Update available",
-                MessageBoxButtons.YesNo, MessageBoxIcon.Information);
-            if (applyRes == DialogResult.Yes)
-                OpenApplyTerminal();
+            if (summary.HostAny)
+            {
+                // Only host components are out of date. Never auto-apply:
+                // OK opens the releases page in the browser, nothing more.
+                var res = MessageBox.Show(
+                    body + hostInfo + "\n\nOpen the installer releases page?",
+                    "Installer update available",
+                    MessageBoxButtons.OKCancel, MessageBoxIcon.Information);
+                if (res == DialogResult.OK)
+                    OpenInstallerReleasePage(summary);
+                return;
+            }
+
+            MessageBox.Show(body, "All components are up to date",
+                MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+
+        /// <summary>
+        /// Follow-up prompt used when container updates and a host update
+        /// arrive together: the container dialog handles the apply, this
+        /// one offers the installer releases page for the host side.
+        /// </summary>
+        private void OfferInstallerReleasePage(UpdateCheckSummary summary)
+        {
+            var res = MessageBox.Show(
+                "A newer installer release is also available.\n\n" +
+                "Open the installer releases page in your browser?",
+                "Installer update available",
+                MessageBoxButtons.OKCancel, MessageBoxIcon.Information);
+            if (res == DialogResult.OK)
+                OpenInstallerReleasePage(summary);
+        }
+
+        // Opens installer_release_url from the fp JSON in the default
+        // browser, falling back to the canonical releases page. https-only
+        // as defense in depth: the URL crossed a JSON boundary.
+        private void OpenInstallerReleasePage(UpdateCheckSummary summary)
+        {
+            const string fallback =
+                "https://github.com/FalconPulsar/falconpulsar-installer/releases";
+            var url = summary.InstallerReleaseUrl;
+            if (string.IsNullOrEmpty(url) ||
+                !url.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+                url = fallback;
+            Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
         }
 
         /// <summary>
@@ -738,7 +922,15 @@ namespace FalconPulsar.Tray
                 Tag = root.TryGetProperty("tag", out var t) ? t.GetString() ?? "" : "",
                 Any = root.TryGetProperty("any_update_available", out var a) && a.GetBoolean(),
                 AnyError = root.TryGetProperty("any_probe_failed", out var e) && e.GetBoolean(),
-                Components = new List<ComponentSummary>()
+                Components = new List<ComponentSummary>(),
+                // Host-component fields, added alongside the tray's
+                // FP_UPDATE_CHECK_AUTO support. All optional so output
+                // from an older fp binary still parses (TryGetProperty
+                // simply misses and the defaults hold).
+                HostAny = root.TryGetProperty("host_any_update_available", out var ha) && ha.GetBoolean(),
+                HostProbeFailed = root.TryGetProperty("host_probe_failed", out var hp) && hp.GetBoolean(),
+                InstallerReleaseUrl = root.TryGetProperty("installer_release_url", out var iru) ? iru.GetString() ?? "" : "",
+                HostComponents = new List<HostComponentSummary>()
             };
             if (root.TryGetProperty("components", out var arr) && arr.ValueKind == JsonValueKind.Array)
             {
@@ -756,6 +948,21 @@ namespace FalconPulsar.Tray
                     });
                 }
             }
+            if (root.TryGetProperty("host_components", out var harr) && harr.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var h in harr.EnumerateArray())
+                {
+                    summary.HostComponents.Add(new HostComponentSummary
+                    {
+                        Name = h.TryGetProperty("name", out var hn) ? hn.GetString() ?? "" : "",
+                        InstalledVersion = h.TryGetProperty("installed_version", out var hi) ? hi.GetString() ?? "" : "",
+                        LatestVersion = h.TryGetProperty("latest_version", out var hl) ? hl.GetString() ?? "" : "",
+                        UpdateAvailable = h.TryGetProperty("update_available", out var hu) && hu.GetBoolean(),
+                        ErrorKind = h.TryGetProperty("error_kind", out var hek) ? hek.GetString() ?? "" : "",
+                        Error = h.TryGetProperty("error", out var her) ? her.GetString() ?? "" : ""
+                    });
+                }
+            }
             return summary;
         }
 
@@ -766,6 +973,12 @@ namespace FalconPulsar.Tray
             public bool Any { get; set; }
             public bool AnyError { get; set; }
             public List<ComponentSummary> Components { get; set; } = new();
+            // Host-component section (fp CLI + this tray). Empty/false
+            // when the fp binary predates host_components.
+            public bool HostAny { get; set; }
+            public bool HostProbeFailed { get; set; }
+            public string InstallerReleaseUrl { get; set; } = "";
+            public List<HostComponentSummary> HostComponents { get; set; } = new();
         }
 
         private class ComponentSummary
@@ -777,6 +990,244 @@ namespace FalconPulsar.Tray
             public bool UpdateAvailable { get; set; }
             public string ErrorKind { get; set; } = "";
             public string Error { get; set; } = "";
+        }
+
+        private class HostComponentSummary
+        {
+            public string Name { get; set; } = "";
+            public string InstalledVersion { get; set; } = "";
+            public string LatestVersion { get; set; } = "";
+            public bool UpdateAvailable { get; set; }
+            public string ErrorKind { get; set; } = "";   // "" | "unreachable"
+            public string Error { get; set; } = "";
+        }
+
+        /// <summary>
+        /// Appends this tray's own row to the host section. The fp CLI only
+        /// reports its own compiled-in version; each tray adds its row
+        /// client-side because it knows its version natively, reusing
+        /// latest_version from the fp row (all host components version
+        /// together with the installer release). No-op when the fp binary
+        /// predates host_components — there is no latest to compare against.
+        /// </summary>
+        private static void AppendTrayHostRow(UpdateCheckSummary summary)
+        {
+            if (summary.HostComponents.Count == 0) return;
+            var fpRow = summary.HostComponents[0];
+            var installed = TrayProductVersion;
+            var latest = NormalizeVersion(fpRow.LatestVersion);
+            // Contract: update_available = (normalized installed !=
+            // normalized latest) && latest is a real version. "Real"
+            // excludes "", "none" and unreachable probes.
+            var avail = IsRealVersion(latest)
+                && !HostVersionsEquivalent(installed, latest);
+            summary.HostComponents.Add(new HostComponentSummary
+            {
+                Name = "Tray app",
+                InstalledVersion = installed,
+                LatestVersion = fpRow.LatestVersion,
+                UpdateAvailable = avail,
+                // Propagate the fp row's probe failure so this row renders
+                // as unreachable too instead of a bogus "up to date".
+                ErrorKind = fpRow.ErrorKind,
+                Error = ""
+            });
+            if (avail) summary.HostAny = true;
+        }
+
+        // Latest installer version as reported by the fp CLI's host row
+        // (raw, possibly "v"-prefixed or "none"; "" when absent).
+        private static string HostLatestVersion(UpdateCheckSummary summary) =>
+            summary.HostComponents.Count > 0
+                ? summary.HostComponents[0].LatestVersion
+                : "";
+
+        // Strips a leading "v" and any "+<build-metadata>" suffix (the
+        // .NET 8 SDK appends "+<git-sha>" to InformationalVersion when
+        // building inside a git checkout, which CI does).
+        private static string NormalizeVersion(string v)
+        {
+            if (string.IsNullOrWhiteSpace(v)) return "";
+            var s = v.Trim();
+            var plus = s.IndexOf('+');
+            if (plus >= 0) s = s.Substring(0, plus);
+            if (s.StartsWith("v", StringComparison.OrdinalIgnoreCase))
+                s = s.Substring(1);
+            return s;
+        }
+
+        // A comparable release version: non-empty, not the feed's "none"
+        // placeholder (pre-release repos), starts with a digit.
+        private static bool IsRealVersion(string normalized) =>
+            normalized.Length > 0
+            && !normalized.Equals("none", StringComparison.OrdinalIgnoreCase)
+            && char.IsDigit(normalized[0]);
+
+        // CI strips pre-release suffixes from the tray's version because
+        // System.Version can't represent "-alpha.N" — a release-tagged tray
+        // only knows "0.1.4" while the latest-release feed says
+        // "0.1.4-alpha.28". When our own version carries no pre-release
+        // suffix, also accept a match on the latest's numeric core so we
+        // don't flag a permanent false "update available" on ourselves.
+        // (The fp CLI row keeps full-precision comparison: Go compiles the
+        // complete tag in via ldflags.)
+        private static bool HostVersionsEquivalent(string installed, string latest)
+        {
+            if (installed == latest) return true;
+            if (!installed.Contains('-'))
+            {
+                var dash = latest.IndexOf('-');
+                var core = dash >= 0 ? latest.Substring(0, dash) : latest;
+                if (installed == core) return true;
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// Records the passive "update available" state consumed by
+        /// UpdateUI (tray tooltip suffix + hidden menu row). Passive only:
+        /// no popups, no downloads — the menu row opens the normal
+        /// Check-for-Updates flow when clicked.
+        /// </summary>
+        private void SetPassiveUpdateIndicator(UpdateCheckSummary summary)
+        {
+            // A DEFINITE update badges the icon even when another
+            // component's probe failed — matches the macOS menu bar app
+            // (suppressing a real update signal is the worse failure).
+            var containerUpdates = summary.Any;
+            _updateAvailable = containerUpdates || summary.HostAny;
+            // "Update available: vX" carries the installer version when the
+            // host side is what's stale; container updates are digest-based
+            // (no single version), so the row stays generic for those.
+            _updateAvailableVersion = summary.HostAny
+                ? NormalizeVersion(HostLatestVersion(summary))
+                : "";
+        }
+
+        // ── Automatic update checking (FP_UPDATE_CHECK_AUTO) ────────────
+
+        /// <summary>
+        /// Arms or disarms the background update-check timers to match
+        /// FP_UPDATE_CHECK_AUTO. ON: one check ~2 minutes after launch,
+        /// then at most one per 24h (an hourly gate re-tests the spacing so
+        /// a sleeping machine doesn't burst missed ticks). OFF (default):
+        /// both timers disposed — zero background update traffic. Called
+        /// from the constructor, every health poll (picks up hand-edits of
+        /// .env) and the menu toggle.
+        /// </summary>
+        private void EnsureAutoUpdateTimers()
+        {
+            if (_updateCheckAutoEnabled)
+            {
+                if (_updateDailyTimer != null) return;   // already armed
+
+                _updateInitialTimer = new System.Windows.Forms.Timer { Interval = 2 * 60 * 1000 };
+                _updateInitialTimer.Tick += async (s, e) =>
+                {
+                    _updateInitialTimer?.Stop();
+                    await RunAutoUpdateCheckAsync();
+                };
+                _updateInitialTimer.Start();
+
+                _updateDailyTimer = new System.Windows.Forms.Timer { Interval = 60 * 60 * 1000 };
+                _updateDailyTimer.Tick += async (s, e) =>
+                {
+                    if (DateTime.UtcNow - _lastAutoUpdateCheck >= TimeSpan.FromHours(24))
+                        await RunAutoUpdateCheckAsync();
+                };
+                _updateDailyTimer.Start();
+            }
+            else
+            {
+                _updateInitialTimer?.Stop();
+                _updateInitialTimer?.Dispose();
+                _updateInitialTimer = null;
+                _updateDailyTimer?.Stop();
+                _updateDailyTimer?.Dispose();
+                _updateDailyTimer = null;
+            }
+        }
+
+        /// <summary>
+        /// Background update check: same `fp update --json` as the manual
+        /// flow, but strictly passive — on updates it only flips the tray
+        /// tooltip indicator and the "Update available: vX" menu row; every
+        /// failure is swallowed silently. Never applies anything.
+        /// </summary>
+        private async Task RunAutoUpdateCheckAsync()
+        {
+            if (_autoUpdateCheckRunning) return;
+            // Re-test the flag right before doing any work — it may have
+            // been switched off since the timer was armed.
+            if (!_updateCheckAutoEnabled) return;
+            _autoUpdateCheckRunning = true;
+            try
+            {
+                _lastAutoUpdateCheck = DateTime.UtcNow;
+                string json;
+                try
+                {
+                    using var proc = Process.Start(FpUpdateJsonPsi())!;
+                    json = await proc.StandardOutput.ReadToEndAsync();
+                    await proc.WaitForExitAsync();
+                }
+                catch
+                {
+                    return;   // passive: no error surfaces
+                }
+                if (string.IsNullOrWhiteSpace(json)) return;
+
+                UpdateCheckSummary summary;
+                try { summary = ParseUpdateCheckJson(json); }
+                catch { return; }
+
+                AppendTrayHostRow(summary);
+                SetPassiveUpdateIndicator(summary);
+                UpdateUI();
+            }
+            finally
+            {
+                _autoUpdateCheckRunning = false;
+            }
+        }
+
+        /// <summary>
+        /// Menu toggle for FP_UPDATE_CHECK_AUTO. The write runs inside WSL
+        /// (the .env belongs to the distro user; sed -i and >> both keep
+        /// the file's permissions, and running as the distro's default
+        /// user keeps ownership) and only ever replaces the
+        /// FP_UPDATE_CHECK_AUTO= line in place or appends one — no other
+        /// line is touched. Reading stays on the shared EnvValue helper.
+        /// </summary>
+        private async Task ToggleUpdateCheckAutoAsync()
+        {
+            var enable = !_updateCheckAutoEnabled;
+            var val = enable ? "true" : "false";
+            // Replace-or-append one-liner. The tail -c1 test appends a
+            // newline first when the file doesn't end in one, so we never
+            // glue onto someone's last line.
+            var script =
+                "f='" + _wslHome + "/.env'\n" +
+                "if [ -f \"$f\" ] && grep -q '^FP_UPDATE_CHECK_AUTO=' \"$f\"; then\n" +
+                "  sed -i 's/^FP_UPDATE_CHECK_AUTO=.*/FP_UPDATE_CHECK_AUTO=" + val + "/' \"$f\"\n" +
+                "else\n" +
+                "  if [ -f \"$f\" ] && [ -s \"$f\" ] && [ -n \"$(tail -c1 \"$f\")\" ]; then printf '\\n' >> \"$f\"; fi\n" +
+                "  printf 'FP_UPDATE_CHECK_AUTO=" + val + "\\n' >> \"$f\"\n" +
+                "fi\n";
+            var (rc, _) = await RunWslBashCaptureAsync(script);
+            if (rc != 0)
+            {
+                ShowNotification("Settings not saved",
+                    "Couldn't update FP_UPDATE_CHECK_AUTO in the stack .env.",
+                    ToolTipIcon.Warning);
+                return;
+            }
+
+            // Re-read from .env so the checkbox reflects what actually
+            // landed, then arm/disarm the timers to match.
+            _updateCheckAutoEnabled = UpdateCheckAutoEnabled;
+            _autoUpdateCheckItem.Checked = _updateCheckAutoEnabled;
+            EnsureAutoUpdateTimers();
         }
 
         // Profile flags for every compose invocation. --profile ai: legacy
@@ -1580,6 +2031,8 @@ namespace FalconPulsar.Tray
         public void Dispose()
         {
             _pollTimer?.Dispose();
+            _updateInitialTimer?.Dispose();
+            _updateDailyTimer?.Dispose();
             _trayIcon?.Dispose();
             _http?.Dispose();
         }

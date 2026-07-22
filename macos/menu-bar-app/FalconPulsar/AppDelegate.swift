@@ -11,6 +11,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var pollTimer: Timer?
 
+    // Automatic update CHECKING (FP_UPDATE_CHECK_AUTO in .env). Passive by
+    // design: the timers only ever LOOK for updates and light up an
+    // indicator — nothing is ever downloaded or applied without the
+    // operator going through the normal Check-for-Updates flow.
+    private var autoCheckTimer: Timer?          // repeating, once per 24h
+    private var autoCheckLaunchTimer: Timer?    // one-shot, ~2 min after launch
+    /// Non-nil when the last check (manual or automatic) found an update;
+    /// drives the icon badge + the hidden "Update available: vX" menu line.
+    private var pendingUpdateLabel: String?
+    private var updateAvailableItem: NSMenuItem?
+    private var autoCheckMenuItem: NSMenuItem?
+
     private var coreRunning = false
     private var uiRunning = false
     private var gatewayRunning = false
@@ -34,6 +46,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self?.pollHealth()
         }
         pollHealth()
+        // Background update checking — only ever scheduled when
+        // FP_UPDATE_CHECK_AUTO=true in .env (default OFF: no timers, zero
+        // background network traffic).
+        configureAutoUpdateChecks()
     }
 
     // MARK: - Menu
@@ -123,6 +139,37 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         checkUpdates.target = self
         checkUpdates.attributedTitle = inlineIconTitle("Check for Updates…", symbol: "arrow.down.circle")
         menu.addItem(checkUpdates)
+
+        // Passive "Update available: vX" line — hidden until a check
+        // (manual or the FP_UPDATE_CHECK_AUTO background one) finds an
+        // update. Clicking it runs the normal Check-for-Updates flow;
+        // it never applies anything by itself. Hidden items stay in the
+        // menu's items array, so the hardcoded indices in updateMenu()
+        // (all < 13, before this block) are unaffected — same trick as
+        // the AI Engine rows. State is restored from pendingUpdateLabel
+        // because toggleAutoStart() rebuilds the whole menu.
+        let updateLine = NSMenuItem(title: "Update available", action: #selector(checkForUpdates), keyEquivalent: "")
+        updateLine.target = self
+        updateLine.isHidden = true
+        if let label = pendingUpdateLabel {
+            updateLine.title = label
+            updateLine.attributedTitle = inlineIconTitle(label, symbol: "arrow.up.circle.fill", color: .systemBlue, bold: true)
+            updateLine.isHidden = false
+        }
+        menu.addItem(updateLine)
+        updateAvailableItem = updateLine
+
+        // "Automatically check for updates" — checkmark mirrors
+        // FP_UPDATE_CHECK_AUTO in the stack's .env (read/written via
+        // envValue/setAutoUpdateCheckEnabled). Checking is read-only:
+        // enabling this only schedules background LOOKS for updates
+        // (once per 24h + once shortly after launch); applying an
+        // update always remains an explicit user action.
+        let autoCheck = NSMenuItem(title: "Automatically check for updates", action: #selector(toggleAutoUpdateCheck), keyEquivalent: "")
+        autoCheck.target = self
+        autoCheck.state = autoUpdateCheckEnabled ? .on : .off
+        menu.addItem(autoCheck)
+        autoCheckMenuItem = autoCheck
         menu.addItem(.separator())
 
         let logs = NSMenuItem(title: "View Logs", action: #selector(viewLogs), keyEquivalent: "l")
@@ -221,6 +268,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.item(at: 6)?.isHidden = !engineOn   // AI Engine status row
         menu.item(at: 9)?.isHidden = !engineOn   // Open AI Engine
 
+        // Auto-update-check checkmark follows .env on every pass too, so a
+        // hand-edited FP_UPDATE_CHECK_AUTO takes effect without an app
+        // restart — including starting/stopping the background timers when
+        // the flag flipped underneath us.
+        let autoOn = autoUpdateCheckEnabled
+        autoCheckMenuItem?.state = autoOn ? .on : .off
+        if autoOn != (autoCheckTimer != nil) {
+            configureAutoUpdateChecks()
+        }
+
         // When Docker itself is off, collapse the 5 status rows to a single
         // actionable message. Five separate red "Stopped" lines hides the
         // real problem (Docker Desktop is not running).
@@ -315,9 +372,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if let img = buildIcon(dotColor: dotColor) {
             button.image = img
         } else {
-            button.title = "FP"
+            // No composed icon → text-only item, so the passive update
+            // badge falls back to a title suffix instead of a drawn dot.
+            button.title = pendingUpdateLabel == nil ? "FP" : "FP •"
         }
-        button.toolTip = tooltip
+        button.toolTip = pendingUpdateLabel == nil ? tooltip : tooltip + " — update available"
     }
 
     private func buildIcon(dotColor: CGColor) -> NSImage? {
@@ -354,6 +413,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         ctx.fillEllipse(in: haloRect)
         ctx.setFillColor(dotColor)
         ctx.fillEllipse(in: dotRect)
+
+        // Passive update badge: small blue dot at top-right, same halo
+        // trick as the status dot. The status item is squareLength with an
+        // image (title is empty), so a " •" title suffix would be clipped —
+        // a drawn badge is the equivalent the icon pipeline supports.
+        // Purely informational; set/cleared via pendingUpdateLabel.
+        if pendingUpdateLabel != nil {
+            let badgeDiameter: CGFloat = 10
+            let bx: CGFloat = CGFloat(pxSize) - badgeDiameter - 2
+            let by: CGFloat = CGFloat(pxSize) - badgeDiameter - 2
+            ctx.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+            ctx.fillEllipse(in: CGRect(x: bx - 2, y: by - 2, width: badgeDiameter + 4, height: badgeDiameter + 4))
+            ctx.setFillColor(CGColor(red: 0.04, green: 0.48, blue: 1.0, alpha: 1))
+            ctx.fillEllipse(in: CGRect(x: bx, y: by, width: badgeDiameter, height: badgeDiameter))
+        }
 
         guard let composed = ctx.makeImage() else { return nil }
         let img = NSImage(cgImage: composed, size: NSSize(width: 18, height: 18))
@@ -496,6 +570,61 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             .trimmingCharacters(in: .whitespaces).lowercased() == "true"
     }
 
+    /// Automatic update CHECKING flag. Absent or anything other than
+    /// "true" means OFF — the safe default: no timers, no background
+    /// network traffic. Same trim + case-insensitive treatment as
+    /// engineEnabled for hand-edited values.
+    private var autoUpdateCheckEnabled: Bool {
+        (envValue("FP_UPDATE_CHECK_AUTO") ?? "")
+            .trimmingCharacters(in: .whitespaces).lowercased() == "true"
+    }
+
+    /// Writes FP_UPDATE_CHECK_AUTO=<true|false> into the stack's .env:
+    /// replaces every existing FP_UPDATE_CHECK_AUTO= line in place (all of
+    /// them — envValue's last-wins semantics make stray duplicates
+    /// ambiguous otherwise), or appends one at the end. Every other line
+    /// passes through byte-for-byte. POSIX permissions are captured before
+    /// the (atomic, hence inode-replacing) write and restored after — .env
+    /// carries secrets and installs may have tightened it to 600.
+    private func setAutoUpdateCheckEnabled(_ enabled: Bool) {
+        let envPath = "\(homeDir)/.env"
+        let fm = FileManager.default
+        let assignment = "FP_UPDATE_CHECK_AUTO=\(enabled ? "true" : "false")"
+
+        // If the .env exists but can't be read (permissions, non-UTF-8
+        // byte from a hand edit), ABORT — proceeding with an empty string
+        // would replace the operator's entire .env with this one line.
+        let existing: String
+        if fm.fileExists(atPath: envPath) {
+            guard let content = try? String(contentsOfFile: envPath, encoding: .utf8) else {
+                NSLog("FalconPulsar: cannot read \(envPath) — auto-update-check toggle aborted")
+                return
+            }
+            existing = content
+        } else {
+            existing = ""
+        }
+        let savedPerms = (try? fm.attributesOfItem(atPath: envPath))?[.posixPermissions] as? NSNumber
+
+        var lines = existing.components(separatedBy: "\n")
+        var replaced = false
+        for i in lines.indices {
+            if lines[i].trimmingCharacters(in: .whitespaces).hasPrefix("FP_UPDATE_CHECK_AUTO=") {
+                lines[i] = assignment
+                replaced = true
+            }
+        }
+        var content = lines.joined(separator: "\n")
+        if !replaced {
+            if !content.isEmpty && !content.hasSuffix("\n") { content += "\n" }
+            content += assignment + "\n"
+        }
+        try? content.write(toFile: envPath, atomically: true, encoding: .utf8)
+        if let perms = savedPerms {
+            try? fm.setAttributes([.posixPermissions: perms], ofItemAtPath: envPath)
+        }
+    }
+
     // MARK: - Actions
 
     @objc func openWebUI() {
@@ -605,7 +734,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let anyError = parsed["any_probe_failed"] as? Bool ?? false
         let components = parsed["components"] as? [[String: Any]] ?? []
 
-        // Build a per-component summary line for the alert body.
+        // Build a per-component summary line for the alert body. The
+        // components[] list may now also carry an "AI Engine" row — fp
+        // includes it when the stack has the engine enabled; nothing to
+        // special-case here, it renders like any other image row.
         var lines: [String] = ["Registry: \(registry)   Tag: \(tag)", ""]
         for comp in components {
             let name = (comp["name"] as? String) ?? "?"
@@ -624,6 +756,25 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
+        // Host section (fp CLI from the JSON + our own row computed
+        // client-side). host.present is false against an old fp binary
+        // that predates the host_components fields — then the section is
+        // omitted entirely and the dialog renders exactly as before.
+        let host = parseHostStatus(parsed)
+        if host.present {
+            lines.append("")
+            lines.append("Host components:")
+            lines.append(contentsOf: host.lines)
+            if host.anyUpdate {
+                lines.append("")
+                lines.append("Host components update via the latest installer (Upgrade).")
+            }
+        }
+
+        // A manual check is also the freshest truth for the passive
+        // indicator — light it up or clear it so the badge can't go stale.
+        updatePassiveIndicator(anyImageUpdate: anyUpdate, host: host)
+
         if anyError {
             // Surface the categorized error to the operator. Most common
             // case in private-registry deployments: expired credentials.
@@ -635,18 +786,29 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 + "\n\nTry running the installer again — it can re-authenticate with the registry."
             alert.addButton(withTitle: "Open Installer")
             alert.addButton(withTitle: "Cancel")
-            if alert.runModal() == .alertFirstButtonReturn {
+            if host.anyUpdate { alert.addButton(withTitle: "Open Releases…") }
+            let response = alert.runModal()
+            if response == .alertFirstButtonReturn {
                 runApplyInTerminal(fpBin: fpBin)
+            } else if response == .alertThirdButtonReturn {
+                openInstallerReleases(host.releaseURL)
             }
             return
         }
 
         if !anyUpdate {
             let alert = NSAlert()
-            alert.messageText = "All components are up to date"
+            // Images current, but a host component (fp CLI / this app) may
+            // still be behind — don't headline "up to date" over it.
+            alert.messageText = host.anyUpdate
+                ? "Host components update available"
+                : "All components are up to date"
             alert.informativeText = lines.joined(separator: "\n")
             alert.addButton(withTitle: "OK")
-            alert.runModal()
+            if host.anyUpdate { alert.addButton(withTitle: "Open Releases…") }
+            if alert.runModal() == .alertSecondButtonReturn {
+                openInstallerReleases(host.releaseURL)
+            }
             return
         }
 
@@ -662,8 +824,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             + "\n\nUpdate mode: \(mode)."
         alert.addButton(withTitle: "Apply Now")
         alert.addButton(withTitle: "Later")
-        if alert.runModal() == .alertFirstButtonReturn {
+        if host.anyUpdate { alert.addButton(withTitle: "Open Releases…") }
+        let response = alert.runModal()
+        if response == .alertFirstButtonReturn {
+            // Apply Now covers the IMAGE components only (fp update
+            // --apply); host components always update via the installer.
             runApplyInTerminal(fpBin: fpBin)
+        } else if response == .alertThirdButtonReturn {
+            openInstallerReleases(host.releaseURL)
         }
     }
 
@@ -703,6 +871,189 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         alert.informativeText = message
         alert.addButton(withTitle: "OK")
         alert.runModal()
+    }
+
+    // MARK: - Host component updates
+
+    /// Everything the update dialog / passive indicator needs from the
+    /// host-component fields `fp update --json` MAY carry (host_components,
+    /// host_any_update_available, host_probe_failed, installer_release_url).
+    /// `present` stays false against an old fp binary that predates them —
+    /// callers then omit the host section entirely instead of guessing.
+    private struct HostUpdateStatus {
+        var present = false
+        var lines: [String] = []
+        var anyUpdate = false
+        /// Normalized (no leading "v") latest installer version; "" when
+        /// the probe failed or the endpoint published "none".
+        var latestVersion = ""
+        var releaseURL = "https://github.com/FalconPulsar/falconpulsar-installer/releases"
+    }
+
+    /// Strips an optional leading "v"/"V" so "v1.2.3" and "1.2.3" compare
+    /// equal — the gist endpoint publishes with the prefix, Info.plist
+    /// carries it without.
+    private func normalizedVersion(_ v: String) -> String {
+        let t = v.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (t.hasPrefix("v") || t.hasPrefix("V")) ? String(t.dropFirst()) : t
+    }
+
+    /// True when `v` (already normalized) names an actual release — the
+    /// endpoint publishes "none" before the first stable release, and an
+    /// unreachable probe leaves it empty.
+    private func isRealVersion(_ v: String) -> Bool {
+        return !v.isEmpty && v.lowercased() != "none"
+    }
+
+    /// Parses the host-component section out of a decoded `fp update
+    /// --json` payload and appends OUR OWN row: fp only knows about the
+    /// CLI, but this app knows its own version natively (Info.plist,
+    /// stamped by build-dmg.sh) and compares it client-side against the
+    /// same latest-installer version. Row shapes match the shared
+    /// contract: "✓ X: up to date" / "⬆ X: vY available" /
+    /// "? X: unknown — no internet access".
+    private func parseHostStatus(_ parsed: [String: Any]) -> HostUpdateStatus {
+        var out = HostUpdateStatus()
+        guard let hostComponents = parsed["host_components"] as? [[String: Any]] else {
+            return out   // old fp binary — no host fields, omit the section
+        }
+        out.present = true
+        if let url = parsed["installer_release_url"] as? String, !url.isEmpty {
+            out.releaseURL = url
+        }
+        out.anyUpdate = parsed["host_any_update_available"] as? Bool ?? false
+        let probeFailed = parsed["host_probe_failed"] as? Bool ?? false
+
+        // Rows straight from the JSON (the Go side emits exactly one:
+        // "fp CLI"). All host components share one latest version — the
+        // installer release — so remember any real one for our own row.
+        var latest = ""
+        for comp in hostComponents {
+            let name = comp["name"] as? String ?? "?"
+            let errorKind = comp["error_kind"] as? String ?? ""
+            let compLatest = normalizedVersion(comp["latest_version"] as? String ?? "")
+            if isRealVersion(compLatest) { latest = compLatest }
+            if !errorKind.isEmpty {
+                out.lines.append("  ?  \(name): unknown — no internet access")
+            } else if !isRealVersion(compLatest) {
+                // Probe succeeded but no release exists yet ("none") —
+                // match the Go CLI/TUI rendering: up to date.
+                out.lines.append("  ✓  \(name): up to date")
+            } else if comp["update_available"] as? Bool ?? false {
+                out.lines.append("  ⬆  \(name): v\(compLatest) available")
+            } else {
+                out.lines.append("  ✓  \(name): up to date")
+            }
+        }
+
+        // Our own row. Same rule as the Go side: update_available =
+        // (normalized installed != normalized latest) && latest is real.
+        let installed = normalizedVersion(
+            (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "")
+        if probeFailed {
+            out.lines.append("  ?  Menu bar app: unknown — no internet access")
+        } else if !isRealVersion(latest) {
+            // No release published yet ("none") — up to date, matching Go.
+            out.lines.append("  ✓  Menu bar app: up to date")
+        } else if installed != latest {
+            out.lines.append("  ⬆  Menu bar app: v\(latest) available")
+            out.anyUpdate = true
+        } else {
+            out.lines.append("  ✓  Menu bar app: up to date")
+        }
+
+        out.latestVersion = latest
+        return out
+    }
+
+    /// Opens the installer releases page — host components (the fp CLI,
+    /// this app) update by running the latest installer, never in place.
+    private func openInstallerReleases(_ urlString: String) {
+        guard let url = URL(string: urlString) else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    // MARK: - Automatic update checking (passive)
+
+    /// Toggles FP_UPDATE_CHECK_AUTO in .env and starts/stops the
+    /// background timers to match. The checkmark re-reads the flag after
+    /// the write, so a failed write (missing ~/falconpulsar) can't leave
+    /// the menu claiming a state the .env doesn't hold.
+    @objc func toggleAutoUpdateCheck() {
+        setAutoUpdateCheckEnabled(!autoUpdateCheckEnabled)
+        autoCheckMenuItem?.state = autoUpdateCheckEnabled ? .on : .off
+        configureAutoUpdateChecks()
+    }
+
+    /// (Re)builds the auto-check timers from the current flag state.
+    /// ON: one check ~2 minutes after launch/enable + one every 24h — at
+    /// most once per 24h thereafter. OFF (the default): both timers torn
+    /// down, zero background network traffic.
+    private func configureAutoUpdateChecks() {
+        autoCheckTimer?.invalidate()
+        autoCheckTimer = nil
+        autoCheckLaunchTimer?.invalidate()
+        autoCheckLaunchTimer = nil
+        guard autoUpdateCheckEnabled else { return }
+        autoCheckLaunchTimer = Timer.scheduledTimer(withTimeInterval: 120, repeats: false) { [weak self] _ in
+            self?.runBackgroundUpdateCheck()
+        }
+        autoCheckTimer = Timer.scheduledTimer(withTimeInterval: 24 * 60 * 60, repeats: true) { [weak self] _ in
+            self?.runBackgroundUpdateCheck()
+        }
+    }
+
+    /// Background auto-check. Runs the same `fp update --json` probe as
+    /// the menu action, but the result is PASSIVE ONLY: icon badge + the
+    /// "Update available: vX" menu line. Never an NSAlert, never a
+    /// download, never an apply — and silent on any failure.
+    private func runBackgroundUpdateCheck() {
+        // Re-read the flag at fire time: if the operator turned it off by
+        // hand-editing .env after the timer was scheduled, do nothing —
+        // OFF means zero background network traffic.
+        guard autoUpdateCheckEnabled else { return }
+        let fpBin = "\(homeDir)/bin/fp"
+        guard FileManager.default.fileExists(atPath: fpBin) else { return }
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self = self else { return }
+            let json = self.runArgs(fpBin, ["update", "--json"])
+            guard let data = json.data(using: .utf8),
+                  let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                return
+            }
+            let anyImageUpdate = parsed["any_update_available"] as? Bool ?? false
+            DispatchQueue.main.async {
+                let host = self.parseHostStatus(parsed)
+                self.updatePassiveIndicator(anyImageUpdate: anyImageUpdate, host: host)
+            }
+        }
+    }
+
+    /// Applies the passive indicator from a parsed check result — and
+    /// clears it again when a fresh check says everything is current, so
+    /// the badge can't go stale. Main thread only (touches UI).
+    private func updatePassiveIndicator(anyImageUpdate: Bool, host: HostUpdateStatus) {
+        if anyImageUpdate || host.anyUpdate {
+            // Prefer the concrete installer version for the label; image
+            // updates are digest-shaped, so fall back to a generic line.
+            pendingUpdateLabel = (host.anyUpdate && isRealVersion(host.latestVersion))
+                ? "Update available: v\(host.latestVersion)"
+                : "Update available"
+        } else {
+            pendingUpdateLabel = nil
+        }
+
+        if let item = updateAvailableItem {
+            if let label = pendingUpdateLabel {
+                item.title = label
+                item.attributedTitle = inlineIconTitle(label, symbol: "arrow.up.circle.fill", color: .systemBlue, bold: true)
+                item.isHidden = false
+            } else {
+                item.isHidden = true
+            }
+        }
+        // Redraw the status icon so the badge appears/disappears.
+        updateIcon(status)
     }
 
     @objc func viewLogs() {
@@ -1324,6 +1675,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func runUninstall(purge: Bool) {
         pollTimer?.invalidate()
+        // Stop the background update checks too — mid-uninstall they'd
+        // shell out to an fp binary that may already be gone. Nil them so
+        // updateMenu()'s flag/timer resync can restore them if the
+        // uninstall fails and polling resumes.
+        autoCheckTimer?.invalidate()
+        autoCheckTimer = nil
+        autoCheckLaunchTimer?.invalidate()
+        autoCheckLaunchTimer = nil
         updateIcon(.unknown)
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in

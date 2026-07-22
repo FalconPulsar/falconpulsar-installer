@@ -5,6 +5,13 @@
 //     operator already pulls from (FP_REGISTRY, defaulting to falconpulsar
 //     on Docker Hub). NOT GitHub releases, NOT falconpulsar.com — those
 //     fail in private/air-gapped deployments.
+//   - Host components (the fp CLI here; each tray app appends its own row
+//     client-side) are NOT Docker images, so their "latest" comes from the
+//     published installer release version — a shields-endpoint gist kept
+//     current by the release pipeline. That probe is best-effort and
+//     NON-FATAL by design: air-gapped deployments get an explicit
+//     "unknown — no internet access" row instead of a failed check, and
+//     the registry-based image comparison above is unaffected.
 //   - "Is an update available?" = compare the manifest digest of the
 //     running container's image to the manifest digest of the ref it
 //     pulls from (`${FP_REGISTRY}/<component>:${FP_VERSION}`). Different
@@ -30,6 +37,7 @@ package actions
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -64,9 +72,38 @@ type ComponentUpdateStatus struct {
 	Error string `json:"error,omitempty"`
 }
 
+// HostComponentStatus is one row in the "host components" section of the
+// update-check result. Host components are binaries installed on the host
+// itself (the fp CLI; each tray app appends its own row client-side since
+// it knows its own version natively) rather than container images, so
+// their update check compares release *versions*, not image digests.
+//
+// All fields are always present in the JSON (no omitempty): the tray apps
+// consume this shape verbatim and an explicit empty string is clearer than
+// a missing key.
+type HostComponentStatus struct {
+	// Name as displayed to the operator. e.g. "fp CLI".
+	Name string `json:"name"`
+	// Version of the installed binary, e.g. "0.1.4-alpha.28" (no leading "v").
+	InstalledVersion string `json:"installed_version"`
+	// Latest published installer release version, normalized (leading "v"
+	// stripped). Empty when the probe failed; may be "none" when no
+	// release has been published yet.
+	LatestVersion string `json:"latest_version"`
+	// True iff LatestVersion is a real version (non-empty, not "none")
+	// AND it differs from the normalized InstalledVersion.
+	UpdateAvailable bool `json:"update_available"`
+	// Categorized failure: "" on success, "unreachable" when the release
+	// version couldn't be fetched (offline / air-gapped / timeout).
+	ErrorKind string `json:"error_kind"`
+	// Human-readable error message. Empty on success.
+	Error string `json:"error"`
+}
+
 // UpdateCheckResult is the full result of `fp update --check`.
 type UpdateCheckResult struct {
-	// Components inspected. Always 3 (core, ui, ai-gateway).
+	// Container-image components inspected: core, ui, ai-gateway — plus
+	// ai-engine when the stack has the engine enabled (see engineInStack).
 	Components []ComponentUpdateStatus `json:"components"`
 	// True iff any component has an update available.
 	Any bool `json:"any_update_available"`
@@ -78,6 +115,19 @@ type UpdateCheckResult struct {
 	Registry string `json:"registry"`
 	// Tag being probed (the resolved value of FP_VERSION).
 	Tag string `json:"tag"`
+	// Host binaries checked against the published installer release
+	// version. The Go side emits exactly one row ("fp CLI"); each tray
+	// app appends its own row client-side from LatestVersion + its own
+	// compiled-in version.
+	HostComponents []HostComponentStatus `json:"host_components"`
+	// True iff any host component has an update available.
+	HostAny bool `json:"host_any_update_available"`
+	// True iff the installer-release-version probe failed (offline /
+	// air-gapped). Non-fatal: the image check above still ran.
+	HostProbeFailed bool `json:"host_probe_failed"`
+	// Where the operator downloads the installer that updates host
+	// components. Constant; included so tray apps don't hardcode it.
+	InstallerReleaseURL string `json:"installer_release_url"`
 }
 
 // componentSpec describes one component for the update check.
@@ -88,24 +138,58 @@ type componentSpec struct {
 }
 
 // componentsForCheck returns the components whose update status the
-// operator cares about.
+// operator cares about. The three mandatory images are always included;
+// the optional AI Engine image is included only when the stack actually
+// runs it (see engineInStack) — probing an image the operator never
+// enabled would just render a permanent, meaningless "not running" row.
 func componentsForCheck() []componentSpec {
-	return []componentSpec{
+	specs := []componentSpec{
 		{displayName: "Core", containerName: "falconpulsar-core", imageBaseName: "core"},
 		{displayName: "Web UI", containerName: "falconpulsar-ui", imageBaseName: "ui"},
 		{displayName: "AI Capabilities", containerName: "falconpulsar-ai-gateway", imageBaseName: "ai-gateway"},
 	}
+	if engineInStack() {
+		specs = append(specs,
+			componentSpec{displayName: "AI Engine", containerName: "falconpulsar-ai-engine", imageBaseName: "ai-engine"})
+	}
+	return specs
+}
+
+// engineInStack reports whether the optional AI Engine service is part of
+// this install's stack: FP_AI_ENGINE_ENABLED=true in .env (the flag the
+// installer writes — EngineEnabled covers this), OR "engine" appears in
+// the .env's COMPOSE_PROFILES list (comma-separated). The second check
+// matters for installs where the profile was enabled by hand without the
+// convenience flag — compose runs the engine either way, so the update
+// check must cover it either way.
+func engineInStack() bool {
+	if EngineEnabled() {
+		return true
+	}
+	for _, p := range strings.Split(envFromDotEnv("COMPOSE_PROFILES"), ",") {
+		if strings.EqualFold(strings.TrimSpace(p), "engine") {
+			return true
+		}
+	}
+	return false
 }
 
 // CheckUpdates inspects each component, returning a populated
 // UpdateCheckResult. Network-bound (one `docker manifest inspect` per
-// component); call from a context with a reasonable timeout.
+// component, plus one HTTPS GET for the installer release version);
+// call from a context with a reasonable timeout.
+//
+// fpVersion is the compiled-in version of the running fp binary
+// (cli.Version). It's plumbed in as a parameter because the cli package
+// imports this one — importing it back for the constant would be a cycle,
+// and duplicating the value here would drift from scripts/sync-version.sh.
 //
 // On registry probe failure for a single component we don't abort the
 // whole check — we record the error per-component and continue. The
 // tray UI can render "core: connectivity error; ui: up to date" rather
-// than going all-or-nothing.
-func CheckUpdates(ctx context.Context) UpdateCheckResult {
+// than going all-or-nothing. The host-component probe is equally
+// non-fatal (see checkHostComponents).
+func CheckUpdates(ctx context.Context, fpVersion string) UpdateCheckResult {
 	registry := envFromDotEnv("FP_REGISTRY")
 	if registry == "" {
 		registry = "falconpulsar"
@@ -146,7 +230,111 @@ func CheckUpdates(ctx context.Context) UpdateCheckResult {
 		}
 		out.Components = append(out.Components, row)
 	}
+
+	checkHostComponents(ctx, fpVersion, &out)
 	return out
+}
+
+// installerVersionURL is the shields-endpoint gist the release pipeline
+// keeps pointed at the newest installer release. Payload shape:
+//
+//	{"schemaVersion":1,"label":"release","message":"v0.1.4-alpha.28","color":"blue"}
+//
+// The version is .message — possibly "v"-prefixed, possibly "none" when
+// no release has been published yet.
+const installerVersionURL = "https://gist.githubusercontent.com/icterusicterus/894cadcfc17cc70a488bdfe8917f5df2/raw/release-installer.json"
+
+// installerReleaseURL is where the operator downloads the installer that
+// updates host components (fp CLI, tray apps).
+const installerReleaseURL = "https://github.com/FalconPulsar/falconpulsar-installer/releases"
+
+// checkHostComponents fills the host-component fields of an
+// UpdateCheckResult: exactly one row for the fp CLI, compared against the
+// published installer release version. Tray apps append their own rows
+// client-side using LatestVersion from the JSON.
+//
+// Air-gap contract: on any fetch failure the row is still emitted, with
+// ErrorKind "unreachable" and a human-readable message, and
+// HostProbeFailed is set — the check as a whole NEVER fails because the
+// host has no internet access.
+func checkHostComponents(ctx context.Context, fpVersion string, out *UpdateCheckResult) {
+	out.InstallerReleaseURL = installerReleaseURL
+
+	row := HostComponentStatus{
+		Name:             "fp CLI",
+		InstalledVersion: fpVersion,
+	}
+	latest, err := fetchLatestInstallerVersion(ctx)
+	if err != nil {
+		row.ErrorKind = "unreachable"
+		row.Error = "unknown — no internet access"
+		out.HostProbeFailed = true
+	} else {
+		row.LatestVersion = normalizeVersion(latest)
+		if isRealVersion(latest) && normalizeVersion(fpVersion) != normalizeVersion(latest) {
+			row.UpdateAvailable = true
+			out.HostAny = true
+		}
+	}
+	out.HostComponents = append(out.HostComponents, row)
+}
+
+// fetchLatestInstallerVersion GETs the shields-endpoint gist and returns
+// its .message field, trimmed but otherwise raw (callers normalize).
+// Plain net/http on purpose — no Docker dependency, works even when the
+// daemon is down. Hard 5-second budget so a flaky network can't stall
+// the whole update check.
+func fetchLatestInstallerVersion(ctx context.Context) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "GET", installerVersionURL, nil)
+	if err != nil {
+		return "", err
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("installer version endpoint returned HTTP %d", resp.StatusCode)
+	}
+	// The payload is ~100 bytes; the limit is pure paranoia against a
+	// captive portal serving us an HTML login page.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	if err != nil {
+		return "", err
+	}
+	var payload struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return "", fmt.Errorf("parse installer version payload: %w", err)
+	}
+	msg := strings.TrimSpace(payload.Message)
+	if msg == "" {
+		return "", fmt.Errorf("installer version payload has empty message")
+	}
+	return msg, nil
+}
+
+// normalizeVersion strips whitespace and a leading "v" so that
+// "v0.1.4-alpha.28" and "0.1.4-alpha.28" compare equal. The gist's
+// .message carries the "v" (it mirrors the git tag); the compiled-in
+// cli.Version does not.
+func normalizeVersion(v string) string {
+	return strings.TrimPrefix(strings.TrimSpace(v), "v")
+}
+
+// isRealVersion reports whether a fetched version string names an actual
+// release: non-empty after normalization and not the "none" placeholder
+// the badge shows before the first published release. A non-real latest
+// never counts as an available update.
+func isRealVersion(v string) bool {
+	n := normalizeVersion(v)
+	return n != "" && !strings.EqualFold(n, "none")
 }
 
 // localManifestDigest returns the manifest digest of the locally-cached

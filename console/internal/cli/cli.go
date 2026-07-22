@@ -30,7 +30,7 @@ import (
 // the actual git tag; unstamped local builds (`go run ./cmd/fp`) fall
 // back to whatever this literal currently says — slightly stale but
 // not misleading.
-var Version = "0.1.4-alpha.28"
+var Version = "0.1.4-alpha.29"
 
 // Root returns the top-level `fp` command (with all subcommands registered).
 // If invoked with no subcommand or explicit `tui`, the caller should launch
@@ -366,15 +366,17 @@ func cmdUpdate() *cobra.Command {
 			"version on the configured registry (FP_REGISTRY). When run with\n" +
 			"--apply, performs the upgrade in place via install.sh's fast-path.\n" +
 			"\n" +
-			"Source of truth for 'is there an update?' is the same Docker\n" +
-			"registry the operator already pulls from. No GitHub or external\n" +
-			"endpoints are queried — air-gapped and private-registry deploys\n" +
-			"work the same as public Docker Hub.",
+			"Source of truth for image updates is the same Docker registry the\n" +
+			"operator already pulls from — air-gapped and private-registry\n" +
+			"deploys work the same as public Docker Hub. Host components (the\n" +
+			"fp CLI, tray apps) are additionally checked against the published\n" +
+			"installer release version; that probe is best-effort and reports\n" +
+			"'unknown' when offline instead of failing the check.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if apply {
 				return actions.ApplyUpdates(cmd.Context(), os.Stdout, os.Stderr)
 			}
-			res := actions.CheckUpdates(cmd.Context())
+			res := actions.CheckUpdates(cmd.Context(), Version)
 			if asJSON {
 				enc := json.NewEncoder(os.Stdout)
 				enc.SetIndent("", "  ")
@@ -402,6 +404,26 @@ func cmdUpdate() *cobra.Command {
 						colorText("✓", colorGreen), comp.Name)
 				}
 			}
+			// Host components (fp CLI) are checked against the published
+			// installer release version, not a registry digest — versions
+			// are the meaningful diff for a binary the operator installed.
+			fmt.Println()
+			fmt.Println("Host components:")
+			for _, host := range res.HostComponents {
+				switch {
+				case host.ErrorKind != "":
+					fmt.Printf("  %s  %-18s %s\n",
+						colorText("?", colorYellow), host.Name, host.Error)
+				case host.UpdateAvailable:
+					fmt.Printf("  %s  %-18s update available: v%s (installed v%s)\n",
+						colorText("↑", colorGreen), host.Name, host.LatestVersion, host.InstalledVersion)
+					fmt.Printf("       download: %s\n", res.InstallerReleaseURL)
+					fmt.Println("       run the latest installer's Upgrade to update host components")
+				default:
+					fmt.Printf("  %s  %-18s up to date (v%s)\n",
+						colorText("✓", colorGreen), host.Name, host.InstalledVersion)
+				}
+			}
 			fmt.Println()
 			switch {
 			case res.AnyError:
@@ -409,6 +431,10 @@ func cmdUpdate() *cobra.Command {
 				os.Exit(2)
 			case res.Any:
 				fmt.Println("Run `fp update --apply` to install the update.")
+			case res.HostAny:
+				fmt.Println("Container images are up to date; a host component update is available (see above).")
+			case res.HostProbeFailed:
+				fmt.Println("Container images are up to date. Host component status unknown (no internet access).")
 			default:
 				fmt.Println("All components are up to date.")
 			}

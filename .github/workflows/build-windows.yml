@@ -120,13 +120,16 @@ jobs:
           # parse pre-release identifiers. On non-tag pushes (PR / branch
           # validation builds) the csproj default 0.1.0 is fine -- those
           # binaries are CI validation, not distribution.
-          $verArg = ''
+          $verArgs = @()
           if ("${env:GITHUB_REF}" -match '^refs/tags/v') {
               $rawTag = "${env:GITHUB_REF_NAME}"
               $trayVersion = $rawTag -replace '^v', '' -replace '-(alpha|beta|rc).*$', ''
               if (-not [string]::IsNullOrEmpty($trayVersion)) {
-                  $verArg = "-p:Version=$trayVersion"
-                  Write-Host "Building tray with Version=$trayVersion (from tag $rawTag)"
+                  # Full tag → InformationalVersion (Application.ProductVersion)
+                  # so the tray self-compares against release feeds precisely.
+                  $trayInfoVersion = $rawTag -replace '^v', ''
+                  $verArgs = @("-p:Version=$trayVersion", "-p:InformationalVersion=$trayInfoVersion")
+                  Write-Host "Building tray with Version=$trayVersion InformationalVersion=$trayInfoVersion (from tag $rawTag)"
               }
           }
           dotnet publish windows/tray-app/FalconPulsarTray.csproj `
@@ -135,7 +138,7 @@ jobs:
             --self-contained `
             -p:PublishSingleFile=true `
             -p:EnableCompressionInSingleFile=true `
-            $verArg `
+            @verArgs `
             -o windows/tray-app/publish
           $exe = Get-ChildItem "windows/tray-app/publish/FalconPulsarTray.exe" -ErrorAction Stop
           Write-Host "Tray app built: $($exe.Name) ($([math]::Round($exe.Length / 1MB, 2)) MB)"
