@@ -4,7 +4,6 @@
 [![test-linux](https://github.com/FalconPulsar/falconpulsar-installer/actions/workflows/test-linux.yml/badge.svg)](https://github.com/FalconPulsar/falconpulsar-installer/actions/workflows/test-linux.yml)
 [![build-macos](https://github.com/FalconPulsar/falconpulsar-installer/actions/workflows/build-macos.yml/badge.svg)](https://github.com/FalconPulsar/falconpulsar-installer/actions/workflows/build-macos.yml)
 [![build-windows](https://github.com/FalconPulsar/falconpulsar-installer/actions/workflows/build-windows.yml/badge.svg)](https://github.com/FalconPulsar/falconpulsar-installer/actions/workflows/build-windows.yml)
-[![release](https://github.com/FalconPulsar/falconpulsar-installer/actions/workflows/release.yml/badge.svg)](https://github.com/FalconPulsar/falconpulsar-installer/actions/workflows/release.yml)
 [![Latest release](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/icterusicterus/894cadcfc17cc70a488bdfe8917f5df2/raw/release-installer.json)](https://github.com/FalconPulsar/falconpulsar-installer/releases)
 
 ![Linux](https://img.shields.io/badge/Linux-supported-success?logo=linux&logoColor=white)
@@ -14,7 +13,7 @@
 ![status](https://img.shields.io/badge/status-pre--release-orange)
 [![license](https://img.shields.io/badge/license-AGPL%20v3-blue)](LICENSE)
 
-> **Badges:** lint / test-linux / build-macos / build-windows / release SVGs are
+> **Badges:** lint / test-linux / build-macos / build-windows SVGs are
 > GitHub Actions (visible with private repo access). **Latest release** is
 > live from a public gist, updated by the prune-releases workflow on every release. This repo is the installer only — no
 > Docker Scout image badge.
