@@ -14,6 +14,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var coreRunning = false
     private var uiRunning = false
     private var gatewayRunning = false
+    private var engineRunning = false
     private var dockerDaemonUp = false
     private var apiHealthy = false
     private var status: StackStatus = .unknown
@@ -77,12 +78,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(NSMenuItem(title: "Web UI: checking...", action: nil, keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "AI Capabilities: checking...", action: nil, keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "REST API: checking...", action: nil, keyEquivalent: ""))
+        // Optional AI Engine row — hidden unless FP_AI_ENGINE_ENABLED=true
+        // in .env; updateMenu() re-checks the flag on every pass.
+        let engineStatus = NSMenuItem(title: "AI Engine: checking...", action: nil, keyEquivalent: "")
+        engineStatus.isHidden = !engineEnabled
+        menu.addItem(engineStatus)
         menu.addItem(.separator())
 
         let openUI = NSMenuItem(title: "Open Web UI", action: #selector(openWebUI), keyEquivalent: "o")
         openUI.target = self
         openUI.attributedTitle = inlineIconTitle("Open Web UI", symbol: "safari", bold: true)
         menu.addItem(openUI)
+
+        // Optional AI Engine UI — visibility mirrors the status row above.
+        let openEngine = NSMenuItem(title: "Open AI Engine", action: #selector(openAIEngine), keyEquivalent: "e")
+        openEngine.target = self
+        openEngine.attributedTitle = inlineIconTitle("Open AI Engine", symbol: "brain", bold: true)
+        openEngine.isHidden = !engineEnabled
+        menu.addItem(openEngine)
 
         let start = NSMenuItem(title: "Start Stack", action: #selector(startStack), keyEquivalent: "")
         start.target = self
@@ -200,17 +213,26 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func updateMenu() {
         guard let menu = statusItem.menu else { return }
 
-        // When Docker itself is off, collapse the 4 status rows to a single
-        // actionable message. Four separate red "Stopped" lines hides the
+        // Engine items follow FP_AI_ENGINE_ENABLED on every pass, so editing
+        // .env takes effect on the next poll without an app restart. Hidden
+        // items stay in the menu's items array, keeping the hardcoded
+        // indices below stable.
+        let engineOn = engineEnabled
+        menu.item(at: 6)?.isHidden = !engineOn   // AI Engine status row
+        menu.item(at: 9)?.isHidden = !engineOn   // Open AI Engine
+
+        // When Docker itself is off, collapse the 5 status rows to a single
+        // actionable message. Five separate red "Stopped" lines hides the
         // real problem (Docker Desktop is not running).
         if !dockerDaemonUp {
             let titles = [
                 "Docker is not running",
                 "Start Docker, then click Refresh Status",
                 "",
+                "",
                 ""
             ]
-            for i in 0..<4 {
+            for i in 0..<5 {
                 guard let item = menu.item(at: i + 2) else { continue }
                 let attr = NSMutableAttributedString()
                 if i == 0 {
@@ -224,18 +246,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     attributes: [.font: NSFont.systemFont(ofSize: 13)]))
                 item.attributedTitle = attr
             }
-            menu.item(at: 8)?.isEnabled = false
-            menu.item(at: 9)?.isEnabled = false
             menu.item(at: 10)?.isEnabled = false
+            menu.item(at: 11)?.isEnabled = false
+            menu.item(at: 12)?.isEnabled = false
             return
         }
 
-        // Status items are at indices 2-5 (after header + separator)
+        // Status items are at indices 2-6 (after header + separator)
         let statuses: [(Bool, String)] = [
             (coreRunning, "Core"),
             (uiRunning, "Web UI"),
             (gatewayRunning, "AI Capabilities"),
-            (apiHealthy, "REST API")
+            (apiHealthy, "REST API"),
+            (engineRunning, "AI Engine")
         ]
 
         for (i, (running, name)) in statuses.enumerated() {
@@ -257,10 +280,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             item.attributedTitle = attributed
         }
 
-        // Enable/disable Start/Stop/Restart (indices 8, 9, 10 — after separator + Open Web UI)
-        menu.item(at: 8)?.isEnabled = status != .running        // Start
-        menu.item(at: 9)?.isEnabled = status != .stopped         // Stop
-        menu.item(at: 10)?.isEnabled = status != .stopped        // Restart
+        // Enable/disable Start/Stop/Restart (indices 10, 11, 12 — after separator + Open Web UI + Open AI Engine)
+        menu.item(at: 10)?.isEnabled = status != .running        // Start
+        menu.item(at: 11)?.isEnabled = status != .stopped         // Stop
+        menu.item(at: 12)?.isEnabled = status != .stopped        // Restart
     }
 
     // MARK: - Status Icon
@@ -373,15 +396,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             // when the real cause is that Docker isn't running.
             self.dockerDaemonUp = self.isDockerDaemonRunning()
 
+            // The optional AI Engine only participates when enabled in .env;
+            // re-read the flag each pass so toggling it doesn't require an
+            // app restart.
+            let engineExpected = self.engineEnabled
+
             if self.dockerDaemonUp {
                 self.coreRunning = self.isContainerRunning("falconpulsar-core")
                 self.uiRunning = self.isContainerRunning("falconpulsar-ui")
                 self.gatewayRunning = self.isContainerRunning("falconpulsar-ai-gateway")
+                self.engineRunning = engineExpected && self.isContainerRunning("falconpulsar-ai-engine")
                 self.apiHealthy = self.isAPIHealthy()
             } else {
                 self.coreRunning = false
                 self.uiRunning = false
                 self.gatewayRunning = false
+                self.engineRunning = false
                 self.apiHealthy = false
             }
 
@@ -390,7 +420,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 self.status = .dockerDown
             } else {
                 let allExpectedRunning = self.coreRunning && self.uiRunning && self.gatewayRunning
-                let anyRunning = self.coreRunning || self.uiRunning || self.gatewayRunning
+                    && (!engineExpected || self.engineRunning)
+                let anyRunning = self.coreRunning || self.uiRunning || self.gatewayRunning || self.engineRunning
                 if allExpectedRunning && self.apiHealthy {
                     self.status = .running
                 } else if allExpectedRunning {
@@ -455,6 +486,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// installer defaults, used when .env is missing or doesn't set them.
     private var restPort: String { envValue("FP_REST_PORT") ?? "7433" }
     private var uiPort: String { envValue("FP_UI_PORT") ?? "8080" }
+    private var enginePort: String { envValue("FP_ENGINE_PORT") ?? "8085" }
+
+    /// Optional AI Engine flag (compose profile "engine"). Absent/false on
+    /// most installs; trim + case-insensitive so hand-edited values like
+    /// "True " still count as enabled.
+    private var engineEnabled: Bool {
+        (envValue("FP_AI_ENGINE_ENABLED") ?? "")
+            .trimmingCharacters(in: .whitespaces).lowercased() == "true"
+    }
 
     // MARK: - Actions
 
@@ -463,14 +503,30 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         NSWorkspace.shared.open(url)
     }
 
+    @objc func openAIEngine() {
+        guard let url = URL(string: "http://localhost:\(enginePort)") else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    /// Compose profile flags shared by EVERY compose invocation.
+    /// "--profile ai" is legacy compose compat (pre-mandatory-gateway
+    /// installs gate ai-gateway behind the "ai" profile); no-op on current
+    /// stacks. A --profile CLI flag OVERRIDES COMPOSE_PROFILES from .env,
+    /// so when the optional AI Engine is enabled we must ALSO name its
+    /// profile explicitly here — otherwise start/stop/restart/logs/uninstall
+    /// silently skip the engine container.
+    private func composeProfileArgs() -> [String] {
+        var args = ["--profile", "ai"]
+        if engineEnabled { args += ["--profile", "engine"] }
+        return args
+    }
+
     @objc func startStack() {
         updateIcon(.partiallyRunning)
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
-            // --profile ai: legacy compose compat (pre-mandatory-gateway
-            // installs gate ai-gateway behind the "ai" profile); no-op on
-            // current stacks.
-            let (bin, argv) = self.dockerInvocation(["compose", "--profile", "ai", "up", "-d"])
+            // Profile flags: see composeProfileArgs().
+            let (bin, argv) = self.dockerInvocation(["compose"] + self.composeProfileArgs() + ["up", "-d"])
             _ = self.runArgs(bin, argv, cwd: self.homeDir)
             sleep(3)
             self.pollHealth()
@@ -481,8 +537,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         updateIcon(.partiallyRunning)
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
-            // --profile ai: legacy compose compat — see startStack().
-            let (bin, argv) = self.dockerInvocation(["compose", "--profile", "ai", "down"])
+            // Profile flags: see composeProfileArgs().
+            let (bin, argv) = self.dockerInvocation(["compose"] + self.composeProfileArgs() + ["down"])
             _ = self.runArgs(bin, argv, cwd: self.homeDir)
             sleep(2)
             self.pollHealth()
@@ -493,8 +549,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         updateIcon(.partiallyRunning)
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
-            // --profile ai: legacy compose compat — see startStack().
-            let (bin, argv) = self.dockerInvocation(["compose", "--profile", "ai", "restart"])
+            // Profile flags: see composeProfileArgs().
+            let (bin, argv) = self.dockerInvocation(["compose"] + self.composeProfileArgs() + ["restart"])
             _ = self.runArgs(bin, argv, cwd: self.homeDir)
             sleep(3)
             self.pollHealth()
@@ -658,8 +714,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let body = """
         #!/bin/bash
         cd \"\(homeDir)\" || exit 1
-        # --profile ai: legacy compose compat — see startStack().
-        exec docker compose --profile ai logs -f --tail 100
+        # Profile flags: see composeProfileArgs().
+        exec docker compose \(composeProfileArgs().joined(separator: " ")) logs -f --tail 100
         """
         try? body.write(toFile: scriptPath, atomically: true, encoding: .utf8)
         try? FileManager.default.setAttributes([.posixPermissions: 0o755],
@@ -1335,10 +1391,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let home = NSHomeDirectory()
         let stackDir = "\(home)/falconpulsar"
 
-        // 1. compose down (plus --volumes on purge). --profile ai: legacy
-        // compose compat (pre-mandatory-gateway installs); no-op on current
-        // stacks.
-        var downArgs = ["compose", "--profile", "ai", "down", "--remove-orphans"]
+        // 1. compose down (plus --volumes on purge). Profile flags: see
+        // composeProfileArgs().
+        var downArgs = ["compose"] + composeProfileArgs() + ["down", "--remove-orphans"]
         if purge { downArgs.append("--volumes") }
         let (dockerBin, dockerDownArgv) = dockerInvocation(downArgs)
         if fm.fileExists(atPath: stackDir) {
@@ -1347,10 +1402,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // 2. Remove project images + any falconpulsar/* images. Pipes/xargs
         // make this string-shaped; no Swift-interpolated paths involved.
-        // --profile ai: legacy compose compat, so the gateway image is
-        // included even against a profile-gated compose.yml.
+        // Profile flags (see composeProfileArgs()), so profile-gated images
+        // are included even against a profile-gated compose.yml.
         _ = shell("""
-            IMAGES="$(cd ~/falconpulsar 2>/dev/null && docker compose --profile ai config --images 2>/dev/null | sort -u)"
+            IMAGES="$(cd ~/falconpulsar 2>/dev/null && docker compose \(composeProfileArgs().joined(separator: " ")) config --images 2>/dev/null | sort -u)"
             if [ -n "$IMAGES" ]; then echo "$IMAGES" | xargs docker rmi -f 2>/dev/null || true; fi
             docker images --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | grep -E '^falconpulsar/' | xargs -r docker rmi -f 2>/dev/null || true
             """)

@@ -35,18 +35,31 @@ type menuSection struct {
 }
 
 func buildSections() []menuSection {
-	return []menuSection{
-		{"Stack", []menuItem{
-			{label: "Start", accel: "F2", action: func(a *App) { a.runAction("Starting stack…", "start") }},
-			{label: "Stop", accel: "F3", action: func(a *App) { a.runAction("Stopping stack…", "stop") }},
-			{label: "Restart", accel: "F4", action: func(a *App) { a.runAction("Restarting stack…", "restart") }},
-			{sep: true},
-			{label: "Refresh status", action: func(a *App) {
-				a.status = actions.Poll(context.Background())
-				a.refreshServices()
-			}},
-			{label: "Check for updates…", action: func(a *App) { a.checkForUpdates() }},
+	stackItems := []menuItem{
+		{label: "Start", accel: "F2", action: func(a *App) { a.runAction("Starting stack…", "start") }},
+		{label: "Stop", accel: "F3", action: func(a *App) { a.runAction("Stopping stack…", "stop") }},
+		{label: "Restart", accel: "F4", action: func(a *App) { a.runAction("Restarting stack…", "restart") }},
+		{sep: true},
+		{label: "Open Web UI", action: func(a *App) { _ = actions.OpenURL(actions.UIURL()) }},
+	}
+	// The optional AI Engine entry only exists on installs that enabled it
+	// (FP_AI_ENGINE_ENABLED=true in .env). Checked once here because the
+	// menu structure is built once at startup.
+	if actions.EngineEnabled() {
+		stackItems = append(stackItems, menuItem{label: "Open AI Engine", action: func(a *App) {
+			_ = actions.OpenURL(actions.EngineURL())
+		}})
+	}
+	stackItems = append(stackItems,
+		menuItem{sep: true},
+		menuItem{label: "Refresh status", action: func(a *App) {
+			a.status = actions.Poll(context.Background())
+			a.refreshServices()
 		}},
+		menuItem{label: "Check for updates…", action: func(a *App) { a.checkForUpdates() }},
+	)
+	return []menuSection{
+		{"Stack", stackItems},
 		{"Logs", []menuItem{
 			{label: "View all logs", accel: "F5", action: func(a *App) { a.showLogsPickerExec("") }},
 			{label: "Core only", action: func(a *App) { a.showLogsPickerExec("core") }},
@@ -227,6 +240,10 @@ func (a *App) refreshServices() {
 		stateLabel(a.status.Gateway), dotColor(a.status.Gateway), stateColor(a.status.Gateway)})
 	rows = append(rows, svcRow{"REST API", actions.RestURL(),
 		stateLabel(a.status.APIHealthy), dotColor(a.status.APIHealthy), stateColor(a.status.APIHealthy)})
+	if a.status.EngineEnabled {
+		rows = append(rows, svcRow{"AI Engine", actions.EngineURL(),
+			stateLabel(a.status.Engine), dotColor(a.status.Engine), stateColor(a.status.Engine)})
+	}
 
 	for i, r := range rows {
 		dot := tview.NewTableCell("●").SetAlign(tview.AlignCenter).SetTextColor(r.dotColor)
@@ -260,6 +277,11 @@ func (a *App) refreshDetails(row ...int) {
 		r = row[0]
 	}
 	labels := []string{"Core", "Web UI", "AI Capabilities", "REST API"}
+	engineLine := ""
+	if a.status.EngineEnabled {
+		labels = append(labels, "AI Engine")
+		engineLine = "AI Engine    " + stateLabel(a.status.Engine) + "\n"
+	}
 	if r < 0 || r >= len(labels) {
 		r = 0
 	}
@@ -269,11 +291,13 @@ func (a *App) refreshDetails(row ...int) {
 			"Core         %s\n"+
 			"Web UI       %s\n"+
 			"AI Capabilities %s\n"+
-			"REST API     %s\n\n"+
+			"REST API     %s\n"+
+			"%s\n"+
 			"[#9CA3AF]Version %s — %s[-]",
 		labels[r], a.status.Aggregate(),
 		stateLabel(a.status.Core), stateLabel(a.status.UI),
 		stateLabel(a.status.Gateway), stateLabel(a.status.APIHealthy),
+		engineLine,
 		cli.Version, actions.HomeDir(),
 	)
 	a.details.SetText(s)
@@ -795,7 +819,7 @@ func (a *App) showHelp() {
 			"  fp status [--json]\n" +
 			"  fp start | stop | restart\n" +
 			"  fp logs [service]\n" +
-			"  fp open\n" +
+			"  fp open [ui|engine]\n" +
 			"  fp config edit [core|gateway|compose]\n" +
 			"  fp config export <file>\n" +
 			"  fp config import <file>\n" +

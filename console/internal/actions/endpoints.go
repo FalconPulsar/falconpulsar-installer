@@ -22,6 +22,7 @@ const (
 	defaultRestPort    = "7433"
 	defaultUIPort      = "8080"
 	defaultGatewayPort = "7436"
+	defaultEnginePort  = "8085"
 )
 
 // portFromEnv returns env[key] when it parses as a valid TCP port, and
@@ -53,6 +54,21 @@ func UIURL() string {
 // FP_GATEWAY_BIND.
 func GatewayURL() string {
 	return "http://localhost:" + portFromEnv(parseEnvFile(), "FP_GATEWAY_PORT", defaultGatewayPort)
+}
+
+// EngineURL returns the optional AI Engine UI base URL on this host,
+// honoring an FP_ENGINE_PORT remap in the stack's .env. Only meaningful
+// on installs where EngineEnabled() reports true.
+func EngineURL() string {
+	return "http://localhost:" + portFromEnv(parseEnvFile(), "FP_ENGINE_PORT", defaultEnginePort)
+}
+
+// EngineEnabled reports whether the optional AI Engine service is enabled
+// on this install (FP_AI_ENGINE_ENABLED=true in the stack's .env; the
+// installer also writes COMPOSE_PROFILES=engine alongside it). Absent or
+// any other value means disabled. Case-insensitive, whitespace-tolerant.
+func EngineEnabled() bool {
+	return strings.EqualFold(strings.TrimSpace(parseEnvFile()["FP_AI_ENGINE_ENABLED"]), "true")
 }
 
 // NewAPIClient returns a REST client pointed at the local Core API,

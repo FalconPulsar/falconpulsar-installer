@@ -354,8 +354,17 @@ func GetComposeVersion(ctx context.Context) string {
 // the *installed* compose.yml, which on older stacks still gates ai-gateway
 // behind the "ai" profile. Unknown profile names are a no-op in Compose v2,
 // so passing the flag unconditionally is harmless on current stacks.
+//
+// When the optional AI Engine is enabled we must ALSO pass its "engine"
+// profile: a --profile flag on the CLI *overrides* COMPOSE_PROFILES from
+// .env, so without re-asserting it here every compose call (start/stop/
+// restart/logs/uninstall) would silently skip falconpulsar-ai-engine.
 func composeProfileArgs() []string {
-	return []string{"--profile", "ai"}
+	args := []string{"--profile", "ai"}
+	if EngineEnabled() {
+		args = append(args, "--profile", "engine")
+	}
+	return args
 }
 
 // Compose runs `docker compose <args...>` in the stack directory. Also ensures
@@ -377,17 +386,28 @@ func Compose(ctx context.Context, stdout, stderr io.Writer, args ...string) erro
 	return cmd.Run()
 }
 
-// Status struct describes the live state of the four services.
+// Status struct describes the live state of the four services (plus the
+// optional AI Engine when the install enables it).
 type Status struct {
 	Core       bool
 	UI         bool
 	Gateway    bool
 	APIHealthy bool
+	// Engine is the falconpulsar-ai-engine container state. Only
+	// meaningful when EngineEnabled is true — disabled installs never
+	// probe it and it stays false.
+	Engine bool
+	// EngineEnabled mirrors FP_AI_ENGINE_ENABLED at poll time so the
+	// aggregate and the status renderers agree on whether the engine
+	// participates.
+	EngineEnabled bool
 }
 
 // Aggregate returns a single word describing overall status. All three
 // services (core, ui, ai-gateway) plus a healthy REST API are required
-// for "running" — a stopped gateway yields "partial".
+// for "running" — a stopped gateway yields "partial". When the optional
+// AI Engine is enabled it participates too — a stopped engine likewise
+// yields "partial".
 func (s Status) Aggregate() string {
 	expected := 3 // core + ui + ai-gateway
 	running := 0
@@ -399,6 +419,12 @@ func (s Status) Aggregate() string {
 	}
 	if s.Gateway {
 		running++
+	}
+	if s.EngineEnabled {
+		expected++ // optional ai-engine counts only when enabled
+		if s.Engine {
+			running++
+		}
 	}
 	if running == expected && s.APIHealthy {
 		return "running"
@@ -415,6 +441,12 @@ func Poll(ctx context.Context) Status {
 	st.Core = containerRunning(ctx, "falconpulsar-core")
 	st.UI = containerRunning(ctx, "falconpulsar-ui")
 	st.Gateway = containerRunning(ctx, "falconpulsar-ai-gateway")
+	// Re-read the flag on every poll so an .env edit shows up without a
+	// console restart. Disabled installs skip the docker probe entirely.
+	st.EngineEnabled = EngineEnabled()
+	if st.EngineEnabled {
+		st.Engine = containerRunning(ctx, "falconpulsar-ai-engine")
+	}
 	cli := NewAPIClient()
 	cli.HTTP.Timeout = 2 * time.Second
 	if ok, err := cli.Health(ctx); err == nil && ok {

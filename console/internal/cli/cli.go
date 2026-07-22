@@ -89,14 +89,20 @@ func cmdStatus() *cobra.Command {
 			if asJSON {
 				enc := json.NewEncoder(os.Stdout)
 				enc.SetIndent("", "  ")
-				return enc.Encode(map[string]any{
+				payload := map[string]any{
 					"core":                st.Core,
 					"ui":                  st.UI,
 					"gateway":             st.Gateway,
 					"api":                 st.APIHealthy,
 					"aggregate":           st.Aggregate(),
 					"ai_setup_incomplete": aiIncomplete,
-				})
+				}
+				// Key only present on engine-enabled installs so existing
+				// consumers see byte-identical output when disabled.
+				if st.EngineEnabled {
+					payload["engine"] = st.Engine
+				}
+				return enc.Encode(payload)
 			}
 			printRow := func(name string, ok bool, note string) {
 				mark := colorText("✗", colorRed)
@@ -112,6 +118,9 @@ func cmdStatus() *cobra.Command {
 			printRow("Web UI", st.UI, actions.UIURL())
 			printRow("AI Capabilities", st.Gateway, "")
 			printRow("REST API", st.APIHealthy, actions.RestURL())
+			if st.EngineEnabled {
+				printRow("AI Engine", st.Engine, actions.EngineURL())
+			}
 			fmt.Printf("\nAggregate: %s\n", st.Aggregate())
 			if aiIncomplete {
 				fmt.Printf("\n%s AI setup is incomplete: the AI gateway has no service token, so\n",
@@ -181,10 +190,22 @@ func cmdLogs() *cobra.Command {
 
 func cmdOpen() *cobra.Command {
 	return &cobra.Command{
-		Use:   "open",
-		Short: "Open the FalconPulsar Web UI in the default browser",
+		Use:   "open [ui|engine]",
+		Short: "Open the FalconPulsar Web UI (or AI Engine) in the default browser",
+		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return actions.OpenURL(actions.UIURL())
+			target := "ui"
+			if len(args) > 0 {
+				target = strings.ToLower(args[0])
+			}
+			switch target {
+			case "ui":
+				return actions.OpenURL(actions.UIURL())
+			case "engine", "ai": // "ai" kept as a familiar alias
+				return actions.OpenURL(actions.EngineURL())
+			default:
+				return fmt.Errorf("unknown target: %s (want: ui|engine)", target)
+			}
 		},
 	}
 }

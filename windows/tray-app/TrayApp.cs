@@ -37,11 +37,15 @@ namespace FalconPulsar.Tray
         private bool _uiRunning;
         private bool _gatewayRunning;
         private bool _apiHealthy;
+        private bool _engineEnabled;
+        private bool _engineRunning;
 
         private ToolStripMenuItem _coreItem;
         private ToolStripMenuItem _uiItem;
         private ToolStripMenuItem _gatewayItem;
         private ToolStripMenuItem _apiItem;
+        private ToolStripMenuItem _engineItem;
+        private ToolStripMenuItem _openEngineItem;
         private ToolStripMenuItem _startItem;
         private ToolStripMenuItem _stopItem;
         private ToolStripMenuItem _restartItem;
@@ -197,6 +201,15 @@ namespace FalconPulsar.Tray
         // installer defaults, used when .env is missing or doesn't set them.
         private string RestPort => EnvValue("FP_REST_PORT") ?? "7433";
         private string UiPort => EnvValue("FP_UI_PORT") ?? "8080";
+        private string EnginePort => EnvValue("FP_ENGINE_PORT") ?? "8085";
+
+        // Optional AI Engine service (compose profile "engine"). The
+        // installer writes FP_AI_ENGINE_ENABLED=true into .env when the
+        // user opts in; absent/false on most installs. Trim + case-
+        // insensitive so a hand-edited "True" still counts.
+        private bool EngineEnabled =>
+            string.Equals(EnvValue("FP_AI_ENGINE_ENABLED")?.Trim(), "true",
+                StringComparison.OrdinalIgnoreCase);
 
         // Our own version, read from the assembly. Set at build time by
         // <Version> in FalconPulsarTray.csproj, and overridable from CI
@@ -224,10 +237,15 @@ namespace FalconPulsar.Tray
             _uiItem = new ToolStripMenuItem("Web UI: checking...");
             _gatewayItem = new ToolStripMenuItem("AI Capabilities: checking...");
             _apiItem = new ToolStripMenuItem("REST API: checking...");
+            // Optional AI Engine row — hidden unless FP_AI_ENGINE_ENABLED=true
+            // in .env; visibility is re-evaluated on every poll in UpdateUI.
+            _engineItem = new ToolStripMenuItem("AI Engine: checking...")
+            { Visible = false };
             menu.Items.Add(_coreItem);
             menu.Items.Add(_uiItem);
             menu.Items.Add(_gatewayItem);
             menu.Items.Add(_apiItem);
+            menu.Items.Add(_engineItem);
             menu.Items.Add(new ToolStripSeparator());
 
             // Actions
@@ -236,6 +254,14 @@ namespace FalconPulsar.Tray
             openUi.Font = new Font(openUi.Font, FontStyle.Bold);
             openUi.Image = CreateGlyphIcon("\uE774", Color.FromArgb(70, 70, 70));  // Globe
             menu.Items.Add(openUi);
+
+            // Optional AI Engine UI — hidden unless FP_AI_ENGINE_ENABLED=true
+            // in .env; visibility is re-evaluated on every poll in UpdateUI.
+            _openEngineItem = new ToolStripMenuItem("Open AI Engine", null,
+                (s, e) => OpenAiEngine());
+            _openEngineItem.Image = CreateGlyphIcon("\uE99A", Color.FromArgb(70, 70, 70));  // Robot
+            _openEngineItem.Visible = false;
+            menu.Items.Add(_openEngineItem);
 
             _startItem = new ToolStripMenuItem("Start Stack", null,
                 async (s, e) => await RunComposeCommand("up -d"));
@@ -335,11 +361,16 @@ namespace FalconPulsar.Tray
             // FalconPulsar has a problem when Docker Desktop is just off.
             _dockerDaemonUp = await IsDockerDaemonRunning();
 
+            // Re-read the AI Engine opt-in each poll (cheap .env read) so
+            // enabling/disabling it takes effect without restarting the tray.
+            _engineEnabled = EngineEnabled;
+
             if (_dockerDaemonUp)
             {
                 _coreRunning = await IsContainerRunning("falconpulsar-core");
                 _uiRunning = await IsContainerRunning("falconpulsar-ui");
                 _gatewayRunning = await IsContainerRunning("falconpulsar-ai-gateway");
+                _engineRunning = _engineEnabled && await IsContainerRunning("falconpulsar-ai-engine");
                 _apiHealthy = await IsApiHealthy();
             }
             else
@@ -347,6 +378,7 @@ namespace FalconPulsar.Tray
                 _coreRunning = false;
                 _uiRunning = false;
                 _gatewayRunning = false;
+                _engineRunning = false;
                 _apiHealthy = false;
             }
 
@@ -358,8 +390,13 @@ namespace FalconPulsar.Tray
             }
             else
             {
-                var allExpected = _coreRunning && _uiRunning && _gatewayRunning;
-                var anyRunning = _coreRunning || _uiRunning || _gatewayRunning;
+                // The AI Engine only participates in the aggregate when the
+                // install opted in — a disabled engine must not drag an
+                // otherwise-healthy stack down to "partially running".
+                var allExpected = _coreRunning && _uiRunning && _gatewayRunning
+                    && (!_engineEnabled || _engineRunning);
+                var anyRunning = _coreRunning || _uiRunning || _gatewayRunning
+                    || _engineRunning;
                 if (allExpected && _apiHealthy)
                     _status = StackStatus.Running;
                 else if (anyRunning)
@@ -416,6 +453,12 @@ namespace FalconPulsar.Tray
             _trayIcon.Icon = CreateStatusIcon(color);
             _trayIcon.Text = tooltip;
 
+            // AI Engine row + "Open AI Engine" only show on engine-enabled
+            // installs; re-toggled every pass so .env edits apply without
+            // restarting the tray.
+            _engineItem.Visible = _engineEnabled;
+            _openEngineItem.Visible = _engineEnabled;
+
             // Update menu items. When Docker daemon is down, show a single
             // "Docker Desktop not running" item instead of N red dots —
             // more useful to the user than four separate "stopped" rows.
@@ -429,6 +472,8 @@ namespace FalconPulsar.Tray
                 _gatewayItem.Image = null;
                 _apiItem.Text = "";
                 _apiItem.Image = null;
+                _engineItem.Text = "";
+                _engineItem.Image = null;
             }
             else
             {
@@ -440,6 +485,8 @@ namespace FalconPulsar.Tray
                 _gatewayItem.Image = CreateDot(_gatewayRunning ? Color.Green : Color.Red);
                 _apiItem.Text = _apiHealthy ? "REST API: Healthy" : "REST API: Not responding";
                 _apiItem.Image = CreateDot(_apiHealthy ? Color.Green : Color.Gray);
+                _engineItem.Text = _engineRunning ? "AI Engine: Running" : "AI Engine: Stopped";
+                _engineItem.Image = CreateDot(_engineRunning ? Color.Green : Color.Red);
             }
 
             // Enable/disable actions based on state
@@ -732,6 +779,16 @@ namespace FalconPulsar.Tray
             public string Error { get; set; } = "";
         }
 
+        // Profile flags for every compose invocation. --profile ai: legacy
+        // compose compat (pre-mandatory-gateway installs put ai-gateway
+        // behind a profile); no-op on current stacks. --profile engine is
+        // added when FP_AI_ENGINE_ENABLED=true: a --profile flag on the CLI
+        // OVERRIDES COMPOSE_PROFILES from .env, so without it Start/Stop/
+        // Restart/Logs would silently skip the AI Engine on engine-enabled
+        // installs.
+        private string ComposeProfileArgs =>
+            EngineEnabled ? "--profile ai --profile engine" : "--profile ai";
+
         private async Task RunComposeCommand(string command)
         {
             _trayIcon.Icon = CreateStatusIcon(Color.FromArgb(234, 179, 8));
@@ -742,13 +799,12 @@ namespace FalconPulsar.Tray
 
             try
             {
-                // --profile ai: legacy compose compat (pre-mandatory-gateway
-                // installs put ai-gateway behind a profile); no-op on
-                // current stacks.
+                // Profile flags (legacy ai + optional engine): see
+                // ComposeProfileArgs.
                 var psi = new ProcessStartInfo
                 {
                     FileName = "wsl.exe",
-                    Arguments = $"-d {_distro} -- docker compose -f {_composePath} --profile ai {command}",
+                    Arguments = $"-d {_distro} -- docker compose -f {_composePath} {ComposeProfileArgs} {command}",
                     UseShellExecute = false,
                     CreateNoWindow = true
                 };
@@ -772,15 +828,20 @@ namespace FalconPulsar.Tray
             { UseShellExecute = true });
         }
 
+        private void OpenAiEngine()
+        {
+            Process.Start(new ProcessStartInfo($"http://localhost:{EnginePort}")
+            { UseShellExecute = true });
+        }
+
         private void ViewLogs()
         {
-            // --profile ai: legacy compose compat (pre-mandatory-gateway
-            // installs put ai-gateway behind a profile); no-op on
-            // current stacks.
+            // Profile flags (legacy ai + optional engine): see
+            // ComposeProfileArgs.
             Process.Start(new ProcessStartInfo
             {
                 FileName = "wsl.exe",
-                Arguments = $"-d {_distro} -- docker compose -f {_composePath} --profile ai logs -f --tail 100",
+                Arguments = $"-d {_distro} -- docker compose -f {_composePath} {ComposeProfileArgs} logs -f --tail 100",
                 UseShellExecute = true
             });
         }
