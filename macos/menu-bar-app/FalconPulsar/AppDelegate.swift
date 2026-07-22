@@ -786,28 +786,41 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 + "\n\nTry running the installer again — it can re-authenticate with the registry."
             alert.addButton(withTitle: "Open Installer")
             alert.addButton(withTitle: "Cancel")
-            if host.anyUpdate { alert.addButton(withTitle: "Open Releases…") }
+            if host.anyUpdate { alert.addButton(withTitle: "Download Update") }
             let response = alert.runModal()
             if response == .alertFirstButtonReturn {
                 runApplyInTerminal(fpBin: fpBin)
             } else if response == .alertThirdButtonReturn {
-                openInstallerReleases(host.releaseURL)
+                openInstallerDownload(host)
             }
             return
         }
 
         if !anyUpdate {
             let alert = NSAlert()
-            // Images current, but a host component (fp CLI / this app) may
-            // still be behind — don't headline "up to date" over it.
-            alert.messageText = host.anyUpdate
-                ? "Host components update available"
-                : "All components are up to date"
-            alert.informativeText = lines.joined(separator: "\n")
-            alert.addButton(withTitle: "OK")
-            if host.anyUpdate { alert.addButton(withTitle: "Open Releases…") }
-            if alert.runModal() == .alertSecondButtonReturn {
-                openInstallerReleases(host.releaseURL)
+            if host.anyUpdate {
+                // Images current, but the app / fp CLI is behind. Make the
+                // update action the obvious one: a primary "Download Update"
+                // that fetches the RIGHT file directly, plus the two steps to
+                // apply it — so the user never has to pick a file off the
+                // releases page or guess how to install.
+                let ver = host.latestVersion.isEmpty ? "" : "v\(host.latestVersion)"
+                alert.messageText = ver.isEmpty ? "Update available" : "Update available: \(ver)"
+                alert.informativeText = lines.joined(separator: "\n")
+                    + "\n\nTo update this app and the fp command:"
+                    + "\n  1.  Click “Download Update” — it downloads FalconPulsar-Setup.dmg."
+                    + "\n  2.  Open the downloaded file, then double-click “FalconPulsar Installer”."
+                    + "\n  3.  Choose Upgrade — your data and settings are preserved."
+                alert.addButton(withTitle: "Download Update")   // first = default (blue)
+                alert.addButton(withTitle: "Later")
+                if alert.runModal() == .alertFirstButtonReturn {
+                    openInstallerDownload(host)
+                }
+            } else {
+                alert.messageText = "All components are up to date"
+                alert.informativeText = lines.joined(separator: "\n")
+                alert.addButton(withTitle: "OK")
+                _ = alert.runModal()
             }
             return
         }
@@ -969,6 +982,23 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// Opens the installer releases page — host components (the fp CLI,
     /// this app) update by running the latest installer, never in place.
     private func openInstallerReleases(_ urlString: String) {
+        guard let url = URL(string: urlString) else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    /// Opens the DIRECT download of the macOS installer for the latest
+    /// version, so the user never has to choose a file from the releases
+    /// page. `FalconPulsar-Setup.dmg` is a stable, unversioned asset name
+    /// present on every release; the version only varies the tag in the
+    /// path. Falls back to the releases page when we don't have a concrete
+    /// version (probe failed / "none"). The browser (signed in to GitHub)
+    /// downloads it — the tray can't fetch a private release asset itself.
+    private func openInstallerDownload(_ host: HostUpdateStatus) {
+        var urlString = host.releaseURL
+        if !host.latestVersion.isEmpty {
+            // …/releases  →  …/releases/download/v<ver>/FalconPulsar-Setup.dmg
+            urlString = host.releaseURL + "/download/v\(host.latestVersion)/FalconPulsar-Setup.dmg"
+        }
         guard let url = URL(string: urlString) else { return }
         NSWorkspace.shared.open(url)
     }

@@ -826,14 +826,24 @@ namespace FalconPulsar.Tray
 
             if (summary.HostAny)
             {
-                // Only host components are out of date. Never auto-apply:
-                // OK opens the releases page in the browser, nothing more.
+                // Only host components are out of date. Never auto-apply, but
+                // make the update action the obvious one: OK ("Download
+                // Update") fetches the RIGHT file directly and the text spells
+                // out the two steps to apply it — so the user never has to
+                // pick a file off the releases page or guess how to install.
+                var ver = NormalizeVersion(HostLatestVersion(summary));
+                var title = string.IsNullOrEmpty(ver)
+                    ? "Update available" : $"Update available: v{ver}";
                 var res = MessageBox.Show(
-                    body + hostInfo + "\n\nOpen the installer releases page?",
-                    "Installer update available",
+                    body +
+                    "\n\nTo update this app and the fp command:" +
+                    "\n  1.  Click OK — it downloads FalconPulsar-Setup.exe." +
+                    "\n  2.  Run the downloaded installer." +
+                    "\n  3.  Choose Upgrade — your data and settings are preserved.",
+                    title,
                     MessageBoxButtons.OKCancel, MessageBoxIcon.Information);
                 if (res == DialogResult.OK)
-                    OpenInstallerReleasePage(summary);
+                    OpenInstallerDownload(summary);
                 return;
             }
 
@@ -868,6 +878,29 @@ namespace FalconPulsar.Tray
             if (string.IsNullOrEmpty(url) ||
                 !url.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
                 url = fallback;
+            Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+        }
+
+        // Opens the DIRECT download of the Windows installer for the latest
+        // version, so the user never has to choose a file from the releases
+        // page. FalconPulsar-Setup.exe is a stable, unversioned asset name
+        // present on every release; only the tag in the path varies. Falls
+        // back to the releases page when we have no concrete version. The
+        // browser (signed in to GitHub) downloads it — the tray can't fetch a
+        // private release asset itself. https-only as defense in depth.
+        private void OpenInstallerDownload(UpdateCheckSummary summary)
+        {
+            const string releasesFallback =
+                "https://github.com/FalconPulsar/falconpulsar-installer/releases";
+            var releaseBase = summary.InstallerReleaseUrl;
+            if (string.IsNullOrEmpty(releaseBase) ||
+                !releaseBase.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+                releaseBase = releasesFallback;
+
+            var ver = NormalizeVersion(HostLatestVersion(summary));
+            var url = string.IsNullOrEmpty(ver)
+                ? releaseBase
+                : $"{releaseBase}/download/v{ver}/FalconPulsar-Setup.exe";
             Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
         }
 
