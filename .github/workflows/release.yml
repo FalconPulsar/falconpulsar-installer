@@ -361,6 +361,17 @@ jobs:
           echo "FP_NOTARY_KEY_P8_PATH=$KEY" >> "$GITHUB_ENV"
 
       - name: Build signed + notarized DMG
+        # continue-on-error at the STEP level (not the job): the DMG is
+        # best-effort by design — the publish job explicitly tolerates its
+        # absence — so a notarization failure (e.g. a pending Apple Developer
+        # agreement returning 403) must not paint the whole release run red.
+        # A chronic red run buries real failures in alarm fatigue. The step
+        # below turns a missing DMG into a prominent ::warning:: annotation
+        # instead. (Job-level continue-on-error would also flip
+        # needs.build-macos-dmg.result to 'success' for the publish job's
+        # download gating — step-level keeps that semantics intact per-step.)
+        id: dmg
+        continue-on-error: true
         env:
           FP_SIGN:             '1'
           FP_SIGN_IDENTITY:    ${{ secrets.APPLE_SIGNING_IDENTITY }}
@@ -376,6 +387,16 @@ jobs:
           FP_VERSION="${GITHUB_REF_NAME#v}" ./macos/build-dmg.sh
           cp dist/FalconPulsar-Setup.dmg "dist/FalconPulsar-Setup-${GITHUB_REF_NAME}.dmg"
           ls -lh dist/*.dmg
+
+      - name: Report DMG outcome
+        # Green run + loud warning when the DMG could not be produced. The
+        # release still publishes (without the DMG) — that is by design.
+        run: |
+          if ls dist/FalconPulsar-Setup*.dmg >/dev/null 2>&1; then
+            echo "DMG built, signed and notarized."
+          else
+            echo "::warning title=macOS DMG not produced::Signing/notarization failed — the release publishes WITHOUT the DMG. Most common cause: a pending Apple Developer agreement (HTTP 403 from the notary service). See the 'Build signed + notarized DMG' step log. macOS users can still install via install-macos.sh."
+          fi
 
       - name: Cleanup signing materials
         # Runs even if a previous step failed — we never want the .p8 key

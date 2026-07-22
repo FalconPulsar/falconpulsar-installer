@@ -45,6 +45,30 @@ jobs:
             done
           echo "Prune complete — 2 newest releases retained."
 
+      - name: Prune orphan tags (keep-2 applies to git tags too)
+        # `gh release delete --cleanup-tag` removes tags only for releases THIS
+        # prune deletes. Tags whose releases were deleted before the automation
+        # existed — or that never had a release — linger forever and violate
+        # the keep-2 policy. Sweep them: delete every v* tag that does not
+        # belong to a surviving release. Version labels stay sane: the nearest
+        # tag for git-describe is the newest release tag.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          KEEP=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 10 --json tagName --jq '.[].tagName')
+          gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/v" --paginate --jq '.[].ref' \
+          | sed 's#^refs/tags/##' \
+          | while read -r tag; do
+              [ -z "$tag" ] && continue
+              if printf '%s\n' "$KEEP" | grep -qxF "$tag"; then
+                continue
+              fi
+              echo "Deleting orphan tag: $tag"
+              gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/$tag" >/dev/null
+            done
+          echo "Orphan-tag sweep complete — only surviving-release tags remain."
+
       - name: Update release badge (gist endpoint)
         # The README's release badge is a shields.io ENDPOINT badge that reads
         # release-<repo>.json from the shared badge gist — the same pattern as
