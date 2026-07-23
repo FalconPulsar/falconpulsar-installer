@@ -127,14 +127,29 @@ Write-Info "Root access verified"
 # `falconpulsar` system user. We need to know WHICH human user to install
 # under. The WSL default user is the natural choice (what `wsl` spawns
 # interactively).
-Write-Info 'Resolving the WSL default user...'
-$WslUser = & wsl.exe -d $Distro -- whoami 2>$null
+Write-Info 'Resolving a non-root user (as root)...'
+# Resolve the human user by reading /etc/passwd AS ROOT. We must NOT launch
+# the distro as its DEFAULT user (the old `wsl -d $Distro -- whoami`): if
+# wsl.conf's `[user] default=` points at a user that no longer exists, WSL
+# crashes hard ("getpwnam(<user>) failed") and takes the whole installer
+# down before it can do anything. Running as -u root always works (root is
+# always resolvable) and is immune to a broken default. Picking the first
+# UID>=1000 (not just 1000) also handles distros whose human user isn't at
+# 1000. If none is found, the block below creates one -- which also REPAIRS
+# a distro left pointing at a since-removed default user.
+$resolveUserScript = @'
+getent passwd | while IFS=: read -r name _ uid _ _ _ _; do
+    if [ "$uid" -ge 1000 ] && [ "$uid" -lt 65534 ] && [ "$name" != "nobody" ]; then
+        printf '%s\n' "$name"; break
+    fi
+done
+'@
+$resolveFile = Join-Path $env:TEMP 'fp-resolve-user.sh'
+[System.IO.File]::WriteAllText($resolveFile, ($resolveUserScript -replace "`r", ''), (New-Object System.Text.UTF8Encoding $false))
+$resolveWsl = ConvertTo-WslPath $resolveFile
+$WslUser = & wsl.exe -d $Distro -u root -- bash $resolveWsl 2>$null
+Remove-Item $resolveFile -ErrorAction SilentlyContinue
 $WslUser = "$WslUser".Trim().Trim([char]0)
-if ([string]::IsNullOrEmpty($WslUser) -or $WslUser -eq 'root') {
-    # Fallback: first real user at UID 1000 (matches Ubuntu's default-user)
-    $WslUser = & wsl.exe -d $Distro -u root -- bash -c "getent passwd 1000 2>/dev/null | cut -d: -f1" 2>$null
-    $WslUser = "$WslUser".Trim().Trim([char]0)
-}
 if ([string]::IsNullOrEmpty($WslUser) -or $WslUser -eq 'root') {
     # No human user exists. This is the normal state of a distro WE
     # provisioned: `wsl --install -d ... --no-launch` (20-install-distro.ps1)
