@@ -214,6 +214,31 @@ enum ConfigBackup {
         return (result ?? Data(), token)
     }
 
+    /// Number of model items the last importBackup could not restore (a
+    /// datasource/mapping/etc. the server rejected). Reset at the start of each
+    /// import; read by the caller to warn instead of reporting a silent success.
+    static var lastImportErrorCount = 0
+
+    /// Fire a request and return the HTTP status (0 on transport failure).
+    /// Used by import to detect a rejected item without the throw/try? dance —
+    /// previously every failure was swallowed by `_ = try? syncRequest(req)`.
+    private static func requestStatus(_ req: URLRequest) -> Int {
+        var status = 0
+        let sem = DispatchSemaphore(value: 0)
+        URLSession.shared.dataTask(with: req) { _, response, _ in
+            if let http = response as? HTTPURLResponse { status = http.statusCode }
+            sem.signal()
+        }.resume()
+        _ = sem.wait(timeout: .now() + 15)
+        return status
+    }
+
+    /// True when the status is a failure worth surfacing (not 2xx, not a 409
+    /// "already exists" which restore treats as a benign skip).
+    private static func isImportFailure(_ status: Int) -> Bool {
+        return (status < 200 || status >= 300) && status != 409
+    }
+
     // MARK: - PBKDF2 + AES-GCM
 
     static func deriveKey(username: String, password: String, salt: Data) throws -> SymmetricKey {
@@ -413,6 +438,7 @@ enum ConfigBackup {
     // MARK: - Import
 
     static func importBackup(from inputPath: String, creds: AdminCredentials) throws {
+        lastImportErrorCount = 0
         let fm = FileManager.default
         let encrypted = try Data(contentsOf: URL(fileURLWithPath: inputPath))
         let plain = try decrypt(encrypted, username: creds.username, password: creds.password)
@@ -522,7 +548,9 @@ enum ConfigBackup {
                 req.addValue("Bearer \(creds.token)", forHTTPHeaderField: "Authorization")
                 req.addValue("application/json", forHTTPHeaderField: "Content-Type")
                 req.httpBody = try? JSONSerialization.data(withJSONObject: item)
-                _ = try? syncRequest(req)   // best-effort; ignore individual failures
+                // Count (don't swallow) a server rejection so the caller can warn
+                // — a rejected datasource/mapping means dead series after restore.
+                if Self.isImportFailure(Self.requestStatus(req)) { Self.lastImportErrorCount += 1 }
             }
         }
     }
@@ -735,7 +763,7 @@ enum ConfigBackup {
             req.addValue("Bearer \(creds.token)", forHTTPHeaderField: "Authorization")
             req.addValue("application/json", forHTTPHeaderField: "Content-Type")
             req.httpBody = body
-            _ = try? syncRequest(req)   // best-effort, consistent with the rest of import
+            if Self.isImportFailure(Self.requestStatus(req)) { Self.lastImportErrorCount += 1 }
         }
     }
 }

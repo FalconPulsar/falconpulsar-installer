@@ -2013,10 +2013,21 @@ namespace FalconPulsar.Tray
             {
                 await ConfigBackup.ImportAsync(dlg.FileName, authed);
 
-                MessageBox.Show(
-                    "Restart the stack (Restart Stack) for all changes to take effect.",
-                    "Import complete",
-                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+                int failed = ConfigBackup.LastImportErrorCount;
+                if (failed > 0)
+                {
+                    MessageBox.Show(
+                        $"Some items were rejected by the server ({failed}) — for example a datasource or mapping — so those series may have no source. Your time-series data is intact. Check the Core logs (docker logs falconpulsar-core), then Restart Stack.",
+                        "Import completed with problems",
+                        MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
+                else
+                {
+                    MessageBox.Show(
+                        "Restart the stack (Restart Stack) for all changes to take effect.",
+                        "Import complete",
+                        MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
             }
             catch (Exception ex)
             {

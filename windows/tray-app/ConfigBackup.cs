@@ -432,8 +432,14 @@ namespace FalconPulsar.Tray
             return result;
         }
 
+        /// <summary>Number of model items the last ImportAsync could not restore
+        /// (a datasource/mapping/etc. the server rejected). Reset at the start of
+        /// each import; read by the tray to warn instead of a silent "success".</summary>
+        public static int LastImportErrorCount;
+
         public static async Task ImportAsync(string inputPath, AdminCredentials creds)
         {
+            LastImportErrorCount = 0;
             var encrypted = File.ReadAllBytes(inputPath);
             var plain = Decrypt(encrypted, creds.Username, creds.Password);
 
@@ -593,8 +599,17 @@ namespace FalconPulsar.Tray
                                 var stripped = StripServerIDs(raw);
                                 var body = new StringContent(stripped.ToJsonString(),
                                                              Encoding.UTF8, "application/json");
-                                try { await http.PostAsync($"{CoreBaseUrl}{sec.path}", body); }
-                                catch { /* best-effort */ }
+                                // Count (don't swallow) a server rejection so the tray
+                                // can warn — a rejected datasource/mapping leaves dead
+                                // series. PostAsync does NOT throw on 4xx/5xx, so the
+                                // status check is what actually catches it.
+                                try
+                                {
+                                    var resp = await http.PostAsync($"{CoreBaseUrl}{sec.path}", body);
+                                    if (!resp.IsSuccessStatusCode && (int)resp.StatusCode != 409)
+                                        LastImportErrorCount++;
+                                }
+                                catch { LastImportErrorCount++; }
                             }
                         }
                         catch { /* skip malformed */ }
@@ -802,8 +817,13 @@ namespace FalconPulsar.Tray
         {
             var payload = new JsonObject { ["series"] = batch };
             var body = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json");
-            try { await http.PostAsync($"{CoreBaseUrl}/api/v1/series/bulk", body); }
-            catch { /* best-effort, consistent with the rest of import */ }
+            try
+            {
+                var resp = await http.PostAsync($"{CoreBaseUrl}/api/v1/series/bulk", body);
+                if (!resp.IsSuccessStatusCode && (int)resp.StatusCode != 409)
+                    LastImportErrorCount++;
+            }
+            catch { LastImportErrorCount++; }
         }
     }
 }

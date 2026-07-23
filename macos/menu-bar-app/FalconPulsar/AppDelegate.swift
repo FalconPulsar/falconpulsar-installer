@@ -1340,8 +1340,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             try ConfigBackup.importBackup(from: url.path, creds: authed)
 
             let ok = NSAlert()
-            ok.messageText = "Import complete"
-            ok.informativeText = "Restart the stack (Restart Stack) for all changes to take effect."
+            let failed = ConfigBackup.lastImportErrorCount
+            if failed > 0 {
+                ok.messageText = "Import completed with \(failed) problem(s)"
+                ok.informativeText = "Some items were rejected by the server (for example a datasource or mapping), so those series may have no source. Your time-series data is intact — check the Core logs (docker logs falconpulsar-core), then Restart Stack."
+                ok.alertStyle = .warning
+            } else {
+                ok.messageText = "Import complete"
+                ok.informativeText = "Restart the stack (Restart Stack) for all changes to take effect."
+            }
             ok.addButton(withTitle: "OK")
             ok.runModal()
         } catch {
