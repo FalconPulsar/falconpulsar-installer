@@ -30,17 +30,24 @@ fp_detect_existing_install() {
     [ -f "${home}/.env" ]         && FP_EXISTING_ENV=1
 
     if [ -d "$home" ]; then
-        FP_EXISTING_STACK_SIZE="$(du -sh "$home" 2>/dev/null | awk '{print $1}')"
+        FP_EXISTING_STACK_SIZE="$(du -sh "$home" 2>/dev/null | awk '{print $1}' || true)"
     fi
     if [ -d "${home}/data" ]; then
-        FP_EXISTING_DATA_SIZE="$(du -sh "${home}/data" 2>/dev/null | awk '{print $1}')"
+        FP_EXISTING_DATA_SIZE="$(du -sh "${home}/data" 2>/dev/null | awk '{print $1}' || true)"
     fi
 
-    if command -v docker >/dev/null 2>&1; then
+    # Probe docker FUNCTIONALLY (docker info), not just `command -v docker`.
+    # On WSL with Docker Desktop but its WSL-integration DISABLED, a docker
+    # SHIM sits on PATH: `command -v docker` finds it, but every invocation
+    # prints "could not be found in this WSL 2 distro" and exits non-zero.
+    # Under `set -o pipefail`+`errexit` that made `count="$(docker ps ...|wc)"`
+    # abort the whole installer here ("checking for existing installation").
+    # The `|| true` also keeps a transient docker hiccup from aborting.
+    if docker info >/dev/null 2>&1; then
         local count
-        count="$(docker ps -a --filter name=falconpulsar- --format '{{.Names}}' 2>/dev/null | wc -l | tr -d ' ')"
+        count="$( { docker ps -a --filter name=falconpulsar- --format '{{.Names}}' 2>/dev/null || true; } | wc -l | tr -d ' ')"
         FP_EXISTING_CONTAINERS="${count:-0}"
-        count="$(docker images --filter reference='*falconpulsar*' --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | wc -l | tr -d ' ')"
+        count="$( { docker images --filter reference='*falconpulsar*' --format '{{.Repository}}:{{.Tag}}' 2>/dev/null || true; } | wc -l | tr -d ' ')"
         FP_EXISTING_IMAGES="${count:-0}"
     fi
 
@@ -85,7 +92,9 @@ FP_RESERVED_CONTAINER_NAMES="falconpulsar-core falconpulsar-ui falconpulsar-ai-g
 FP_PHANTOM_CONTAINERS=()
 fp_detect_phantom_containers() {
     FP_PHANTOM_CONTAINERS=()
-    command -v docker >/dev/null 2>&1 || return 1
+    # Functional check (see fp_detect_existing_install): a WSL docker shim
+    # passes `command -v` but fails on use, and phantom detection runs docker.
+    docker info >/dev/null 2>&1 || return 1
 
     local target_home="$1"
     local name project workdir reserved is_reserved
@@ -238,7 +247,7 @@ fp_prompt_existing_action() {
     local answer
     while :; do
         printf 'Choose [1-4, default 1]: ' >&2
-        read -r answer
+        read -r answer || answer=''   # EOF (piped/closed stdin) -> '' -> default 1, not an errexit abort
         case "${answer:-1}" in
             1) FP_INSTALL_ACTION="upgrade";   break ;;
             2) FP_INSTALL_ACTION="reinstall"; break ;;
@@ -259,7 +268,7 @@ fp_prompt_existing_action() {
             "${FP_C_RED}" "${FP_C_RESET}" "$home" "${FP_C_RED}" "${FP_C_RESET}" >&2
         printf 'Type %sDELETE%s (uppercase) to confirm: ' "${FP_C_BOLD}" "${FP_C_RESET}" >&2
         local confirm_text
-        read -r confirm_text
+        read -r confirm_text || confirm_text=''   # EOF -> '' != DELETE -> safe abort, not an errexit crash
         if [ "$confirm_text" != "DELETE" ]; then
             log_error "confirmation did not match — aborting"
             exit 1
@@ -316,7 +325,7 @@ fp_apply_existing_action() {
             # can keep them cached locally for a faster re-install.
             # Volumes are always purged — keeping them with FP_INSTALL_ACTION=fresh
             # would leave stale data behind that contradicts the "fresh" choice.
-            if command -v docker >/dev/null 2>&1; then
+            if docker info >/dev/null 2>&1; then   # functional, not a broken shim
                 if [ "${FP_REMOVE_CACHED_IMAGES:-true}" != "false" ]; then
                     docker images --filter reference='*falconpulsar*' --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | \
                         while IFS= read -r img; do
@@ -327,7 +336,13 @@ fp_apply_existing_action() {
                 else
                     log_info "keeping cached FalconPulsar images (FP_REMOVE_CACHED_IMAGES=false)"
                 fi
-                docker volume ls --format '{{.Name}}' 2>/dev/null | grep -E '^falconpulsar' | \
+                # `|| true`: grep exits 1 when no name matches (the standard
+                # product has NO named falconpulsar volumes -- only bind mounts
+                # -- so this is the common case). Under errexit+pipefail an
+                # unguarded no-match would ABORT the teardown here, AFTER the
+                # compose-down + image removal above but BEFORE the rm -rf below
+                # -- destroying data and then dying half-done.
+                { docker volume ls --format '{{.Name}}' 2>/dev/null | grep -E '^falconpulsar' || true; } | \
                     while IFS= read -r vol; do
                     if [ -n "$vol" ]; then
                         docker volume rm -f "$vol" >/dev/null 2>&1 || true
@@ -534,7 +549,7 @@ fp_try_upgrade_fastpath() {
     # bundle is incomplete); a no-op on current compose.yml files.
     if cd "$home" 2>/dev/null; then
         for svc in $(docker compose --profile ai config --services 2>/dev/null); do
-            current_image=$(docker compose --profile ai images -q "$svc" 2>/dev/null | head -1)
+            current_image=$(docker compose --profile ai images -q "$svc" 2>/dev/null | head -1 || true)
             if [ -n "$current_image" ]; then
                 prev_image_ids="${prev_image_ids} ${current_image}"
             fi

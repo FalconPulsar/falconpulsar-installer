@@ -179,8 +179,8 @@ HOME_DIR='$stackHome'
 PURGE=$purgeFlag
 echo "[info] === cleanup pass: `$HOME_DIR (purge=`$PURGE) ==="
 
-if ! command -v docker >/dev/null 2>&1; then
-    echo '[info] docker not installed in distro -- skipping container/image cleanup'
+if ! docker info >/dev/null 2>&1; then   # functional check: a WSL docker shim passes command -v but can't reach a daemon
+    echo '[info] docker not usable in distro -- skipping container/image cleanup (nothing can be running without a working daemon)'
 else
     # --profile ai is legacy compose compat (pre-mandatory-gateway installs
     # gated the ai-gateway behind an 'ai' profile; a no-op on current stacks).

@@ -162,7 +162,7 @@ else
     _out 'WslData=no'
 fi
 
-if command -v docker >/dev/null 2>&1; then
+if docker info >/dev/null 2>&1; then   # functional check: a WSL docker shim (Docker Desktop integration off) passes command -v but fails every call
     CN=`$(docker ps -a --filter name=falconpulsar- --format '{{.Names}}' 2>/dev/null)
     RN=`$(docker ps    --filter name=falconpulsar- --format '{{.Names}}' 2>/dev/null)
     IM=`$(docker images --filter reference='*falconpulsar*' --format '{{.Repository}}:{{.Tag}}' 2>/dev/null)

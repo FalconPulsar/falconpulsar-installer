@@ -410,7 +410,10 @@ if [ -f /home/falconpulsar/compose.yml ]; then
 fi
 
 # 2b. Belt-and-braces: remove any falconpulsar-* container compose missed.
-if command -v docker >/dev/null 2>&1; then
+# docker info (not command -v): with WSL integration off there is a docker
+# SHIM on PATH that command -v finds but that fails on every call, which would
+# spray "could not be found in this WSL 2 distro" noise through this block.
+if docker info >/dev/null 2>&1; then
     container_ids=`$(docker ps -a --filter 'name=falconpulsar-' -q 2>/dev/null)
     if [ -n "`$container_ids" ]; then
         removed_containers=`$(echo "`$container_ids" | wc -l | tr -d ' ')
@@ -495,7 +498,7 @@ if ($InstallAction -eq 'reinstall') {
 set +e
 # --profile ai: legacy compose compat (pre-mandatory-gateway installs gated
 # the ai-gateway behind an 'ai' profile); no-op on current stacks.
-if command -v docker >/dev/null 2>&1; then
+if docker info >/dev/null 2>&1; then   # functional check, not the broken shim
     if [ -f '$WslHome/compose.yml' ]; then
         cd '$WslHome' && \
           sudo -u '$WslUser' -H sg docker -c 'docker compose --profile ai down --remove-orphans' 2>/dev/null
@@ -637,7 +640,14 @@ if (Get-Process -Name 'Docker Desktop' -ErrorAction SilentlyContinue) {
     Write-Info 'Docker Desktop detected on host'
 }
 
-$dockerInDistro = & wsl.exe -d $Distro -u root -- bash -c 'command -v docker >/dev/null 2>&1 && echo yes || echo no' 2>$null
+# FUNCTIONAL probe -- `docker info`, not `command -v docker`. With Docker
+# Desktop installed but its WSL integration DISABLED for this distro, a docker
+# SHIM sits on PATH: `command -v docker` finds it (so we'd think docker works)
+# but every call fails with "could not be found in this WSL 2 distro". That
+# made us SKIP the "enable WSL integration" guidance below and hand off to the
+# bash installer, which then died cryptically at "checking for existing
+# installation". `docker info` is true only when docker is actually usable.
+$dockerInDistro = & wsl.exe -d $Distro -u root -- bash -c 'docker info >/dev/null 2>&1 && echo yes || echo no' 2>$null
 $dockerAvailable = $false
 if ($dockerInDistro) {
     $dockerAvailable = ($dockerInDistro.Trim() -eq 'yes')

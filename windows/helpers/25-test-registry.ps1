@@ -81,8 +81,11 @@ echo "[info] docker login OK"
 
 $probeScript = @"
 set -e
-if ! command -v docker >/dev/null 2>&1; then
-    echo "[error] docker is not installed inside the distro yet"
+# Functional check (docker info), not `command -v docker`: with Docker Desktop
+# installed but its WSL integration OFF, a docker SHIM is on PATH -- command -v
+# would find it and we'd fall through to a confusing "docker login rejected".
+if ! docker info >/dev/null 2>&1; then
+    echo "[error] docker is not usable inside the distro yet (if Docker Desktop is installed, enable its WSL integration for this distro)"
     exit 3
 fi
 $loginBlock

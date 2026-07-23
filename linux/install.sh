@@ -101,7 +101,7 @@ if [ -z "${FP_USER:-}" ] && [ -z "${FP_HOME:-}" ]; then
         # would just recreate the problem we're trying to fix.
         _fp_default_user="${FP_INVOKING_USER:-${SUDO_USER:-}}"
         if [ -z "$_fp_default_user" ] || [ "$_fp_default_user" = "root" ]; then
-            _fp_default_user="$(getent passwd 1000 2>/dev/null | cut -d: -f1)"
+            _fp_default_user="$(getent passwd 1000 2>/dev/null | cut -d: -f1 || true)"
         fi
         FP_USER="${_fp_default_user:-}"
         if [ -n "$FP_USER" ]; then
@@ -1114,7 +1114,7 @@ if [ "$HEALTH_OK" = "false" ]; then
 fi
 
 # ── Done ────────────────────────────────────────────────────────────────────
-HOST_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
+HOST_IP="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"   # || true: a busybox hostname w/o -I must not abort the final success banner
 [ -z "$HOST_IP" ] && HOST_IP="localhost"
 
 cat >&2 <<EOF

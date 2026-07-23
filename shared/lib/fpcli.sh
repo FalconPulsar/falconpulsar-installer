@@ -378,7 +378,7 @@ fp_offer_path_append() {
 
     if [ "${FP_ASSUME_YES:-0}" != "1" ]; then
         printf 'Add %s to your PATH in %s so you can run "fp" anywhere? [Y/n]: ' "$bin_dir" "$rc" >&2
-        read -r answer
+        read -r answer || answer=''   # EOF -> '' -> default Y (add to PATH), not an errexit abort
         case "$answer" in
             n|N|no|NO) log_info "skipping PATH append"; return 0 ;;
         esac

@@ -101,7 +101,10 @@ fp_wait_for_gateway_ready() {
 # parser — works for the simple flat responses we get from /auth/login
 # and /tokens. Same pattern documented in CLAUDE.md.
 _fp_json_str() {
-    printf '%s' "$1" | grep -o "\"$2\":\"[^\"]*\"" | head -n1 | cut -d'"' -f4
+    # `|| true`: grep -o exits 1 when the field is absent. Under errexit+pipefail
+    # a bare `x=$(_fp_json_str …)` at the call sites would abort BEFORE the
+    # `if [ -z "$x" ]` handlers that are meant to catch a missing token field.
+    printf '%s' "$1" | grep -o "\"$2\":\"[^\"]*\"" | head -n1 | cut -d'"' -f4 || true
 }
 
 # ── Main bootstrap entry point ──────────────────────────────────────────────
