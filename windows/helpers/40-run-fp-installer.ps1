@@ -186,9 +186,9 @@ usermod -aG docker "$U"
 # makes WSL unable to launch the default user at all).
 if grep -q '^\[user\]' /etc/wsl.conf 2>/dev/null; then
     if grep -q '^default=' /etc/wsl.conf; then
-        sed -i 's/^default=.*/default='"$U"/' /etc/wsl.conf
+        sed -i "s/^default=.*/default=$U/" /etc/wsl.conf
     else
-        sed -i '/^\[user\]/a default='"$U" /etc/wsl.conf
+        sed -i "/^\[user\]/a default=$U" /etc/wsl.conf
     fi
 else
     printf '\n[user]\ndefault=%s\n' "$U" >> /etc/wsl.conf

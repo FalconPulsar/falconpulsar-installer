@@ -64,6 +64,18 @@ jobs:
             shared/lib/fpcli.sh \
             shared/lib/existing.sh
 
+  embedded-bash:
+    name: embedded WSL bash (in PowerShell)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      # The Windows installer runs bash inside WSL by generating scripts as
+      # PowerShell here-strings. shellcheck on standalone *.sh never sees them,
+      # so a quoting/CRLF bug there only surfaced when a user ran the installer
+      # (the `set: +` and `sed '...'"$U"/'` bugs). bash -n each embedded script.
+      - name: Syntax-check embedded bash
+        run: python3 windows/scripts/check-embedded-bash.py
+
   validate-compose:
     name: validate compose.yml
     runs-on: ubuntu-latest
