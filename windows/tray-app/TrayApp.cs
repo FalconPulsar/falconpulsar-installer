@@ -527,7 +527,7 @@ namespace FalconPulsar.Tray
             if (_updateAvailable)
                 tooltip += " (update available)";
 
-            _trayIcon.Icon = CreateStatusIcon(color);
+            _trayIcon.Icon = CreateStatusIcon(color, _updateAvailable);
             _trayIcon.Text = tooltip;
 
             _updateAvailableItem.Visible = _updateAvailable;
@@ -1275,7 +1275,7 @@ namespace FalconPulsar.Tray
 
         private async Task RunComposeCommand(string command)
         {
-            _trayIcon.Icon = CreateStatusIcon(Color.FromArgb(234, 179, 8));
+            _trayIcon.Icon = CreateStatusIcon(Color.FromArgb(234, 179, 8), _updateAvailable);
             _trayIcon.Text = "FalconPulsar: Working...";
             _startItem.Enabled = false;
             _stopItem.Enabled = false;
@@ -1408,7 +1408,7 @@ namespace FalconPulsar.Tray
             return _falconLogo;
         }
 
-        private Icon CreateStatusIcon(Color statusColor)
+        private Icon CreateStatusIcon(Color statusColor, bool updateAvailable = false)
         {
             const int size = 32;
             const int dotSize = 12;
@@ -1449,6 +1449,22 @@ namespace FalconPulsar.Tray
                 // Colored status dot
                 using var dotBrush = new SolidBrush(statusColor);
                 g.FillEllipse(dotBrush, dotX, dotY, dotSize, dotSize);
+
+                // "Update available" badge: a distinct BLUE dot at the TOP-right
+                // corner (the health dot above stays bottom-right and keeps its
+                // own meaning). Mirrors the macOS menu-bar app's blue update dot
+                // so a new release is visible on the icon itself, not just the
+                // menu text. Driven by _updateAvailable, so every 15s health
+                // refresh keeps it painted until the update is applied.
+                if (updateAvailable)
+                {
+                    int upX = size - dotSize - 1;
+                    int upY = 1;
+                    using var upBorder = new SolidBrush(Color.White);
+                    g.FillEllipse(upBorder, upX - 1, upY - 1, dotSize + 2, dotSize + 2);
+                    using var upBrush = new SolidBrush(Color.FromArgb(0, 122, 255)); // macOS systemBlue
+                    g.FillEllipse(upBrush, upX, upY, dotSize, dotSize);
+                }
             }
             return Icon.FromHandle(bmp.GetHicon());
         }
