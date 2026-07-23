@@ -1570,10 +1570,34 @@ namespace FalconPulsar.Tray
             // build-identifier suffix so support requests pin the exact
             // build. Compose row reads the real engine version from
             // `docker compose version --short` instead of the static "v2".
-            var coreInfo = GetContainerInfo("falconpulsar-core");
-            var uiInfo   = GetContainerInfo("falconpulsar-ui");
-            var gwInfo   = GetContainerInfo("falconpulsar-ai-gateway");
-            var composeVer = GetComposeVersion();
+            // Gather per-container versions OFF the UI thread. GetContainerInfo /
+            // GetComposeVersion block on WSL via
+            // RunWslBashCaptureAsync(...).GetAwaiter().GetResult() — running that
+            // sync-over-async on the UI thread deadlocks/freezes the whole tray
+            // and the About window never appears when WSL is slow or busy.
+            // Offload to a worker and cap the wait so About ALWAYS opens; the
+            // version cells show "…" if WSL didn't answer in time.
+            var coreInfo = new ContainerInfo { Version = "…", Revision = string.Empty };
+            var uiInfo = coreInfo;
+            var gwInfo = coreInfo;
+            var composeVer = "…";
+            try
+            {
+                ContainerInfo c = default, u = default, g = default;
+                string cv = string.Empty;
+                var gather = Task.Run(() =>
+                {
+                    c  = GetContainerInfo("falconpulsar-core");
+                    u  = GetContainerInfo("falconpulsar-ui");
+                    g  = GetContainerInfo("falconpulsar-ai-gateway");
+                    cv = GetComposeVersion();
+                });
+                if (gather.Wait(4000))
+                {
+                    coreInfo = c; uiInfo = u; gwInfo = g; composeVer = cv;
+                }
+            }
+            catch { /* leave the "…" placeholders — never let About hang */ }
 
             string[] names = { "Core Engine", "Compose", "Web UI", "AI Capabilities" };
             string[] vers  = { coreInfo.DisplayString, composeVer, uiInfo.DisplayString, gwInfo.DisplayString };
