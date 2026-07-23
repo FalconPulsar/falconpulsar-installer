@@ -399,6 +399,39 @@ namespace FalconPulsar.Tray
             }
         }
 
+        // .env keys tied to the HOST the stack runs on — absolute host paths
+        // and the host uid/gid — rather than the logical configuration. On
+        // restore they must keep the TARGET host's values, never the backup's,
+        // or a cross-host restore repoints core's bind mount at a non-existent
+        // path and the container crash-loops. Everything else in .env (secrets,
+        // ports, flags, admin user) is portable and carried from the backup.
+        private static readonly string[] MachineSpecificEnvKeys =
+        {
+            "FP_DATA_DIR", "FP_GATEWAY_DATA_DIR", "FP_ENGINE_DATA_DIR",
+            "FP_GATEWAY_CONFIG", "FP_UID", "FP_GID",
+        };
+
+        // Reads the given keys out of a KEY=VALUE .env file. Comment/blank
+        // lines are skipped; keys absent from the file are omitted. Never
+        // throws (missing file -> empty map).
+        private static Dictionary<string, string> ReadEnvValues(string path, string[] keys)
+        {
+            var result = new Dictionary<string, string>();
+            if (!File.Exists(path)) return result;
+            var want = new HashSet<string>(keys);
+            foreach (var raw in File.ReadAllLines(path))
+            {
+                var trimmed = raw.Trim();
+                if (trimmed.Length == 0 || trimmed.StartsWith("#")) continue;
+                int eq = trimmed.IndexOf('=');
+                if (eq <= 0) continue;
+                var key = trimmed.Substring(0, eq);
+                if (want.Contains(key))
+                    result[key] = trimmed.Substring(eq + 1);
+            }
+            return result;
+        }
+
         public static async Task ImportAsync(string inputPath, AdminCredentials creds)
         {
             var encrypted = File.ReadAllBytes(inputPath);
@@ -417,6 +450,18 @@ namespace FalconPulsar.Tray
                 if (Directory.Exists(filesDir))
                 {
                     Directory.CreateDirectory(FalconPulsarHomeDir);
+
+                    // Preserve the target host's machine-specific .env values
+                    // (absolute paths + uid/gid). A backup taken on another
+                    // host carries ITS FP_DATA_DIR etc.; restoring those
+                    // verbatim repoints core's bind mount at a path that does
+                    // not exist on this host -> Docker mounts an empty dir ->
+                    // core sees no database and crash-loops on first-run init.
+                    // Capture the current values BEFORE the backup's .env
+                    // overwrites them, then re-apply them below.
+                    var envPath = Path.Combine(FalconPulsarHomeDir, ".env");
+                    var preservedEnv = ReadEnvValues(envPath, MachineSpecificEnvKeys);
+
                     foreach (var name in new[] { "compose.yml", ".env", "gateway.yaml" })
                     {
                         var src = Path.Combine(filesDir, name);
@@ -425,17 +470,15 @@ namespace FalconPulsar.Tray
                             File.Copy(src, dst, overwrite: true);
                     }
 
-                    // Backups taken by older builds may carry
-                    // FP_AI_GATEWAY_ENABLED=false in their .env. AI
-                    // Capabilities are a mandatory component (the key itself
-                    // survives only for older fp/tray binaries that still
-                    // read it), so force any restored value to true.
-                    var envPath = Path.Combine(FalconPulsarHomeDir, ".env");
+                    // Fix up the restored .env: force FP_AI_GATEWAY_ENABLED to
+                    // true (legacy-only key, mandatory component), and re-apply
+                    // the preserved machine-specific keys over whatever the
+                    // backup carried.
                     if (File.Exists(envPath))
                     {
-                        var lines = File.ReadAllLines(envPath);
+                        var lines = new List<string>(File.ReadAllLines(envPath));
                         bool changed = false;
-                        for (int i = 0; i < lines.Length; i++)
+                        for (int i = 0; i < lines.Count; i++)
                         {
                             var trimmed = lines[i].TrimStart();
                             if (trimmed.StartsWith("FP_AI_GATEWAY_ENABLED=") &&
@@ -444,6 +487,24 @@ namespace FalconPulsar.Tray
                                 lines[i] = "FP_AI_GATEWAY_ENABLED=true";
                                 changed = true;
                             }
+                        }
+                        // Re-apply preserved host-specific values: overwrite in
+                        // place where present, append when the backup lacked it.
+                        foreach (var key in MachineSpecificEnvKeys)
+                        {
+                            if (!preservedEnv.TryGetValue(key, out var val)) continue;
+                            var newLine = key + "=" + val;
+                            bool found = false;
+                            for (int i = 0; i < lines.Count; i++)
+                            {
+                                if (lines[i].TrimStart().StartsWith(key + "="))
+                                {
+                                    if (lines[i] != newLine) { lines[i] = newLine; changed = true; }
+                                    found = true;
+                                    break;
+                                }
+                            }
+                            if (!found) { lines.Add(newLine); changed = true; }
                         }
                         // Write with LF line endings: this .env lives inside
                         // WSL and is sourced by bash, which would treat the

@@ -428,6 +428,13 @@ enum ConfigBackup {
         // Restore config files
         let filesDir = "\(workDir)/files"
         if fm.fileExists(atPath: filesDir) {
+            // Preserve the target host's machine-specific .env values (absolute
+            // paths + uid/gid) — never transplant the backup's. A backup taken
+            // on another host carries ITS FP_DATA_DIR etc.; restoring those
+            // verbatim repoints core's bind mount at a path that doesn't exist
+            // here -> Docker mounts an empty dir -> core crash-loops on first
+            // run. Capture BEFORE the backup's .env overwrites the current one.
+            let preservedEnv = Self.readEnvValues(keys: Self.machineSpecificEnvKeys)
             for name in ["compose.yml", ".env", "gateway.yaml"] {
                 let src = "\(filesDir)/\(name)"
                 let dst = "\(homeDir)/\(name)"
@@ -436,7 +443,7 @@ enum ConfigBackup {
                     try fm.copyItem(atPath: src, toPath: dst)
                 }
             }
-            sanitizeRestoredEnv()
+            sanitizeRestoredEnv(preserved: preservedEnv)
         }
 
         // Push API data back in dependency order. v2-aware: handles the new
@@ -520,23 +527,74 @@ enum ConfigBackup {
         }
     }
 
-    /// Backups taken before the AI gateway became a mandatory component may
-    /// carry FP_AI_GATEWAY_ENABLED=false in files/.env. The key itself is
-    /// legacy-only (kept for older fp/tray binaries that still read it), so
-    /// rewrite any restored value to "true" — nothing may re-persist a
-    /// disabled state.
-    static func sanitizeRestoredEnv() {
+    /// .env keys tied to the HOST the stack runs on — absolute host paths and
+    /// the host uid/gid — rather than the logical configuration. On restore
+    /// they must keep the TARGET host's values, never the backup's, or a
+    /// cross-host restore repoints core's bind mount at a non-existent path
+    /// and the container crash-loops. Everything else in .env (secrets, ports,
+    /// flags, admin user) is portable and carried from the backup.
+    static let machineSpecificEnvKeys = [
+        "FP_DATA_DIR", "FP_GATEWAY_DATA_DIR", "FP_ENGINE_DATA_DIR",
+        "FP_GATEWAY_CONFIG", "FP_UID", "FP_GID",
+    ]
+
+    /// Reads the given keys out of the stack's current .env (KEY=VALUE lines).
+    /// Comment/blank lines are skipped; keys absent from the file are omitted.
+    static func readEnvValues(keys: [String]) -> [String: String] {
+        let envPath = "\(homeDir)/.env"
+        guard let content = try? String(contentsOfFile: envPath, encoding: .utf8) else { return [:] }
+        let want = Set(keys)
+        var out: [String: String] = [:]
+        for line in content.components(separatedBy: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty || trimmed.hasPrefix("#") { continue }
+            guard let eq = trimmed.firstIndex(of: "=") else { continue }
+            let key = String(trimmed[..<eq])
+            if want.contains(key) {
+                out[key] = String(trimmed[trimmed.index(after: eq)...])
+            }
+        }
+        return out
+    }
+
+    /// Fixes up a restored .env in place:
+    ///  1. rewrites any FP_AI_GATEWAY_ENABLED line to "true" (a legacy-only
+    ///     key kept for older fp/tray binaries; nothing may re-persist a
+    ///     disabled state);
+    ///  2. re-applies the target host's machine-specific keys (`preserved`,
+    ///     captured before the backup overwrote .env) over whatever the backup
+    ///     carried, so a backup from another host cannot repoint this host's
+    ///     data dirs / uid-gid.
+    static func sanitizeRestoredEnv(preserved: [String: String] = [:]) {
         let envPath = "\(homeDir)/.env"
         guard let content = try? String(contentsOfFile: envPath, encoding: .utf8) else { return }
         var mutated = false
-        let lines = content.components(separatedBy: "\n").map { line -> String in
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
+        var lines = content.components(separatedBy: "\n")
+
+        for i in lines.indices {
+            let trimmed = lines[i].trimmingCharacters(in: .whitespaces)
             if trimmed.hasPrefix("FP_AI_GATEWAY_ENABLED="), trimmed != "FP_AI_GATEWAY_ENABLED=true" {
+                lines[i] = "FP_AI_GATEWAY_ENABLED=true"
                 mutated = true
-                return "FP_AI_GATEWAY_ENABLED=true"
             }
-            return line
         }
+
+        // Re-apply preserved host-specific values: overwrite in place where
+        // present, append when the backup's .env lacked the key entirely.
+        for key in machineSpecificEnvKeys {
+            guard let val = preserved[key] else { continue }
+            let newLine = "\(key)=\(val)"
+            var found = false
+            for i in lines.indices {
+                if lines[i].trimmingCharacters(in: .whitespaces).hasPrefix("\(key)=") {
+                    if lines[i] != newLine { lines[i] = newLine; mutated = true }
+                    found = true
+                    break
+                }
+            }
+            if !found { lines.append(newLine); mutated = true }
+        }
+
         if mutated {
             try? lines.joined(separator: "\n").write(toFile: envPath, atomically: true, encoding: .utf8)
         }

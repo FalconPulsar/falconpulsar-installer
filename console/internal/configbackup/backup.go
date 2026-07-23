@@ -229,7 +229,7 @@ func Export(ctx context.Context, output string, cli *api.Client, user, pass stri
 	// manifest.json
 	manifest := map[string]any{
 		"format_version":       FormatVersion,
-		"falconpulsar_version": "0.1.4-alpha.38",
+		"falconpulsar_version": "0.1.4-alpha.39",
 		"exported_at":          time.Now().UTC().Format(time.RFC3339),
 		"source_host":          hostname(),
 		"source_platform":      runtime.GOOS,
@@ -335,6 +335,16 @@ func Import(ctx context.Context, input string, cli *api.Client, user, pass strin
 		entries[f.Name] = f
 	}
 
+	// Machine/host-specific .env keys must NOT be transplanted across hosts on
+	// restore: they encode absolute host paths and the host uid/gid. A backup
+	// taken on one host (e.g. macOS FP_DATA_DIR=/Users/alice/falconpulsar/data)
+	// restored onto another (e.g. WSL /home/fpuser/falconpulsar/data) would
+	// repoint core's bind mount at a path that doesn't exist on the target ->
+	// Docker auto-creates an empty dir -> core sees no database and crash-loops
+	// on first-run init. Capture the TARGET's values BEFORE the backup's .env
+	// overwrites them; sanitizeRestoredEnv re-applies them below.
+	preservedEnv := readEnvValues(filepath.Join(home, ".env"), machineSpecificEnvKeys)
+
 	// Restore config files (compose.yml, .env, gateway.yaml). These aren't
 	// API-driven so failures don't go in the summary; we propagate them as
 	// hard errors because they block the stack from running.
@@ -348,8 +358,9 @@ func Import(ctx context.Context, input string, cli *api.Client, user, pass strin
 	// Legacy back-compat: a backup taken on a pre-mandatory-gateway install
 	// may carry FP_AI_GATEWAY_ENABLED=false. AI is a required component —
 	// force the key to true so older fp/tray binaries that still read it
-	// never see the stack as AI-disabled.
-	sanitizeRestoredEnv(filepath.Join(home, ".env"))
+	// never see the stack as AI-disabled. Also re-applies the preserved
+	// machine-specific keys captured above.
+	sanitizeRestoredEnv(filepath.Join(home, ".env"), preservedEnv)
 
 	// v3: apply the complete server bundle FIRST — it restores users (with
 	// their password hashes + MFA), roles, API tokens, and the canvas
@@ -1115,17 +1126,68 @@ func readZipFile(f *zip.File) ([]byte, error) {
 	return io.ReadAll(rc)
 }
 
-// sanitizeRestoredEnv rewrites any FP_AI_GATEWAY_ENABLED line in a restored
-// .env to =true. The key is a legacy-compat artifact (pre-mandatory-gateway
-// installs); nothing may ever set it false. No-op when the file is absent
-// or already clean.
-func sanitizeRestoredEnv(path string) {
+// machineSpecificEnvKeys are .env keys whose values are tied to the HOST the
+// stack runs on — absolute host paths and the host uid/gid — not to the
+// logical configuration. On restore they must keep the TARGET host's values,
+// never the backup's, or a cross-host restore repoints core's bind mount at a
+// path that doesn't exist and the container crash-loops (see the capture in
+// Restore). Everything else in .env (secrets, ports, feature flags, admin
+// user) is portable and is correctly carried from the backup.
+var machineSpecificEnvKeys = []string{
+	"FP_DATA_DIR",
+	"FP_GATEWAY_DATA_DIR",
+	"FP_ENGINE_DATA_DIR",
+	"FP_GATEWAY_CONFIG",
+	"FP_UID",
+	"FP_GID",
+}
+
+// readEnvValues returns the values of the given keys found in a KEY=VALUE
+// .env file. Comment and blank lines are skipped; keys absent from the file
+// are simply omitted from the returned map. Never errors (missing file -> {}).
+func readEnvValues(path string, keys []string) map[string]string {
+	out := map[string]string{}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return out
+	}
+	want := map[string]bool{}
+	for _, k := range keys {
+		want[k] = true
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		eq := strings.IndexByte(trimmed, '=')
+		if eq <= 0 {
+			continue
+		}
+		if key := trimmed[:eq]; want[key] {
+			out[key] = trimmed[eq+1:]
+		}
+	}
+	return out
+}
+
+// sanitizeRestoredEnv fixes up a restored .env in place:
+//  1. rewrites any FP_AI_GATEWAY_ENABLED line to =true (a legacy-compat
+//     artifact from pre-mandatory-gateway installs that nothing may set false);
+//  2. re-applies the target host's machine-specific keys (preserved) over
+//     whatever the backup carried, so a backup from another host cannot
+//     repoint this host's data dirs / uid-gid.
+//
+// No-op when the file is absent. `preserved` is the map captured from the
+// target's .env before the backup overwrote it (may be empty).
+func sanitizeRestoredEnv(path string, preserved map[string]string) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return
 	}
 	lines := strings.Split(string(data), "\n")
 	changed := false
+
 	for i, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "FP_AI_GATEWAY_ENABLED=") &&
@@ -1134,6 +1196,32 @@ func sanitizeRestoredEnv(path string) {
 			changed = true
 		}
 	}
+
+	// Re-apply preserved host-specific values: overwrite the key in place
+	// where present, append it when the backup's .env lacked it entirely.
+	for _, key := range machineSpecificEnvKeys {
+		val, ok := preserved[key]
+		if !ok {
+			continue // target had no value to preserve — leave the backup's
+		}
+		newLine := key + "=" + val
+		found := false
+		for i, line := range lines {
+			if strings.HasPrefix(strings.TrimSpace(line), key+"=") {
+				if lines[i] != newLine {
+					lines[i] = newLine
+					changed = true
+				}
+				found = true
+				break
+			}
+		}
+		if !found {
+			lines = append(lines, newLine)
+			changed = true
+		}
+	}
+
 	if changed {
 		_ = os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0600)
 	}
