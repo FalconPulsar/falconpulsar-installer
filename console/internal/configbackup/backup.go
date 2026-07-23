@@ -229,7 +229,7 @@ func Export(ctx context.Context, output string, cli *api.Client, user, pass stri
 	// manifest.json
 	manifest := map[string]any{
 		"format_version":       FormatVersion,
-		"falconpulsar_version": "0.1.4-alpha.37",
+		"falconpulsar_version": "0.1.4-alpha.38",
 		"exported_at":          time.Now().UTC().Format(time.RFC3339),
 		"source_host":          hostname(),
 		"source_platform":      runtime.GOOS,
@@ -427,6 +427,18 @@ func Import(ctx context.Context, input string, cli *api.Client, user, pass strin
 		}
 		items := extractItems(raw, ep.section)
 		st := summary.Sections[ep.section]
+
+		// Series restore the WHOLE configuration in one bulk call. The single
+		// POST /api/v1/series (a) requires an "asset" field the export never
+		// emits, and (b) ignores the engineering limits + alarm thresholds.
+		// POST /api/v1/series/bulk resolves the asset by path AND applies the
+		// limits/thresholds, so the series come back ready to use.
+		if ep.section == "series" {
+			importSeriesBulk(ctx, cli, items, &st, &summary)
+			summary.Sections[ep.section] = st
+			continue
+		}
+
 		for _, item := range items {
 			// Strip server-assigned fields that would conflict on the target.
 			// Different servers issue different UUIDs/ids; we want the target
@@ -995,6 +1007,87 @@ func stripServerIDs(item any) any {
 		}
 	}
 	return out
+}
+
+// ensureSeriesAsset guarantees a series import item carries the "asset" field
+// (the asset PATH) that POST /api/v1/series requires to place the series.
+// GET /api/v1/series emits the full series "path" ("name@asset.path") and a
+// numeric "asset_id", but never a bare "asset" — so on import we derive it
+// from the path. No-op if "asset" is already present or the path has no "@".
+func ensureSeriesAsset(item any) any {
+	obj, ok := item.(map[string]any)
+	if !ok {
+		return item
+	}
+	if a, ok := obj["asset"].(string); ok && a != "" {
+		return item // already present
+	}
+	path, _ := obj["path"].(string)
+	if path == "" {
+		return item // nothing to derive from
+	}
+	ap := assetPathOf(path)
+	if ap == "" || ap == path {
+		return item // no "@" → can't split out an asset path
+	}
+	obj["asset"] = ap
+	return obj
+}
+
+// importSeriesBulk restores series via POST /api/v1/series/bulk. Unlike the
+// per-item POST /api/v1/series (which requires an "asset" field the export
+// never emits AND ignores engineering limits + alarm thresholds), the bulk
+// endpoint resolves the asset by path and applies the full engineering config,
+// so series come back ready to use — definition + limits + alarm setpoints.
+// Batched under the server's 5000-item cap; per-item status is
+// created / exists / error.
+func importSeriesBulk(ctx context.Context, cli *api.Client, items []any, st *SectionStats, summary *ImportSummary) {
+	const batchSize = 1000
+	for start := 0; start < len(items); start += batchSize {
+		end := start + batchSize
+		if end > len(items) {
+			end = len(items)
+		}
+		arr := make([]any, 0, end-start)
+		for _, item := range items[start:end] {
+			arr = append(arr, ensureSeriesAsset(stripServerIDs(item)))
+		}
+		raw, err := cli.PostJSON(ctx, "/api/v1/series/bulk", map[string]any{"series": arr})
+		if err != nil {
+			st.Errors += len(arr)
+			summary.TotalErrors += len(arr)
+			st.ErrorDetails = appendCapped(st.ErrorDetails, "series/bulk: "+err.Error(), 5)
+			continue
+		}
+		var resp struct {
+			Results []struct {
+				Status string `json:"status"`
+				Error  string `json:"error"`
+			} `json:"results"`
+		}
+		if json.Unmarshal(raw, &resp) != nil || len(resp.Results) == 0 {
+			// HTTP succeeded but the body didn't parse — assume the batch created.
+			st.Created += len(arr)
+			summary.TotalCreated += len(arr)
+			continue
+		}
+		for _, r := range resp.Results {
+			switch r.Status {
+			case "created":
+				st.Created++
+				summary.TotalCreated++
+			case "exists":
+				st.Skipped++
+				summary.TotalSkipped++
+			default:
+				st.Errors++
+				summary.TotalErrors++
+				if r.Error != "" {
+					st.ErrorDetails = appendCapped(st.ErrorDetails, r.Error, 5)
+				}
+			}
+		}
+	}
 }
 
 func appendCapped(s []string, msg string, max int) []string {

@@ -516,6 +516,17 @@ namespace FalconPulsar.Tray
                         try
                         {
                             var items = ExtractItems(await File.ReadAllTextAsync(file), sec.key);
+                            // Series restore their FULL config in one bulk call:
+                            // POST /api/v1/series/bulk resolves the asset by path AND
+                            // applies the engineering limits + alarm thresholds,
+                            // unlike the per-item POST /api/v1/series (which needs an
+                            // "asset" field the export never emits and drops the
+                            // limits/thresholds entirely).
+                            if (sec.key == "series")
+                            {
+                                await ImportSeriesBulkAsync(http, items);
+                                continue;
+                            }
                             foreach (var raw in items)
                             {
                                 var stripped = StripServerIDs(raw);
@@ -680,6 +691,58 @@ namespace FalconPulsar.Tray
                 clone[kv.Key] = kv.Value?.DeepClone();
             }
             return clone;
+        }
+
+        /// <summary>
+        /// POST /api/v1/series requires an "asset" field (the asset PATH) to
+        /// place the series under. GET /api/v1/series emits the full series
+        /// "path" ("name@asset.path") and a numeric "asset_id", but never a bare
+        /// "asset" — so derive it from the path on import. No-op when "asset" is
+        /// already present or the path has no "@".
+        /// </summary>
+        private static void EnsureSeriesAsset(JsonObject item)
+        {
+            if (item["asset"] is JsonValue av && av.TryGetValue<string>(out var a)
+                && !string.IsNullOrEmpty(a)) return;
+            if (item["path"] is JsonValue pv && pv.TryGetValue<string>(out var path)
+                && !string.IsNullOrEmpty(path))
+            {
+                int at = path.IndexOf('@');
+                if (at >= 0 && at + 1 < path.Length)
+                    item["asset"] = path.Substring(at + 1);
+            }
+        }
+
+        /// <summary>
+        /// Restores series via POST /api/v1/series/bulk — which resolves the
+        /// asset by path AND applies the engineering limits + alarm thresholds
+        /// carried in the export, so series arrive ready to use (definition +
+        /// limits + alarm setpoints). Batched under the 5000-item bulk cap.
+        /// </summary>
+        private static async Task ImportSeriesBulkAsync(HttpClient http, IEnumerable<JsonObject> items)
+        {
+            const int batchSize = 1000;
+            var batch = new JsonArray();
+            foreach (var raw in items)
+            {
+                var stripped = StripServerIDs(raw);
+                EnsureSeriesAsset(stripped);
+                batch.Add(stripped);
+                if (batch.Count >= batchSize)
+                {
+                    await PostSeriesBatchAsync(http, batch);
+                    batch = new JsonArray();
+                }
+            }
+            if (batch.Count > 0) await PostSeriesBatchAsync(http, batch);
+        }
+
+        private static async Task PostSeriesBatchAsync(HttpClient http, JsonArray batch)
+        {
+            var payload = new JsonObject { ["series"] = batch };
+            var body = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json");
+            try { await http.PostAsync($"{CoreBaseUrl}/api/v1/series/bulk", body); }
+            catch { /* best-effort, consistent with the rest of import */ }
         }
     }
 }

@@ -498,6 +498,15 @@ enum ConfigBackup {
                 continue
             }
             let items = Self.extractItems(from: json, sectionKey: sec.key)
+            // Series restore their FULL config in one bulk call: POST
+            // /api/v1/series/bulk resolves the asset by path AND applies the
+            // engineering limits + alarm thresholds, unlike the per-item POST
+            // /api/v1/series (which requires an "asset" field the export never
+            // emits and drops the limits/thresholds entirely).
+            if sec.key == "series" {
+                Self.importSeriesBulk(items: items, creds: creds, coreBaseURL: coreBaseURL)
+                continue
+            }
             for raw in items {
                 let item = Self.stripServerIDs(raw)
                 let url = URL(string: "\(coreBaseURL)\(sec.path)")!
@@ -631,6 +640,45 @@ enum ConfigBackup {
             out[k] = v
         }
         return out
+    }
+
+    /// POST /api/v1/series requires an "asset" field (the asset PATH) to place
+    /// the series under. GET /api/v1/series emits the full series "path"
+    /// ("name@asset.path") and a numeric "asset_id", but never a bare "asset" —
+    /// so derive it from the path on import. No-op when "asset" is already
+    /// present or the path has no "@".
+    static func ensureSeriesAsset(_ item: [String: Any]) -> [String: Any] {
+        if let a = item["asset"] as? String, !a.isEmpty { return item }
+        guard let path = item["path"] as? String,
+              let at = path.firstIndex(of: "@") else {
+            return item
+        }
+        var out = item
+        out["asset"] = String(path[path.index(after: at)...])
+        return out
+    }
+
+    /// Restores series via POST /api/v1/series/bulk — which resolves the asset
+    /// by path AND applies the engineering limits + alarm thresholds carried in
+    /// the export, so series arrive ready to use (definition + limits + alarm
+    /// setpoints). Batched under the server's 5000-item bulk cap.
+    static func importSeriesBulk(items: [[String: Any]], creds: AdminCredentials, coreBaseURL: String) {
+        let batchSize = 1000
+        var start = 0
+        while start < items.count {
+            let end = min(start + batchSize, items.count)
+            let batch = items[start..<end].map { ensureSeriesAsset(stripServerIDs($0)) }
+            start = end
+            let payload: [String: Any] = ["series": batch]
+            guard let body = try? JSONSerialization.data(withJSONObject: payload) else { continue }
+            let url = URL(string: "\(coreBaseURL)/api/v1/series/bulk")!
+            var req = URLRequest(url: url)
+            req.httpMethod = "POST"
+            req.addValue("Bearer \(creds.token)", forHTTPHeaderField: "Authorization")
+            req.addValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.httpBody = body
+            _ = try? syncRequest(req)   // best-effort, consistent with the rest of import
+        }
     }
 }
 
