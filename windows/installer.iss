@@ -46,7 +46,7 @@
 ;               below, which scripts/sync-version.sh keeps in sync with
 ;               the repo-root VERSION file (CI lint enforces no drift).
 #ifndef MyAppVersion
-  #define MyAppVersion "0.1.4-alpha.41"
+  #define MyAppVersion "0.1.4-alpha.42"
 #endif
 #define MyAppPublisher   "FalconPulsar Contributors"
 #define MyAppURL         "https://github.com/FalconPulsar/falconpulsar-installer"
@@ -255,9 +255,19 @@ Root: HKCU; Subkey: "SOFTWARE\Microsoft\Windows\CurrentVersion\Run"; \
 Type: filesandordirs; Name: "{commonprograms}\FalconPulsar"
 ; tray-config.txt is written post-install via SaveStringToFile (see
 ; CurStepChanged), so it is NOT logged by [Files] and would otherwise be left
-; behind. Remove it explicitly, then clear {app} if nothing else remains so a
-; full purge does not leave the install directory sitting empty.
+; behind. Remove it explicitly.
 Type: files; Name: "{app}\tray-config.txt"
+; Force-remove the installer-placed subdirectories. {app}\helpers in particular
+; is left behind by the default cleanup because the uninstaller runs
+; helpers\uninstall.ps1 from inside it; these entries are processed AFTER that
+; script has terminated, so the directory is free to delete. Everything under
+; {app} is Windows-side program files only (the stack data lives in WSL), so
+; this never touches user data. {app} itself is cleared once empty (after Inno
+; self-removes unins*.exe on exit).
+Type: filesandordirs; Name: "{app}\helpers"
+Type: filesandordirs; Name: "{app}\shared"
+Type: filesandordirs; Name: "{app}\linux"
+Type: filesandordirs; Name: "{app}\assets"
 Type: dirifempty; Name: "{app}"
 
 [UninstallRun]
@@ -2326,6 +2336,24 @@ end;
 // Top-level prereq check before any page is shown. Anything that's a
 // hard-no goes here so the user gets a clear error before they even see
 // the welcome screen.
+// Runs just before files are copied — including on an upgrade over a running
+// install. The tray app runs continuously and holds {app}\FalconPulsarTray.exe
+// (and other handles under {app}) open, so without closing it first an upgrade
+// fails with "Setup was unable to automatically close all applications." Force
+// it (and any stray fp.exe) closed here so the file copy can replace them.
+// Harmless when nothing is running; [Run] relaunches the tray after install.
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  ResultCode: Integer;
+begin
+  Result := '';
+  NeedsRestart := False;
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /T /IM FalconPulsarTray.exe',
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /T /IM fp.exe',
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+end;
+
 function InitializeSetup(): Boolean;
 var
   WinVer: TWindowsVersion;
@@ -2452,8 +2480,9 @@ var
 begin
   if CurUninstallStep = usUninstall then
   begin
-    // Kill the tray app if running
-    Exec('taskkill.exe', '/F /IM FalconPulsarTray.exe', '',
+    // Kill the tray app (and its process tree) so it releases handles under
+    // {app} before we remove files — otherwise {app}\helpers is left behind.
+    Exec('taskkill.exe', '/F /T /IM FalconPulsarTray.exe', '',
       SW_HIDE, ewWaitUntilTerminated, ResultCode);
 
     // Honour FP_UNINSTALL_MODE if the caller pre-decided. Set to
