@@ -157,10 +157,16 @@ if ([string]::IsNullOrEmpty($WslUser) -or $WslUser -eq 'root') {
     # only thing that creates a non-root user. So we create one ourselves --
     # the per-user install needs an owner. Idempotent: this branch only runs
     # when no non-root user was found, and useradd is guarded by `id -u`.
-    Write-Info "No non-root user in $Distro -- creating 'falconpulsar'..."
+    # IMPORTANT: the user is named 'fpuser', NOT 'falconpulsar'. The fresh-
+    # install cleanup below deliberately removes the LEGACY 'falconpulsar'
+    # SYSTEM user (userdel falconpulsar) + /home/falconpulsar. If we named the
+    # new human user 'falconpulsar' too, that cleanup would delete the very
+    # user we just created -- which is exactly what happened, leaving the
+    # installer's --user target missing and wsl.conf pointing at a ghost.
+    Write-Info "No non-root user in $Distro -- creating 'fpuser'..."
     $mkUserScript = @'
 set -e
-U=falconpulsar
+U=fpuser
 if ! id -u "$U" >/dev/null 2>&1; then
     useradd -m -s /bin/bash -U "$U"
 fi
@@ -168,17 +174,22 @@ fi
 # what WSL's own first-user setup grants.
 getent group sudo >/dev/null 2>&1 && usermod -aG sudo "$U"
 mkdir -p /etc/sudoers.d   # not present on minimal images; set -e would abort
-echo "$U ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/falconpulsar
-chmod 0440 /etc/sudoers.d/falconpulsar
+echo "$U ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/fpuser
+chmod 0440 /etc/sudoers.d/fpuser
 # docker group (the installer uses `sg docker`); create it if the Docker
 # Desktop integration hasn't yet, then add the user.
 getent group docker >/dev/null 2>&1 || groupadd docker
 usermod -aG docker "$U"
 # Make this the distro's default user so `wsl -d $Distro` and the fp CLI
-# spawn as them on subsequent launches. Not required for THIS run (the
-# install uses explicit `sudo -u $U`), so no distro restart is needed now.
+# spawn as them on subsequent launches. REPLACE any existing default= (a
+# prior install may have left it pointing at a since-removed user, which
+# makes WSL unable to launch the default user at all).
 if grep -q '^\[user\]' /etc/wsl.conf 2>/dev/null; then
-    grep -q '^default=' /etc/wsl.conf || sed -i '/^\[user\]/a default='"$U" /etc/wsl.conf
+    if grep -q '^default=' /etc/wsl.conf; then
+        sed -i 's/^default=.*/default='"$U"/' /etc/wsl.conf
+    else
+        sed -i '/^\[user\]/a default='"$U" /etc/wsl.conf
+    fi
 else
     printf '\n[user]\ndefault=%s\n' "$U" >> /etc/wsl.conf
 fi
@@ -188,8 +199,8 @@ echo "[ok] created non-root user $U"
     if ($mkRc -ne 0) {
         Stop-WithError "Failed to create a non-root user in $Distro (exit $mkRc)."
     }
-    $WslUser = 'falconpulsar'
-    Write-Info "Created and selected non-root user 'falconpulsar'"
+    $WslUser = 'fpuser'
+    Write-Info "Created and selected non-root user 'fpuser'"
 }
 $WslHome = "/home/$WslUser/falconpulsar"
 Write-Info ("Install target: user='{0}', stack dir='{1}'" -f $WslUser, $WslHome)

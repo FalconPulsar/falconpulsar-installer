@@ -2345,6 +2345,22 @@ begin
 
   LogMachineState();
 
+  // Hard admin gate, up front. PrivilegesRequired=admin already makes Inno
+  // request UAC elevation, and 00-check-prereqs.ps1 re-checks at Step 1, but
+  // fail FAST and CLEARLY here (before any detection) if we somehow run
+  // without an elevated admin token -- e.g. UAC disabled + a non-elevated
+  // shell on a server.
+  if not IsAdmin() then
+  begin
+    LogError('Aborting: not running as Administrator');
+    MsgBox('FalconPulsar Setup must run as Administrator.' + #13#10 + #13#10 +
+           'Right-click FalconPulsar-Setup.exe and choose ' +
+           '"Run as administrator", then try again.',
+           mbError, MB_OK);
+    Result := False;
+    Exit;
+  end;
+
   // Environment detection is deferred to InitializeWizard (after the
   // window exists) so we can show a "Please wait..." message. Only the
   // instant checks (Windows version, registry key) stay here.
