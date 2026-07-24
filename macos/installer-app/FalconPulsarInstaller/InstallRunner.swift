@@ -193,6 +193,20 @@ enum InstallRunner {
             if !hasApiKey || !hasGatewayService {
                 log("[info] Existing stack lacks AI-Gateway provisioning — running the full installer to migrate")
                 upgradeFastPath = false
+                // The wizard skips the credentials page when its own viability
+                // check (same three checks as above) passes, so reaching this
+                // fallback with no credentials means the stack changed between
+                // the wizard and now. The migration needs an admin login to
+                // mint the gateway token — fail clearly instead of running
+                // install.sh with an empty password.
+                if state.adminPass.isEmpty {
+                    updateStep(0, .failed)
+                    finish(state: state, success: false, error:
+                        "This stack needs a full upgrade (AI Capabilities migration), " +
+                        "which requires your admin credentials. Run the installer again " +
+                        "and choose \"Reinstall (keep data)\".")
+                    return
+                }
             }
             let engineKey = "FP_AI_ENGINE_ENABLED="
             if let line = envText.split(separator: "\n")

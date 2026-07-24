@@ -49,9 +49,21 @@ struct InstallerView: View {
                 } else if state.currentPage == .installing {
                     // No buttons during install
                 } else {
-                    Button(state.currentPage == .credentials ? "Install" : "Continue") {
-                        if state.currentPage == .credentials {
-                            state.nextPage()
+                    // "Upgrade in place" needs none of the remaining pages when
+                    // the runner's fast-path can handle the stack: it pulls and
+                    // restarts with the surviving .env (options are sticky, no
+                    // admin credentials involved) — the same operation as the
+                    // tray's Apply Now, which shows no wizard at all. Jump
+                    // straight to the progress page. Legacy stacks (fast-path
+                    // not viable) keep the full wizard: migrating them mints a
+                    // gateway token, which requires the credentials page.
+                    let upgradeShortcut = state.currentPage == .existing
+                        && state.installAction == .upgrade
+                        && state.upgradeFastPathViable
+                    Button(state.currentPage == .credentials ? "Install"
+                           : upgradeShortcut ? "Upgrade" : "Continue") {
+                        if state.currentPage == .credentials || upgradeShortcut {
+                            state.currentPage = .installing
                             runInstall()
                         } else {
                             if state.currentPage == .welcome {

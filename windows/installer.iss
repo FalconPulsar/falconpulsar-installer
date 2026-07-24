@@ -46,7 +46,7 @@
 ;               below, which scripts/sync-version.sh keeps in sync with
 ;               the repo-root VERSION file (CI lint enforces no drift).
 #ifndef MyAppVersion
-  #define MyAppVersion "0.1.4-alpha.46"
+  #define MyAppVersion "0.1.4-alpha.47"
 #endif
 #define MyAppPublisher   "FalconPulsar Contributors"
 #define MyAppURL         "https://github.com/FalconPulsar/falconpulsar-installer"
@@ -2448,7 +2448,7 @@ begin
       Result := True;
   end;
 
-  // Only skip legal + registry when upgrading in place. We still show the
+  // Only skip the setup pages when upgrading in place. We still show the
   // credentials page so the user can type the existing admin password —
   // install.sh will verify it against Core before overwriting the stack.
   if IsUpgrade and (InstallAction = 'upgrade') then
@@ -2456,6 +2456,15 @@ begin
     if (LegalPage <> nil) and (PageID = LegalPage.ID) then
       Result := True;
     if (RegistryPage <> nil) and (PageID = RegistryPage.ID) then
+      Result := True;
+    // Destination + Additional Tasks add nothing on an upgrade: the install
+    // directory is fixed by the existing install (Inno restores it via
+    // AppId), and the AI Engine opt-in is sticky — the upgrade handoff
+    // deliberately does NOT export FP_AI_ENGINE_ENABLED, so the stack's
+    // .env value carries forward regardless of the checkbox.
+    if PageID = wpSelectDir then
+      Result := True;
+    if PageID = wpSelectTasks then
       Result := True;
     // Credentials page intentionally NOT skipped on upgrade — we need the
     // user to enter the existing admin password for auth verification.

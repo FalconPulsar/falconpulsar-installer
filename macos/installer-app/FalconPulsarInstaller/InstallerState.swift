@@ -88,6 +88,14 @@ class InstallerState: ObservableObject {
     @Published var installAction: InstallAction = .fresh
     @Published var removeCachedImages = false
     @Published var freshConfirmed = false
+    // True when the runner's upgrade fast-path can handle this stack
+    // (compose.yml present, AI-Gateway already provisioned). When it can,
+    // "Upgrade in place" skips the rest of the wizard: the fast-path never
+    // uses the legal/registry/options/credentials answers — it pulls and
+    // restarts with the surviving .env, exactly like the tray's Apply Now.
+    // Legacy stacks (no gateway token/service) still need the full wizard,
+    // because migrating them mints a gateway token with admin credentials.
+    @Published var upgradeFastPathViable = false
 
     // Install progress
     @Published var steps: [(name: String, status: StepStatus)] = [
@@ -188,9 +196,26 @@ class InstallerState: ObservableObject {
                 found.menuBarInstalled = true
             }
 
+            // Upgrade fast-path viability — the same three checks the runner
+            // makes (compose.yml intact, gateway token in .env, ai-gateway
+            // service in compose). Computed once here so the wizard can skip
+            // the remaining pages when "Upgrade in place" can truly run
+            // without them.
+            var fastPathOk = fm.fileExists(atPath: "\(stackDir)/compose.yml")
+            if fastPathOk {
+                let envText = (try? String(contentsOfFile: "\(stackDir)/.env", encoding: .utf8)) ?? ""
+                let composeText = (try? String(contentsOfFile: "\(stackDir)/compose.yml", encoding: .utf8)) ?? ""
+                let hasApiKey = envText.split(separator: "\n")
+                    .contains { $0.hasPrefix("FP_API_KEY=") && $0.count > "FP_API_KEY=".count }
+                let hasGatewayService = composeText.split(separator: "\n")
+                    .contains { $0.trimmingCharacters(in: .whitespaces) == "ai-gateway:" }
+                fastPathOk = hasApiKey && hasGatewayService
+            }
+
             DispatchQueue.main.async {
                 self?.existing = found
                 self?.detectingExisting = false
+                self?.upgradeFastPathViable = fastPathOk
                 // Default action: upgrade if stack dir exists, fresh otherwise
                 if found.stackDirExists || !found.containers.isEmpty {
                     self?.installAction = .upgrade
