@@ -201,6 +201,14 @@ services:
       # bakes in safe localhost dev defaults. Override when the UI is
       # served from a custom origin.
       FP_ALLOWED_ORIGINS: ${FP_ALLOWED_ORIGINS:-}
+      # Print a C-level traceback if a worker dies on a fatal signal
+      # (SIGSEGV/SIGABRT/SIGBUS). The gateway loads native libraries
+      # in-process (onnxruntime via fastembed/chromadb for knowledge
+      # embeddings); without this a native crash kills the worker
+      # silently — uvicorn logs only "Child process died" and the client
+      # sees a bare 502 ("AI service temporarily unavailable"). Costs
+      # nothing at runtime and only emits output on an actual crash.
+      PYTHONFAULTHANDLER: "1"
       # LLM provider credentials are loaded from the Core DB via REST at
       # runtime (Settings > AI Configuration in the Web UI). Do NOT inject
       # ANTHROPIC_API_KEY / XAI_API_KEY here — they would bypass the DB
