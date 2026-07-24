@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) 2026 FalconPulsar Contributors
+
 // Package actions wraps the docker compose operations and filesystem helpers
 // that both the CLI subcommands and the TUI need.
 package actions

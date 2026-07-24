@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) 2026 FalconPulsar Contributors
+
 // Package tui implements the Midnight-Commander-style interactive console.
 package tui
 

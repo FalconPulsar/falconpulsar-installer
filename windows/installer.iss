@@ -1,3 +1,6 @@
+; SPDX-License-Identifier: AGPL-3.0-only
+; Copyright (c) 2026 FalconPulsar Contributors
+
 ; =============================================================================
 ; FalconPulsar — Windows Installer (Inno Setup 6)
 ; =============================================================================
@@ -46,7 +49,7 @@
 ;               below, which scripts/sync-version.sh keeps in sync with
 ;               the repo-root VERSION file (CI lint enforces no drift).
 #ifndef MyAppVersion
-  #define MyAppVersion "0.1.4-alpha.51"
+  #define MyAppVersion "0.1.4-alpha.52"
 #endif
 #define MyAppPublisher   "FalconPulsar Contributors"
 #define MyAppURL         "https://github.com/FalconPulsar/falconpulsar-installer"

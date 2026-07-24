@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (c) 2026 FalconPulsar Contributors
+
 # =============================================================================
 # 25-test-registry.ps1 -- Test a container registry from the Windows installer.
 #

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (c) 2026 FalconPulsar Contributors
+
 # =============================================================================
 # 10-enable-wsl.ps1 -- Enable the WSL2 Windows feature.
 #

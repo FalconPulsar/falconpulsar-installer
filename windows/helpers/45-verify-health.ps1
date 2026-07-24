@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (c) 2026 FalconPulsar Contributors
+
 # =============================================================================
 # 45-verify-health.ps1 -- Verify FalconPulsar containers are running.
 #

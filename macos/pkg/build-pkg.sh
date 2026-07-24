@@ -1,4 +1,7 @@
 #!/bin/bash
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (c) 2026 FalconPulsar Contributors
+
 # =============================================================================
 # build-pkg.sh — Build the macOS .pkg installer from the bash scripts.
 #

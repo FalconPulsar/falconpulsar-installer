@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (c) 2026 FalconPulsar Contributors
+
 # =============================================================================
 # 30-configure-distro.ps1 -- Configure systemd inside the WSL distro.
 #

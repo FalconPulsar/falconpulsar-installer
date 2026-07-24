@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) 2026 FalconPulsar Contributors
+
 // Package auth prompts for admin credentials and enforces role checks.
 package auth
 

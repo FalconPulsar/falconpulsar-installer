@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) 2026 FalconPulsar Contributors
+
 // endpoints.go — local endpoint URLs for the stack's published ports.
 //
 // The installers let the operator remap the published host ports

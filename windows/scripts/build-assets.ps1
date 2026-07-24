@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (c) 2026 FalconPulsar Contributors
+
 # =============================================================================
 # build-assets.ps1 -- Generate Inno Setup wizard images from falcon-logo.png.
 #

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (c) 2026 FalconPulsar Contributors
+
 # =============================================================================
 # 40-run-fp-installer.ps1 -- Run the bundled bash installer inside WSL.
 #

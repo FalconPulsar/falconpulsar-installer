@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) 2026 FalconPulsar Contributors
+
 // Package main is the Windows-side `fp.exe` launcher.
 //
 // FalconPulsar's real `fp` CLI is a Linux binary that lives inside the user's

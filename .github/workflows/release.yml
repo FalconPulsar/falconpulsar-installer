@@ -29,7 +29,7 @@ jobs:
     outputs:
       tag: ${{ github.ref_name }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Bundle Linux installer
         run: |
@@ -71,7 +71,7 @@ jobs:
       # Publishing both was noise -- 16 assets became 14 meaningful ones.
 
       - name: Upload bundles
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
           name: bundles-shell
           path: dist/
@@ -113,10 +113,10 @@ jobs:
             suffix: windows-amd64
             ext: .exe
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: '1.22'
           cache-dependency-path: console/go.sum
@@ -142,7 +142,7 @@ jobs:
           ls -lh "dist/fp-${{ matrix.suffix }}${{ matrix.ext }}"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
           name: fp-${{ matrix.suffix }}
           path: console/dist/fp-${{ matrix.suffix }}${{ matrix.ext }}
@@ -153,15 +153,15 @@ jobs:
     name: build windows installer .exe
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Setup .NET 8
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
         with:
           dotnet-version: '8.0.x'
 
       - name: Setup Go (for fp console CLI)
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: '1.22'
           cache-dependency-path: console/go.sum
@@ -264,7 +264,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Upload .exe
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
           name: bundles-windows
           path: windows/Output/*.exe
@@ -273,10 +273,10 @@ jobs:
     name: build macOS DMG (signed + notarized)
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Setup Go (for fp console CLI bundled in the DMG)
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: '1.22'
           cache-dependency-path: console/go.sum
@@ -414,7 +414,7 @@ jobs:
           rm -f "$RUNNER_TEMP/notary/AuthKey.p8" 2>/dev/null || true
 
       - name: Upload DMG
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
           name: bundles-macos
           path: dist/FalconPulsar-Setup*.dmg
@@ -444,13 +444,13 @@ jobs:
       actions: write   # dispatch prune-releases.yml after publishing
     steps:
       - name: Download shell bundles
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
         with:
           name: bundles-shell
           path: dist/
 
       - name: Download windows .exe
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
         with:
           name: bundles-windows
           path: dist/
@@ -460,7 +460,7 @@ jobs:
       # without a DMG. Users on macOS can still install via the bundled
       # install-macos.sh which IS in bundles-shell.
       - name: Download macOS DMG (best-effort)
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
         if: needs.build-macos-dmg.result == 'success'
         continue-on-error: true
         with:
@@ -471,7 +471,7 @@ jobs:
       # build-fp-binaries. Use pattern + merge-multiple so they all
       # land flat in dist/ alongside the .sh / .exe / .dmg files.
       - name: Download fp binaries
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
         with:
           pattern: fp-*
           path: dist/

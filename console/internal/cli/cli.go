@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) 2026 FalconPulsar Contributors
+
 // Package cli wires up cobra subcommands for `fp`.
 package cli
 
@@ -30,7 +33,7 @@ import (
 // the actual git tag; unstamped local builds (`go run ./cmd/fp`) fall
 // back to whatever this literal currently says — slightly stale but
 // not misleading.
-var Version = "0.1.4-alpha.51"
+var Version = "0.1.4-alpha.52"
 
 // Root returns the top-level `fp` command (with all subcommands registered).
 // If invoked with no subcommand or explicit `tui`, the caller should launch

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) 2026 FalconPulsar Contributors
+
 // Package configbackup implements the .fpconfig file format — the cross-platform
 // FalconPulsar configuration backup. File format (binary) is identical to the
 // macOS Swift and Windows C# implementations. See ConfigBackup.swift /
@@ -230,7 +233,7 @@ func Export(ctx context.Context, output string, cli *api.Client, user, pass stri
 	// manifest.json
 	manifest := map[string]any{
 		"format_version":       FormatVersion,
-		"falconpulsar_version": "0.1.4-alpha.51",
+		"falconpulsar_version": "0.1.4-alpha.52",
 		"exported_at":          time.Now().UTC().Format(time.RFC3339),
 		"source_host":          hostname(),
 		"source_platform":      runtime.GOOS,

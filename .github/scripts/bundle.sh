@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (c) 2026 FalconPulsar Contributors
+
 # =============================================================================
 # bundle.sh — produce a single self-contained install/uninstall script.
 #
@@ -52,6 +55,8 @@ GATEWAY_YAML="${REPO_ROOT}/shared/gateway.yaml"
 # ── Header ──────────────────────────────────────────────────────────────────
 cat <<'BUNDLE_HEADER'
 #!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (c) 2026 FalconPulsar Contributors
 # =============================================================================
 # FalconPulsar — bundled installer (auto-generated, do not edit by hand)
 # =============================================================================

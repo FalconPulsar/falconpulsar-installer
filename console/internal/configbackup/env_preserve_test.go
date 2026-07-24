@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) 2026 FalconPulsar Contributors
+
 package configbackup
 
 import (
@@ -81,10 +84,10 @@ func TestSanitizePreservesHostPaths(t *testing.T) {
 
 	// The backup's .env (from the Mac) now overwrites the file verbatim.
 	macBackup := "FP_ADMIN_USER=admin\n" +
-		"FP_DATA_DIR=/Users/icterusicterus/falconpulsar/data\n" +
-		"FP_GATEWAY_DATA_DIR=/Users/icterusicterus/falconpulsar/ai-gateway-data\n" +
-		"FP_ENGINE_DATA_DIR=/Users/icterusicterus/falconpulsar/ai-engine-data\n" +
-		"FP_GATEWAY_CONFIG=/Users/icterusicterus/falconpulsar/gateway.yaml\n" +
+		"FP_DATA_DIR=/Users/exampleuser/falconpulsar/data\n" +
+		"FP_GATEWAY_DATA_DIR=/Users/exampleuser/falconpulsar/ai-gateway-data\n" +
+		"FP_ENGINE_DATA_DIR=/Users/exampleuser/falconpulsar/ai-engine-data\n" +
+		"FP_GATEWAY_CONFIG=/Users/exampleuser/falconpulsar/gateway.yaml\n" +
 		"FP_UID=501\n" +
 		"FP_GID=20\n" +
 		"FP_REST_PORT=7433\n" +
@@ -117,7 +120,7 @@ func TestSanitizePreservesHostPaths(t *testing.T) {
 			t.Errorf("%s = %q, want target value %q (must not transplant the backup's)", k, m[k], want)
 		}
 	}
-	if strings.Contains(string(out), "/Users/icterusicterus") {
+	if strings.Contains(string(out), "/Users/exampleuser") {
 		t.Error("no macOS host path may survive into the restored .env")
 	}
 

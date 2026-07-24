@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) 2026 FalconPulsar Contributors
+
 // fp is the FalconPulsar control CLI.
 //
 //	fp                  Launch the Midnight-Commander-style TUI

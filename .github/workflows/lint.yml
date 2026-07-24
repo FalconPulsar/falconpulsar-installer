@@ -34,7 +34,7 @@ jobs:
     name: shellcheck
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Install shellcheck
         run: sudo apt-get update && sudo apt-get install -y shellcheck
@@ -68,7 +68,7 @@ jobs:
     name: embedded WSL bash (in PowerShell)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
       # The Windows installer runs bash inside WSL by generating scripts as
       # PowerShell here-strings. shellcheck on standalone *.sh never sees them,
       # so a quoting/CRLF bug there only surfaced when a user ran the installer
@@ -80,7 +80,7 @@ jobs:
     name: validate compose.yml
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Validate shared/compose.yml
         # Use docker compose config which fully parses + validates
@@ -99,7 +99,7 @@ jobs:
     name: version sites match VERSION
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Run sync-version.sh in check mode
         # The VERSION file at the repo root is the single source of truth.
@@ -113,7 +113,7 @@ jobs:
     name: bundles contain their script bodies
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
       - name: Build and verify the release bundles
         # bundle.sh extracts each top-level script's body with an awk

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (c) 2026 FalconPulsar Contributors
+
 # =============================================================================
 # 20-install-distro.ps1 -- Ensure a compatible Linux distro is installed
 #                        inside WSL2.

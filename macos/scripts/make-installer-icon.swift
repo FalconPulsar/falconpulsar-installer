@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) 2026 FalconPulsar Contributors
+
 // Composites the falcon logo with a blue "download arrow" badge to produce a
 // 1024x1024 installer-icon PNG used as both the DMG volume icon and the
 // Installer.app icon. Usage: swift make-installer-icon.swift <logo.png> <out.png>

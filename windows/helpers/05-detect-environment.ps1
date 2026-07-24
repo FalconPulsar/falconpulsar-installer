@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (c) 2026 FalconPulsar Contributors
+
 # =============================================================================
 # 05-detect-environment.ps1 -- Detect WSL, distros, Docker Desktop state.
 #

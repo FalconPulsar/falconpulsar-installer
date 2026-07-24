@@ -101,7 +101,7 @@ It's harmless to leave in place; we might use it later if we grow a
 6. For `APPLE_SIGNING_IDENTITY`, copy the exact CN:
 
        security find-identity -v -p codesigning login.keychain
-       # → "Developer ID Application: PEDRO FERNANDO RUIZ LEON (CX9ZB43HG5)"
+       # → "Developer ID Application: YOUR NAME OR TEAM (XXXXXXXXXX)"
 
 ### 2b. Generating the App Store Connect API key
 

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (c) 2026 FalconPulsar Contributors
+
 # =============================================================================
 # 06-detect-existing-install.ps1 -- Probe Windows + WSL state for any prior
 # FalconPulsar install (successful, failed, partial, or zombie).
