@@ -45,6 +45,16 @@ set -o errexit
 set -o nounset
 set -o pipefail
 
+# Fail fast when not root: this installer creates the falconpulsar system
+# user, installs Docker, and writes under /home/falconpulsar. Without this
+# check a non-root run used to die confusingly mid-flow at useradd.
+if [ "$(id -u)" -ne 0 ]; then
+    echo "ERROR: this installer must run as root." >&2
+    echo "       Try:  curl -fsSL https://get.falconpulsar.com/linux | sudo bash" >&2
+    echo "       Or:   sudo bash $0" >&2
+    exit 1
+fi
+
 # Resolve script directory (works whether invoked directly or via curl|sh)
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"

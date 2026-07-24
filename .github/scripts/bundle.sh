@@ -61,6 +61,25 @@ cat <<'BUNDLE_HEADER'
 #   https://github.com/FalconPulsar/falconpulsar-installer
 # =============================================================================
 
+# ── Bash guard (POSIX-only up to here) ──────────────────────────────────────
+# This installer uses bash features throughout (arrays, [[ ]], local, …).
+# The shebang above is BYPASSED when a shell is named explicitly
+# (`sh install-linux.sh` — dash on Debian/Ubuntu) or when piped
+# (`curl … | sh`), which used to die with a cryptic
+#   Syntax error: "(" unexpected
+# the moment dash parsed the first bash array. Re-exec under bash when we
+# were started from a file; when piped into a non-bash shell there is no
+# file to re-exec, so fail with the exact command to run instead.
+if [ -z "${BASH_VERSION:-}" ]; then
+    if [ -f "$0" ]; then
+        exec bash "$0" "$@"
+    fi
+    echo "ERROR: this installer requires bash (it was piped into a POSIX sh)." >&2
+    echo "       Run it with bash instead:" >&2
+    echo "         curl -fsSL https://get.falconpulsar.com/linux | sudo bash" >&2
+    exit 1
+fi
+
 set -o errexit
 set -o nounset
 set -o pipefail
