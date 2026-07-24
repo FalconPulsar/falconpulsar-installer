@@ -51,3 +51,13 @@ venv/
 
 # Internal dev-only tools (root only — Go's console/internal/ is meant to ship)
 /internal/
+
+# ── AI assistant: local session files & context (never commit) ──
+# Cursor / SpecStory — per-chat transcripts saved into the repo
+.specstory/
+# Cursor — local editor/project state (shared project rules stay tracked)
+.cursor/*
+!.cursor/rules/
+# Grok CLI (xAI) — in-project data: generated media, session traces, config
+.grok/
+.grok-cli/
