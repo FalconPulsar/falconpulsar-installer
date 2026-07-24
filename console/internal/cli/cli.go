@@ -30,7 +30,7 @@ import (
 // the actual git tag; unstamped local builds (`go run ./cmd/fp`) fall
 // back to whatever this literal currently says — slightly stale but
 // not misleading.
-var Version = "0.1.4-alpha.49"
+var Version = "0.1.4-alpha.50"
 
 // Root returns the top-level `fp` command (with all subcommands registered).
 // If invoked with no subcommand or explicit `tui`, the caller should launch

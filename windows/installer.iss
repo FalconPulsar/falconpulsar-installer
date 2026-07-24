@@ -46,7 +46,7 @@
 ;               below, which scripts/sync-version.sh keeps in sync with
 ;               the repo-root VERSION file (CI lint enforces no drift).
 #ifndef MyAppVersion
-  #define MyAppVersion "0.1.4-alpha.49"
+  #define MyAppVersion "0.1.4-alpha.50"
 #endif
 #define MyAppPublisher   "FalconPulsar Contributors"
 #define MyAppURL         "https://github.com/FalconPulsar/falconpulsar-installer"
@@ -1798,8 +1798,16 @@ var
   IntroLabel: TNewStaticText;
   Y: Integer;
 begin
+  // Anchor AFTER the Existing-install page, NOT wpWelcome. Inno inserts a
+  // new page IMMEDIATELY after its anchor, so with both pages anchored at
+  // wpWelcome the page created LAST lands FIRST — the old code produced
+  // Welcome -> Legal -> Registry -> Existing, which put the Upgrade choice
+  // AFTER the very pages ShouldSkipPage is supposed to skip for it (the
+  // user re-answered Legal + Registry on every upgrade). Anchoring to
+  // ExistingPage.ID pins the canonical order structurally:
+  //   Welcome -> Existing (skipped when no prior) -> Legal -> ...
   LegalPage := CreateCustomPage(
-    wpWelcome,
+    ExistingPage.ID,
     'Before you install',
     'Please review and accept the FalconPulsar legal terms');
 
@@ -2215,8 +2223,13 @@ begin
   WizardForm.StatusLabel.Caption := '';
 
   // Create all pages. CreateExistingInstallPage MUST run before
-  // CreateLegalPage (both anchor after wpWelcome; creation order decides)
-  // so the flow ends up on the canonical sequence:
+  // CreateLegalPage because LegalPage anchors to ExistingPage.ID (the ID
+  // must exist first). NOTE Inno inserts each new page IMMEDIATELY after
+  // its anchor — with a SHARED anchor the page created last lands first,
+  // which is exactly the bug that used to put Legal + Registry BEFORE the
+  // Existing page (so upgrades re-answered them; the ShouldSkipPage skips
+  // only apply to pages that come after the Upgrade choice). The explicit
+  // ExistingPage.ID anchor pins the canonical sequence structurally:
   //   Welcome -> ExistingInstall (skipped if none) -> Legal
   //   -> Distro (if 2+) -> Registry -> Directory -> Tasks
   //   -> Credentials (anchored after wpSelectTasks; always the last
