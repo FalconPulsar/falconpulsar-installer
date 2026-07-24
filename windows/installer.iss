@@ -46,7 +46,7 @@
 ;               below, which scripts/sync-version.sh keeps in sync with
 ;               the repo-root VERSION file (CI lint enforces no drift).
 #ifndef MyAppVersion
-  #define MyAppVersion "0.1.4-alpha.47"
+  #define MyAppVersion "0.1.4-alpha.48"
 #endif
 #define MyAppPublisher   "FalconPulsar Contributors"
 #define MyAppURL         "https://github.com/FalconPulsar/falconpulsar-installer"
@@ -2448,26 +2448,26 @@ begin
       Result := True;
   end;
 
-  // Only skip the setup pages when upgrading in place. We still show the
-  // credentials page so the user can type the existing admin password —
-  // install.sh will verify it against Core before overwriting the stack.
+  // Upgrade-in-place skips every setup page: legal was accepted at install
+  // (the handoff exports FP_LEGAL_ACCEPTED=1), registry + engine opt-in ride
+  // in the stack's .env, the install directory is fixed by the existing
+  // install (Inno restores it via AppId), and — matching the tray's Apply
+  // Now and the macOS installer, neither of which asks for a password — the
+  // admin-auth gate is waived for upgrades (the handoff exports FP_FORCE=1).
+  // Reinstall and Fresh keep their pages: they can overwrite or destroy a
+  // running stack, so the credentials gate still applies there.
   if IsUpgrade and (InstallAction = 'upgrade') then
   begin
     if (LegalPage <> nil) and (PageID = LegalPage.ID) then
       Result := True;
     if (RegistryPage <> nil) and (PageID = RegistryPage.ID) then
       Result := True;
-    // Destination + Additional Tasks add nothing on an upgrade: the install
-    // directory is fixed by the existing install (Inno restores it via
-    // AppId), and the AI Engine opt-in is sticky — the upgrade handoff
-    // deliberately does NOT export FP_AI_ENGINE_ENABLED, so the stack's
-    // .env value carries forward regardless of the checkbox.
     if PageID = wpSelectDir then
       Result := True;
     if PageID = wpSelectTasks then
       Result := True;
-    // Credentials page intentionally NOT skipped on upgrade — we need the
-    // user to enter the existing admin password for auth verification.
+    if (CredentialsPage <> nil) and (PageID = CredentialsPage.ID) then
+      Result := True;
   end;
   // Reinstall skips legal (already accepted) but shows registry + credentials
   if IsUpgrade and (InstallAction = 'reinstall') then

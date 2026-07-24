@@ -70,12 +70,20 @@ try {
 . (Join-Path $PSScriptRoot 'lib.ps1')
 
 # Manually validate the params we used to mark Mandatory.
+# Admin credentials are NOT required for an in-place upgrade: the wizard
+# skips the credentials page (the upgrade neither creates an admin nor
+# re-authorizes — matching the tray's Apply Now and the macOS installer),
+# so AdminUser/AdminPass legitimately arrive empty with -InstallAction
+# 'upgrade'. Reinstall/fresh still require them.
 foreach ($pair in @(
     @{Name='Distro';      Value=$Distro},
     @{Name='InstallDir';  Value=$InstallDir},
     @{Name='AdminUser';   Value=$AdminUser},
     @{Name='AdminPass';   Value=$AdminPass}
 )) {
+    if (($pair.Name -eq 'AdminUser' -or $pair.Name -eq 'AdminPass') -and $InstallAction -eq 'upgrade') {
+        continue
+    }
     if ([string]::IsNullOrEmpty($pair.Value)) {
         Stop-WithError "Required parameter -$($pair.Name) was not provided (got empty string)."
     }
@@ -213,7 +221,7 @@ $userSentinel = Join-Path $env:TEMP 'falconpulsar-user.txt'
 Set-Content -Path $userSentinel -Value $WslUser -Encoding ASCII
 Write-Info "Sentinels written: $homeSentinel, $userSentinel"
 
-if ($AdminPass.Length -lt 10) {
+if ($InstallAction -ne 'upgrade' -and $AdminPass.Length -lt 10) {
     Stop-WithError 'Admin password is shorter than 10 characters (the credentials page should have caught this)'
 }
 
@@ -317,6 +325,14 @@ export FP_REGISTRY_SKIP='$upgRegSkip'
 export FP_INSTALL_ACTION='upgrade'
 export FP_COOKIE_SECURE='$CookieSecure'
 export FP_INVOKING_USER='$WslUser'
+# Waive install.sh's admin-authorization gate for in-place upgrades: the
+# wizard no longer collects credentials for them (an upgrade neither
+# creates an admin nor destroys data), matching the tray's Apply Now and
+# the macOS installer. With no creds and no TTY the gate would otherwise
+# try an interactive prompt and abort. Reinstall/fresh do NOT set this —
+# they still authorize with the admin password. FP_FORCE gates ONLY the
+# auth block (verified: its sole use in linux/ + macos/install.sh).
+export FP_FORCE=1
 FPEOF
 . "`$ENVFILE"
 rm -f "`$ENVFILE"
@@ -329,6 +345,17 @@ bash /opt/falconpulsar-installer/linux/install.sh --user '$WslUser' --mode docke
     }
     Write-Output '[ok] FalconPulsar upgraded inside WSL'
     exit 0
+}
+# 'upgrade' was chosen but the stack doesn't qualify for in-place delegation
+# (legacy service-user layout, or the install vanished since the wizard ran).
+# The full-install path below needs admin credentials, which the wizard no
+# longer collects for upgrades -- fail with directions instead of running a
+# credential-less full install.
+if ($InstallAction -eq 'upgrade' -and [string]::IsNullOrEmpty($AdminPass)) {
+    Stop-WithError ("This installation needs a full migration rather than an in-place upgrade " +
+        "(legacy layout, or the existing stack could not be found). Re-run the installer and " +
+        "choose 'Reinstall (keep data)' -- that flow collects the admin credentials the " +
+        "migration requires.")
 }
 if ($hasLegacyInstall) {
     Write-Info 'Legacy (service-user) install detected -- will migrate to per-user layout'
