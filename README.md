@@ -13,10 +13,16 @@
 ![status](https://img.shields.io/badge/status-pre--release-orange)
 [![license](https://img.shields.io/badge/license-AGPL%20v3-blue)](LICENSE)
 
-> **Badges:** lint / test-linux / build-macos / build-windows SVGs are
-> GitHub Actions badges. **Latest release** is live from a public gist,
-> updated by the prune-releases workflow on every release. This repo is the
-> installer only — no Docker Scout image badge.
+![Designed by Humans · Built with AI](https://img.shields.io/badge/Designed_by_Humans-·_Built_with_AI-6E56CF)
+![AI pair-programmers: Claude & Grok](https://img.shields.io/badge/AI_pair--programmers-Claude_·_Grok-6E56CF)
+
+## Designed by humans · Built with AI
+
+Every architectural decision, design choice, and product direction in
+FalconPulsar is made and owned by its human maintainers. Implementation is
+accelerated with AI coding assistants — primarily **Claude** (Anthropic) and
+**Grok** (xAI) — and all code is human-directed, human-reviewed, and
+human-approved before it ships.
 
 This repository contains the installers that take a fresh Linux, macOS, or
 Windows machine from zero to a running FalconPulsar **plant stack**. **This
