@@ -524,6 +524,12 @@ func ApplyUpdates(ctx context.Context, stdout, stderr io.Writer) error {
 		cmd.Env = append(dockerEnv(),
 			"FP_INSTALL_ACTION=upgrade",
 			"FP_ASSUME_YES=1",
+			// Waive install.sh's admin-auth gate: FP_ASSUME_YES does NOT
+			// cover it (only the Core-unreachable branch), so a headless
+			// apply would die at the interactive password prompt. Upgrades
+			// don't require re-auth anywhere else (tray Apply Now, the GUI
+			// installers as of alpha.47/48) — keep this path consistent.
+			"FP_FORCE=1",
 			"FP_HOME="+HomeDir(),
 		)
 		cmd.Stdout = stdout

@@ -286,7 +286,14 @@ else
 fi
 
 # ── Legal acknowledgement (must come before any system change) ──────────────
-prompt_legal_acknowledgement
+# Skipped for an in-place upgrade (alpha.47 parity with the macOS/Windows
+# GUIs): the terms were accepted at install, and the upgrade fast-path only
+# pulls + restarts. If the fast-path FALLS THROUGH to the full installer,
+# the acknowledgement is collected at that point instead (see below) — a
+# terminal can re-prompt mid-flow, unlike the GUI wizards.
+if [ "${FP_INSTALL_ACTION:-}" != "upgrade" ]; then
+    prompt_legal_acknowledgement
+fi
 
 # ── Preflight: install missing base tools (curl, sg, hostname, useradd, …) ──
 # Minimal Ubuntu / Debian / RHEL / openSUSE cloud images don't ship the
@@ -330,8 +337,15 @@ if fp_has_existing_install; then
     # e.g. CI workflows pre-create the user's home dir).
     # Non-interactive path: if FP_ADMIN_PASS is in env, verify once
     # (FP_ADMIN_USER defaults to "admin"). Otherwise prompt interactively.
+    # Upgrades are exempt (alpha.48 parity): an in-place upgrade neither
+    # creates an admin nor destroys data, and `fp update --apply` already
+    # performs the identical operation with no password. Reinstall keeps
+    # the gate — it rewrites the stack files over a running install. This
+    # also fixes headless `--yes` upgrades, which previously died at the
+    # interactive password prompt when Core was up and no FP_ADMIN_PASS
+    # was exported.
     if [ "${FP_FORCE:-0}" != "1" ] && \
-       { [ "${FP_INSTALL_ACTION:-}" = "upgrade" ] || [ "${FP_INSTALL_ACTION:-}" = "reinstall" ]; } && \
+       [ "${FP_INSTALL_ACTION:-}" = "reinstall" ] && \
        [ -f "${FP_HOME}/compose.yml" ] && \
        [ -f "${REPO_ROOT}/shared/lib/auth.sh" ]; then
         log_step "authorizing ${FP_INSTALL_ACTION}"
@@ -383,6 +397,13 @@ if fp_has_existing_install; then
         fp_install_cli "$FP_HOME" "${FP_VERSION:-0.1.0}"
         chown -R "${FP_USER}:${FP_USER}" "${FP_HOME}/bin" 2>/dev/null || true
         exit 0
+    fi
+
+    # The fast-path fell through to the FULL installer, which reconfigures
+    # the stack — collect the Legal acknowledgement that the upgrade path
+    # skipped above (still honors FP_LEGAL_ACCEPTED / --yes for headless).
+    if [ "${FP_INSTALL_ACTION:-}" = "upgrade" ]; then
+        prompt_legal_acknowledgement
     fi
 fi
 

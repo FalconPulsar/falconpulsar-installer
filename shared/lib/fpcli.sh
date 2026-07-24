@@ -47,6 +47,11 @@ fp_install_cli() {
     # how the macOS DMG and the Windows installer ship fp; this branch keeps
     # install working even when GitHub is unreachable.
     if [ -n "${FP_LOCAL_FP_BINARY:-}" ] && [ -f "${FP_LOCAL_FP_BINARY}" ]; then
+        # Unlink first: overwriting a currently-executing binary in place
+        # fails with ETXTBSY on Linux (e.g. an open fp TUI during an
+        # upgrade). Removing the path lets the running process keep its
+        # old inode while the new file lands cleanly.
+        rm -f "${dest}"
         cp "${FP_LOCAL_FP_BINARY}" "${dest}"
         chmod +x "${dest}"
         log_success "fp CLI installed at ${dest} (from bundled binary)"
@@ -119,6 +124,10 @@ fp_download_release_asset() {
             fi
             local public_url="https://github.com/${repo}/releases/download/${tag}/${asset}"
             local dl_code
+            # Unlink first — ETXTBSY if a running fp holds this inode; a
+            # failed in-place write could otherwise still report HTTP 200
+            # and leave the OLD binary behind as a silent "success".
+            rm -f "$dest"
             dl_code="$(curl -sSL -o "$dest" -w "%{http_code}" "$public_url" 2>/dev/null || true)"
             if [ "$dl_code" = "200" ]; then
                 return 0
@@ -332,6 +341,7 @@ fp_download_with_pat() {
         # -L follows the redirect to objects.github; we explicitly ask for
         # octet-stream so the API hands back the binary, not JSON metadata.
         local dl_code
+        rm -f "$dest"   # unlink first — see the ETXTBSY note in fp_install_cli
         dl_code="$(curl -sSL -o "$dest" -w '%{http_code}' \
             -H "Authorization: token ${FP_GITHUB_TOKEN}" \
             -H "Accept: application/octet-stream" \

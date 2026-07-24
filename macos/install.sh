@@ -230,7 +230,13 @@ else
 fi
 
 # ── Legal acknowledgement (must come before any system change) ──────────────
-prompt_legal_acknowledgement
+# Skipped for an in-place upgrade (alpha.47 parity with the GUI installers):
+# the terms were accepted at install, and the upgrade fast-path only pulls +
+# restarts. If the fast-path FALLS THROUGH to the full installer, the
+# acknowledgement is collected at that point instead (see below).
+if [ "${FP_INSTALL_ACTION:-}" != "upgrade" ]; then
+    prompt_legal_acknowledgement
+fi
 
 # ── Existing installation: authorize + apply the chosen action ─────────────
 # The Upgrade/Reinstall/Fresh choice was collected before Legal (read-only
@@ -256,8 +262,13 @@ if fp_has_existing_install; then
     #     3 attempts.
     # Both paths treat Core-unreachable as "fall back to YES confirmation"
     # (or automatic pass when --yes / FP_ASSUME_YES=1).
+    # Upgrades are exempt (alpha.48 parity): an in-place upgrade neither
+    # creates an admin nor destroys data, and both the tray's Apply Now and
+    # `fp update --apply` already perform the identical operation with no
+    # password. Reinstall keeps the gate — it rewrites the stack files over
+    # a running install.
     if [ "${FP_FORCE:-0}" != "1" ] && \
-       { [ "${FP_INSTALL_ACTION:-}" = "upgrade" ] || [ "${FP_INSTALL_ACTION:-}" = "reinstall" ]; } && \
+       [ "${FP_INSTALL_ACTION:-}" = "reinstall" ] && \
        [ -f "${FP_HOME}/compose.yml" ] && \
        [ -f "${REPO_ROOT}/shared/lib/auth.sh" ]; then
         log_step "authorizing ${FP_INSTALL_ACTION}"
@@ -307,6 +318,13 @@ if fp_has_existing_install; then
         log_success "Upgrade complete."
         fp_install_cli "$FP_HOME" "${FP_VERSION:-0.1.0}"
         exit 0
+    fi
+
+    # The fast-path fell through to the FULL installer, which reconfigures
+    # the stack — collect the Legal acknowledgement that the upgrade path
+    # skipped above (still honors FP_LEGAL_ACCEPTED / --yes for headless).
+    if [ "${FP_INSTALL_ACTION:-}" = "upgrade" ]; then
+        prompt_legal_acknowledgement
     fi
 fi
 
