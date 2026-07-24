@@ -295,6 +295,15 @@ namespace FalconPulsar.Tray
                     if (File.Exists(src))
                         File.Copy(src, Path.Combine(filesDir, name), overwrite: true);
                 }
+                // AI Gateway configuration (providers + models + their encrypted
+                // API keys) lives in the gateway's ai_config.db under
+                // ai-gateway-data, NOT the Core DB. Ship it so AI config restores
+                // ready-to-use; keys stay Fernet-encrypted with FP_GATEWAY_SECRET
+                // (carried in the restored .env). FalconPulsarHomeDir is a
+                // \\wsl.localhost UNC path on Windows, so this reads it in-place.
+                var aiCfgSrc = Path.Combine(FalconPulsarHomeDir, "ai-gateway-data", "ai_config.db");
+                if (File.Exists(aiCfgSrc))
+                    File.Copy(aiCfgSrc, Path.Combine(filesDir, "ai_config.db"), overwrite: true);
 
                 var apiDir = Path.Combine(workDir, "api");
                 Directory.CreateDirectory(apiDir);
@@ -474,6 +483,17 @@ namespace FalconPulsar.Tray
                         var dst = Path.Combine(FalconPulsarHomeDir, name);
                         if (File.Exists(src))
                             File.Copy(src, dst, overwrite: true);
+                    }
+                    // AI Gateway config DB → restore into ai-gateway-data so
+                    // providers, models, and their encrypted keys come back. The
+                    // gateway reads it at startup, so it applies on the next stack
+                    // restart (the "Restart Stack" prompt after import covers it).
+                    var aiCfgSrc = Path.Combine(filesDir, "ai_config.db");
+                    if (File.Exists(aiCfgSrc))
+                    {
+                        var aiCfgDir = Path.Combine(FalconPulsarHomeDir, "ai-gateway-data");
+                        Directory.CreateDirectory(aiCfgDir);
+                        File.Copy(aiCfgSrc, Path.Combine(aiCfgDir, "ai_config.db"), overwrite: true);
                     }
 
                     // Fix up the restored .env: force FP_AI_GATEWAY_ENABLED to

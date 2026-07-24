@@ -365,6 +365,14 @@ enum ConfigBackup {
                 try fm.copyItem(atPath: src, toPath: "\(filesDir)/\(name)")
             }
         }
+        // AI Gateway configuration (providers + models + their encrypted API
+        // keys) lives in the gateway's ai_config.db under ai-gateway-data, NOT
+        // the Core DB. Ship it so AI config restores ready-to-use; the keys stay
+        // Fernet-encrypted with FP_GATEWAY_SECRET (carried in the restored .env).
+        let aiCfgSrc = "\(homeDir)/ai-gateway-data/ai_config.db"
+        if fm.fileExists(atPath: aiCfgSrc) {
+            try fm.copyItem(atPath: aiCfgSrc, toPath: "\(filesDir)/ai_config.db")
+        }
 
         // API harvest. The list mirrors backup.go in console/. Each section
         // is fetched via harvestPaginated() which walks has_more / next_offset
@@ -468,6 +476,17 @@ enum ConfigBackup {
                     try? fm.removeItem(atPath: dst)
                     try fm.copyItem(atPath: src, toPath: dst)
                 }
+            }
+            // AI Gateway config DB → restore into ai-gateway-data so providers,
+            // models, and their encrypted keys come back. The gateway reads it at
+            // startup, so it applies on the next stack restart (prompted below).
+            let aiCfgSrc = "\(filesDir)/ai_config.db"
+            if fm.fileExists(atPath: aiCfgSrc) {
+                let aiCfgDir = "\(homeDir)/ai-gateway-data"
+                try? fm.createDirectory(atPath: aiCfgDir, withIntermediateDirectories: true)
+                let aiCfgDst = "\(aiCfgDir)/ai_config.db"
+                try? fm.removeItem(atPath: aiCfgDst)
+                try fm.copyItem(atPath: aiCfgSrc, toPath: aiCfgDst)
             }
             sanitizeRestoredEnv(preserved: preservedEnv)
         }

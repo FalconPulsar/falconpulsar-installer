@@ -18,6 +18,7 @@
 //	files/compose.yml            ← docker compose for the FalconPulsar stack
 //	files/.env                   ← env vars (may contain secrets)
 //	files/gateway.yaml           ← AI Gateway config seed
+//	files/ai_config.db           ← AI Gateway providers + models + encrypted keys
 //	api/roles.json               ← GET /api/v1/roles
 //	api/users.json               ← GET /api/v1/users
 //	api/asset-types.json         ← GET /api/v1/asset-types       (NEW in v2)
@@ -229,7 +230,7 @@ func Export(ctx context.Context, output string, cli *api.Client, user, pass stri
 	// manifest.json
 	manifest := map[string]any{
 		"format_version":       FormatVersion,
-		"falconpulsar_version": "0.1.4-alpha.44",
+		"falconpulsar_version": "0.1.4-alpha.45",
 		"exported_at":          time.Now().UTC().Format(time.RFC3339),
 		"source_host":          hostname(),
 		"source_platform":      runtime.GOOS,
@@ -246,6 +247,19 @@ func Export(ctx context.Context, output string, cli *api.Client, user, pass stri
 			if err := writeZipFile(zw, "files/"+name, data); err != nil {
 				return err
 			}
+		}
+	}
+
+	// AI Gateway configuration — providers, models, and their (Fernet-encrypted)
+	// API keys — lives in the gateway's ai_config.db under the ai-gateway-data
+	// volume, NOT the Core DB, so nothing above captures it. Ship it so a restore
+	// brings AI configuration back ready-to-use. The keys stay encrypted with
+	// FP_GATEWAY_SECRET (also carried in the restored .env), and the whole
+	// .fpconfig is AES-encrypted — defense in depth. Absent on a stack with no
+	// AI config yet, or a custom gateway data dir → skipped.
+	if data, err := os.ReadFile(filepath.Join(home, "ai-gateway-data", "ai_config.db")); err == nil {
+		if err := writeZipFile(zw, "files/ai_config.db", data); err != nil {
+			return err
 		}
 	}
 
@@ -353,6 +367,15 @@ func Import(ctx context.Context, input string, cli *api.Client, user, pass strin
 			if err := extractTo(f, filepath.Join(home, name)); err != nil {
 				return summary, err
 			}
+		}
+	}
+	// AI Gateway config DB → restore into the ai-gateway-data volume so
+	// providers, models, and their encrypted keys come back. extractTo creates
+	// the parent dir. The gateway reads it at startup, so it takes effect on the
+	// next stack restart (the caller already tells the user to restart).
+	if f, ok := entries["files/ai_config.db"]; ok {
+		if err := extractTo(f, filepath.Join(home, "ai-gateway-data", "ai_config.db")); err != nil {
+			return summary, err
 		}
 	}
 	// Legacy back-compat: a backup taken on a pre-mandatory-gateway install
