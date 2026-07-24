@@ -269,8 +269,11 @@ namespace FalconPulsar.Tray
         {
             var menu = new ContextMenuStrip();
 
-            // Header — same assembly-version source as the About panel.
-            var header = new ToolStripMenuItem($"FalconPulsar v{AssemblyVersion}")
+            // Header — full semver (matches the macOS menu-bar header). Use
+            // TrayProductVersion, not AssemblyVersion: the latter is the numeric
+            // System.Version (0.1.4) which cannot carry the -alpha.NN suffix, so
+            // it rendered as "FalconPulsar v0.1.4" with the pre-release dropped.
+            var header = new ToolStripMenuItem($"FalconPulsar v{TrayProductVersion}")
             { Enabled = false };
             header.Font = new Font(header.Font, FontStyle.Bold);
             menu.Items.Add(header);
@@ -1556,7 +1559,7 @@ namespace FalconPulsar.Tray
             panel.Controls.Add(verPanel);
             verPanel.Controls.Add(new Label
             {
-                Text = $"Installer  v{AssemblyVersion}",
+                Text = $"Installer  v{TrayProductVersion}",   // full semver, incl. -alpha.NN
                 Font = new Font("Consolas", 10),
                 ForeColor = Color.FromArgb(200, 200, 200),
                 BackColor = Color.Transparent,
