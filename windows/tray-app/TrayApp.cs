@@ -1559,7 +1559,7 @@ namespace FalconPulsar.Tray
             panel.Controls.Add(verPanel);
             verPanel.Controls.Add(new Label
             {
-                Text = $"Installer  v{TrayProductVersion}",   // full semver, incl. -alpha.NN
+                Text = $"v{TrayProductVersion}",   // full semver; fits the pill, matches macOS
                 Font = new Font("Consolas", 10),
                 ForeColor = Color.FromArgb(200, 200, 200),
                 BackColor = Color.Transparent,
@@ -1674,7 +1674,9 @@ namespace FalconPulsar.Tray
             }
 
             // Links
-            int linksY = 340;
+            // Below the 2x2 component grid (row 1 version line ends ~y=350);
+            // was 340, which overlapped the Web UI / AI Capabilities versions.
+            int linksY = 365;
             var linkData = new[] {
                 ("Documentation", "https://falconpulsar.com/docs"),
                 ("Release Notes", "https://github.com/FalconPulsar/falconpulsar-installer/releases"),
