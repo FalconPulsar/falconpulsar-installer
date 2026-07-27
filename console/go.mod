@@ -1,6 +1,6 @@
 module github.com/falconpulsar/falconpulsar-installer/console
 
-go 1.22
+go 1.25
 
 require (
 	github.com/gdamore/tcell/v2 v2.7.4

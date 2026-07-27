@@ -118,7 +118,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: '1.22'
+          go-version: '1.25'
           cache-dependency-path: console/go.sum
 
       - name: Build fp
@@ -163,7 +163,7 @@ jobs:
       - name: Setup Go (for fp console CLI)
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: '1.22'
+          go-version: '1.25'
           cache-dependency-path: console/go.sum
 
       - name: Build fp.exe wrapper (launches Linux fp inside WSL)
@@ -278,7 +278,7 @@ jobs:
       - name: Setup Go (for fp console CLI bundled in the DMG)
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: '1.22'
+          go-version: '1.25'
           cache-dependency-path: console/go.sum
 
       # ── Apple signing + notarization setup ─────────────────────────────
