@@ -96,7 +96,7 @@ fp_detect_existing_install() {
 # "container name is already in use" — while a project-scoped `compose down`
 # cannot see it. Its omission is exactly what let that orphan slip past phantom
 # detection and break the upgrade.
-FP_RESERVED_CONTAINER_NAMES="falconpulsar-core falconpulsar-ui falconpulsar-ai-gateway falconpulsar-ai-engine"
+FP_RESERVED_CONTAINER_NAMES="falconpulsar-core falconpulsar-ui falconpulsar-ai-gateway falconpulsar-ai-engine falconpulsar-copilot"
 
 FP_PHANTOM_CONTAINERS=()
 fp_detect_phantom_containers() {
@@ -319,7 +319,7 @@ fp_apply_existing_action() {
                 # pre-mandatory-gateway stacks, "engine" for the optional
                 # ai-engine (without it the engine is left Up, stranding the
                 # network and blocking the recreate below).
-                ( cd "$home" && docker compose --profile ai --profile engine down 2>/dev/null ) || true
+                ( cd "$home" && docker compose --profile ai --profile engine --profile copilot down 2>/dev/null ) || true
             fi
             ;;
         fresh)
@@ -327,7 +327,7 @@ fp_apply_existing_action() {
             if [ -f "${home}/compose.yml" ]; then
                 # --profile ai --profile engine: see the reinstall note above —
                 # both profiles so the ai-engine is torn down too.
-                ( cd "$home" && docker compose --profile ai --profile engine down --remove-orphans --volumes 2>/dev/null ) || true
+                ( cd "$home" && docker compose --profile ai --profile engine --profile copilot down --remove-orphans --volumes 2>/dev/null ) || true
             fi
             # Best-effort image + orphan volume cleanup.
             # Image removal is gated by FP_REMOVE_CACHED_IMAGES so the user

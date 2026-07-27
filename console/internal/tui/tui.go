@@ -54,6 +54,11 @@ func buildSections() []menuSection {
 			_ = actions.OpenURL(actions.EngineURL())
 		}})
 	}
+	if actions.CopilotEnabled() {
+		stackItems = append(stackItems, menuItem{label: "Open Command Center", action: func(a *App) {
+			_ = actions.OpenURL(actions.CopilotURL())
+		}})
+	}
 	stackItems = append(stackItems,
 		menuItem{sep: true},
 		menuItem{label: "Refresh status", action: func(a *App) {
@@ -248,6 +253,10 @@ func (a *App) refreshServices() {
 		rows = append(rows, svcRow{"AI Engine", actions.EngineURL(),
 			stateLabel(a.status.Engine), dotColor(a.status.Engine), stateColor(a.status.Engine)})
 	}
+	if a.status.CopilotEnabled {
+		rows = append(rows, svcRow{"Command Center", actions.CopilotURL(),
+			stateLabel(a.status.Copilot), dotColor(a.status.Copilot), stateColor(a.status.Copilot)})
+	}
 
 	for i, r := range rows {
 		dot := tview.NewTableCell("●").SetAlign(tview.AlignCenter).SetTextColor(r.dotColor)
@@ -285,6 +294,10 @@ func (a *App) refreshDetails(row ...int) {
 	if a.status.EngineEnabled {
 		labels = append(labels, "AI Engine")
 		engineLine = "AI Engine    " + stateLabel(a.status.Engine) + "\n"
+	}
+	if a.status.CopilotEnabled {
+		labels = append(labels, "Command Center")
+		engineLine += "Command Center " + stateLabel(a.status.Copilot) + "\n"
 	}
 	if r < 0 || r >= len(labels) {
 		r = 0

@@ -1163,6 +1163,7 @@ var machineSpecificEnvKeys = []string{
 	"FP_DATA_DIR",
 	"FP_GATEWAY_DATA_DIR",
 	"FP_ENGINE_DATA_DIR",
+	"FP_COPILOT_DATA_DIR",
 	"FP_GATEWAY_CONFIG",
 	"FP_UID",
 	"FP_GID",

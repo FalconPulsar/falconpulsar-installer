@@ -26,6 +26,7 @@ const (
 	defaultUIPort      = "8080"
 	defaultGatewayPort = "7436"
 	defaultEnginePort  = "8085"
+	defaultCopilotPort = "8090"
 )
 
 // portFromEnv returns env[key] when it parses as a valid TCP port, and
@@ -72,6 +73,21 @@ func EngineURL() string {
 // any other value means disabled. Case-insensitive, whitespace-tolerant.
 func EngineEnabled() bool {
 	return strings.EqualFold(strings.TrimSpace(parseEnvFile()["FP_AI_ENGINE_ENABLED"]), "true")
+}
+
+// CopilotURL returns the optional Command Center UI base URL on this host,
+// honoring an FP_COPILOT_PORT remap in the stack's .env. Only meaningful
+// on installs where CopilotEnabled() reports true.
+func CopilotURL() string {
+	return "http://localhost:" + portFromEnv(parseEnvFile(), "FP_COPILOT_PORT", defaultCopilotPort)
+}
+
+// CopilotEnabled reports whether the optional Command Center service is
+// enabled on this install (FP_COPILOT_ENABLED=true in the stack's .env; the
+// installer also writes COMPOSE_PROFILES=copilot alongside it). Absent or
+// any other value means disabled. Case-insensitive, whitespace-tolerant.
+func CopilotEnabled() bool {
+	return strings.EqualFold(strings.TrimSpace(parseEnvFile()["FP_COPILOT_ENABLED"]), "true")
 }
 
 // NewAPIClient returns a REST client pointed at the local Core API,

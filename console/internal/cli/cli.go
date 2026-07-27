@@ -105,6 +105,9 @@ func cmdStatus() *cobra.Command {
 				if st.EngineEnabled {
 					payload["engine"] = st.Engine
 				}
+				if st.CopilotEnabled {
+					payload["copilot"] = st.Copilot
+				}
 				return enc.Encode(payload)
 			}
 			printRow := func(name string, ok bool, note string) {
@@ -123,6 +126,9 @@ func cmdStatus() *cobra.Command {
 			printRow("REST API", st.APIHealthy, actions.RestURL())
 			if st.EngineEnabled {
 				printRow("AI Engine", st.Engine, actions.EngineURL())
+			}
+			if st.CopilotEnabled {
+				printRow("Command Center", st.Copilot, actions.CopilotURL())
 			}
 			fmt.Printf("\nAggregate: %s\n", st.Aggregate())
 			if aiIncomplete {
@@ -193,8 +199,8 @@ func cmdLogs() *cobra.Command {
 
 func cmdOpen() *cobra.Command {
 	return &cobra.Command{
-		Use:   "open [ui|engine]",
-		Short: "Open the FalconPulsar Web UI (or AI Engine) in the default browser",
+		Use:   "open [ui|engine|copilot]",
+		Short: "Open the FalconPulsar Web UI (or AI Engine / Command Center) in the default browser",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			target := "ui"
@@ -206,8 +212,10 @@ func cmdOpen() *cobra.Command {
 				return actions.OpenURL(actions.UIURL())
 			case "engine", "ai": // "ai" kept as a familiar alias
 				return actions.OpenURL(actions.EngineURL())
+			case "copilot", "cc": // "cc" = Command Center alias
+				return actions.OpenURL(actions.CopilotURL())
 			default:
-				return fmt.Errorf("unknown target: %s (want: ui|engine)", target)
+				return fmt.Errorf("unknown target: %s (want: ui|engine|copilot)", target)
 			}
 		},
 	}

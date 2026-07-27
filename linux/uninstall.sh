@@ -446,7 +446,7 @@ if [ "$FP_PURGE" -eq 1 ]; then
     _fp_external_dirs=()
     if [ -f "${FP_HOME}/.env" ]; then
         _fp_home_abs="$(cd "${FP_HOME}" 2>/dev/null && pwd -P || echo "${FP_HOME}")"
-        for _fp_dvar in FP_DATA_DIR FP_GATEWAY_DATA_DIR FP_ENGINE_DATA_DIR; do
+        for _fp_dvar in FP_DATA_DIR FP_GATEWAY_DATA_DIR FP_ENGINE_DATA_DIR FP_COPILOT_DATA_DIR; do
             _fp_dval="$(sed -n "s/^${_fp_dvar}=//p" "${FP_HOME}/.env" | tail -n1 | tr -d '\r')"
             [ -n "$_fp_dval" ] || continue
             case "$_fp_dval" in

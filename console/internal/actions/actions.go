@@ -367,6 +367,9 @@ func composeProfileArgs() []string {
 	if EngineEnabled() {
 		args = append(args, "--profile", "engine")
 	}
+	if CopilotEnabled() {
+		args = append(args, "--profile", "copilot")
+	}
 	return args
 }
 
@@ -404,6 +407,14 @@ type Status struct {
 	// aggregate and the status renderers agree on whether the engine
 	// participates.
 	EngineEnabled bool
+	// Copilot is the falconpulsar-copilot (Command Center) container
+	// state. Only meaningful when CopilotEnabled is true — disabled
+	// installs never probe it and it stays false.
+	Copilot bool
+	// CopilotEnabled mirrors FP_COPILOT_ENABLED at poll time so the
+	// aggregate and the status renderers agree on whether Command Center
+	// participates.
+	CopilotEnabled bool
 }
 
 // Aggregate returns a single word describing overall status. All three
@@ -429,6 +440,12 @@ func (s Status) Aggregate() string {
 			running++
 		}
 	}
+	if s.CopilotEnabled {
+		expected++ // optional Command Center counts only when enabled
+		if s.Copilot {
+			running++
+		}
+	}
 	if running == expected && s.APIHealthy {
 		return "running"
 	}
@@ -449,6 +466,10 @@ func Poll(ctx context.Context) Status {
 	st.EngineEnabled = EngineEnabled()
 	if st.EngineEnabled {
 		st.Engine = containerRunning(ctx, "falconpulsar-ai-engine")
+	}
+	st.CopilotEnabled = CopilotEnabled()
+	if st.CopilotEnabled {
+		st.Copilot = containerRunning(ctx, "falconpulsar-copilot")
 	}
 	cli := NewAPIClient()
 	cli.HTTP.Timeout = 2 * time.Second

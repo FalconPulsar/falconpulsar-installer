@@ -155,6 +155,10 @@ func componentsForCheck() []componentSpec {
 		specs = append(specs,
 			componentSpec{displayName: "AI Engine", containerName: "falconpulsar-ai-engine", imageBaseName: "ai-engine"})
 	}
+	if copilotInStack() {
+		specs = append(specs,
+			componentSpec{displayName: "Command Center", containerName: "falconpulsar-copilot", imageBaseName: "copilot"})
+	}
 	return specs
 }
 
@@ -171,6 +175,22 @@ func engineInStack() bool {
 	}
 	for _, p := range strings.Split(envFromDotEnv("COMPOSE_PROFILES"), ",") {
 		if strings.EqualFold(strings.TrimSpace(p), "engine") {
+			return true
+		}
+	}
+	return false
+}
+
+// copilotInStack reports whether the optional Command Center service is
+// part of this install's stack: FP_COPILOT_ENABLED=true in .env (the flag
+// the installer writes — CopilotEnabled covers this), OR "copilot" appears
+// in the .env's COMPOSE_PROFILES list. Mirrors engineInStack — see its note.
+func copilotInStack() bool {
+	if CopilotEnabled() {
+		return true
+	}
+	for _, p := range strings.Split(envFromDotEnv("COMPOSE_PROFILES"), ",") {
+		if strings.EqualFold(strings.TrimSpace(p), "copilot") {
 			return true
 		}
 	}
