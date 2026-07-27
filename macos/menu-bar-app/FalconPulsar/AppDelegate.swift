@@ -30,6 +30,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var uiRunning = false
     private var gatewayRunning = false
     private var engineRunning = false
+    private var copilotRunning = false
     private var dockerDaemonUp = false
     private var apiHealthy = false
     private var status: StackStatus = .unknown
@@ -102,6 +103,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let engineStatus = NSMenuItem(title: "AI Engine: checking...", action: nil, keyEquivalent: "")
         engineStatus.isHidden = !engineEnabled
         menu.addItem(engineStatus)
+        // Optional Command Center row — hidden unless FP_COPILOT_ENABLED=true
+        // in .env; updateMenu() re-checks the flag on every pass.
+        let copilotStatus = NSMenuItem(title: "Command Center: checking...", action: nil, keyEquivalent: "")
+        copilotStatus.isHidden = !copilotEnabled
+        menu.addItem(copilotStatus)
         menu.addItem(.separator())
 
         let openUI = NSMenuItem(title: "Open Web UI", action: #selector(openWebUI), keyEquivalent: "o")
@@ -115,6 +121,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         openEngine.attributedTitle = inlineIconTitle("Open AI Engine", symbol: "brain", bold: true)
         openEngine.isHidden = !engineEnabled
         menu.addItem(openEngine)
+
+        // Optional Command Center UI — visibility mirrors the status row above.
+        let openCopilot = NSMenuItem(title: "Open Command Center", action: #selector(openCommandCenter), keyEquivalent: "")
+        openCopilot.target = self
+        openCopilot.attributedTitle = inlineIconTitle("Open Command Center", symbol: "square.grid.2x2", bold: true)
+        openCopilot.isHidden = !copilotEnabled
+        menu.addItem(openCopilot)
 
         let start = NSMenuItem(title: "Start Stack", action: #selector(startStack), keyEquivalent: "")
         start.target = self
@@ -268,8 +281,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // items stay in the menu's items array, keeping the hardcoded
         // indices below stable.
         let engineOn = engineEnabled
-        menu.item(at: 6)?.isHidden = !engineOn   // AI Engine status row
-        menu.item(at: 9)?.isHidden = !engineOn   // Open AI Engine
+        let copilotOn = copilotEnabled
+        menu.item(at: 6)?.isHidden = !engineOn     // AI Engine status row
+        menu.item(at: 7)?.isHidden = !copilotOn    // Command Center status row
+        menu.item(at: 10)?.isHidden = !engineOn    // Open AI Engine
+        menu.item(at: 11)?.isHidden = !copilotOn   // Open Command Center
 
         // Auto-update-check checkmark follows .env on every pass too, so a
         // hand-edited FP_UPDATE_CHECK_AUTO takes effect without an app
@@ -290,9 +306,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 "Start Docker, then click Refresh Status",
                 "",
                 "",
+                "",
                 ""
             ]
-            for i in 0..<5 {
+            for i in 0..<6 {
                 guard let item = menu.item(at: i + 2) else { continue }
                 let attr = NSMutableAttributedString()
                 if i == 0 {
@@ -306,19 +323,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     attributes: [.font: NSFont.systemFont(ofSize: 13)]))
                 item.attributedTitle = attr
             }
-            menu.item(at: 10)?.isEnabled = false
-            menu.item(at: 11)?.isEnabled = false
             menu.item(at: 12)?.isEnabled = false
+            menu.item(at: 13)?.isEnabled = false
+            menu.item(at: 14)?.isEnabled = false
             return
         }
 
-        // Status items are at indices 2-6 (after header + separator)
+        // Status items are at indices 2-7 (after header + separator)
         let statuses: [(Bool, String)] = [
             (coreRunning, "Core"),
             (uiRunning, "Web UI"),
             (gatewayRunning, "AI Capabilities"),
             (apiHealthy, "REST API"),
-            (engineRunning, "AI Engine")
+            (engineRunning, "AI Engine"),
+            (copilotRunning, "Command Center")
         ]
 
         for (i, (running, name)) in statuses.enumerated() {
@@ -340,10 +358,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             item.attributedTitle = attributed
         }
 
-        // Enable/disable Start/Stop/Restart (indices 10, 11, 12 — after separator + Open Web UI + Open AI Engine)
-        menu.item(at: 10)?.isEnabled = status != .running        // Start
-        menu.item(at: 11)?.isEnabled = status != .stopped         // Stop
-        menu.item(at: 12)?.isEnabled = status != .stopped        // Restart
+        // Enable/disable Start/Stop/Restart (indices 12, 13, 14 — after the 6
+        // status rows + separator + Open Web UI/AI Engine/Command Center)
+        menu.item(at: 12)?.isEnabled = status != .running        // Start
+        menu.item(at: 13)?.isEnabled = status != .stopped         // Stop
+        menu.item(at: 14)?.isEnabled = status != .stopped        // Restart
     }
 
     // MARK: - Status Icon
@@ -477,18 +496,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             // re-read the flag each pass so toggling it doesn't require an
             // app restart.
             let engineExpected = self.engineEnabled
+            let copilotExpected = self.copilotEnabled
 
             if self.dockerDaemonUp {
                 self.coreRunning = self.isContainerRunning("falconpulsar-core")
                 self.uiRunning = self.isContainerRunning("falconpulsar-ui")
                 self.gatewayRunning = self.isContainerRunning("falconpulsar-ai-gateway")
                 self.engineRunning = engineExpected && self.isContainerRunning("falconpulsar-ai-engine")
+                self.copilotRunning = copilotExpected && self.isContainerRunning("falconpulsar-copilot")
                 self.apiHealthy = self.isAPIHealthy()
             } else {
                 self.coreRunning = false
                 self.uiRunning = false
                 self.gatewayRunning = false
                 self.engineRunning = false
+                self.copilotRunning = false
                 self.apiHealthy = false
             }
 
@@ -564,12 +586,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var restPort: String { envValue("FP_REST_PORT") ?? "7433" }
     private var uiPort: String { envValue("FP_UI_PORT") ?? "8080" }
     private var enginePort: String { envValue("FP_ENGINE_PORT") ?? "8085" }
+    private var copilotPort: String { envValue("FP_COPILOT_PORT") ?? "8090" }
 
     /// Optional AI Engine flag (compose profile "engine"). Absent/false on
     /// most installs; trim + case-insensitive so hand-edited values like
     /// "True " still count as enabled.
     private var engineEnabled: Bool {
         (envValue("FP_AI_ENGINE_ENABLED") ?? "")
+            .trimmingCharacters(in: .whitespaces).lowercased() == "true"
+    }
+
+    /// Optional Command Center flag (compose profile "copilot"). Same trim +
+    /// case-insensitive treatment as engineEnabled for hand-edited values.
+    private var copilotEnabled: Bool {
+        (envValue("FP_COPILOT_ENABLED") ?? "")
             .trimmingCharacters(in: .whitespaces).lowercased() == "true"
     }
 
@@ -640,6 +670,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         NSWorkspace.shared.open(url)
     }
 
+    @objc func openCommandCenter() {
+        guard let url = URL(string: "http://localhost:\(copilotPort)") else { return }
+        NSWorkspace.shared.open(url)
+    }
+
     /// Compose profile flags shared by EVERY compose invocation.
     /// "--profile ai" is legacy compose compat (pre-mandatory-gateway
     /// installs gate ai-gateway behind the "ai" profile); no-op on current
@@ -650,6 +685,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func composeProfileArgs() -> [String] {
         var args = ["--profile", "ai"]
         if engineEnabled { args += ["--profile", "engine"] }
+        if copilotEnabled { args += ["--profile", "copilot"] }
         return args
     }
 
@@ -1841,7 +1877,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // everything regardless of the current enable state. Do NOT swap this
         // for composeProfileArgs() (which gates --profile engine on the live
         // enable flag); this mirrors the shared uninstall strategy.
-        let teardownProfiles = ["--profile", "ai", "--profile", "engine"]
+        let teardownProfiles = ["--profile", "ai", "--profile", "engine", "--profile", "copilot"]
 
         // 1. compose down (plus --volumes on purge).
         var downArgs = ["compose"] + teardownProfiles + ["down", "--remove-orphans"]
