@@ -59,8 +59,12 @@ FP_VERSION_FROM_ENV="${FP_VERSION:-}"
 # the environment, while a value merely seeded from a surviving .env
 # further down only flips the prompt's default. Snapshot explicitness
 # before the defaults / carry-forward fill the variable in.
-# shellcheck disable=SC2034  # consumed by prompt_ai_engine in prompts.sh
+# shellcheck disable=SC2034  # consumed by prompt_* in prompts.sh
 FP_AI_ENGINE_ENABLED_EXPLICIT="${FP_AI_ENGINE_ENABLED:+1}"
+FP_COPILOT_ENABLED_EXPLICIT="${FP_COPILOT_ENABLED:+1}"
+FP_COPILOT_MODE_EXPLICIT="${FP_COPILOT_MODE:+1}"
+FP_AUTH_MODE_EXPLICIT="${FP_AUTH_MODE:+1}"
+FP_SSO_PROVIDER_EXPLICIT="${FP_SSO_PROVIDER:+1}"
 
 # shellcheck source=../shared/lib/common.sh
 . "${REPO_ROOT}/shared/lib/common.sh"
@@ -354,7 +358,9 @@ fp_seed_from_existing_env() {
     log_info "carried ${var}=${val} forward from existing .env"
 }
 if [ -f "${FP_HOME}/.env" ]; then
-    for setting in FP_DATA_DIR FP_GATEWAY_DATA_DIR FP_ENGINE_DATA_DIR FP_AI_ENGINE_ENABLED \
+    for setting in FP_DATA_DIR FP_GATEWAY_DATA_DIR FP_ENGINE_DATA_DIR FP_COPILOT_DATA_DIR \
+                   FP_AI_ENGINE_ENABLED FP_COPILOT_ENABLED FP_COPILOT_PORT FP_COPILOT_MODE \
+                   FP_AUTH_MODE FP_SSO_PROVIDER \
                    FP_REST_PORT FP_WS_PORT FP_PUBSUB_PORT FP_GATEWAY_PORT FP_UI_PORT \
                    FP_COOKIE_SECURE FP_UPDATE_MODE; do
         fp_seed_from_existing_env "$setting"
@@ -382,10 +388,22 @@ FP_GATEWAY_DATA_DIR="${FP_GATEWAY_DATA_DIR:-${FP_HOME}/ai-gateway-data}"
 # config + agent state live in the SAME main folder as Core/Gateway.
 FP_ENGINE_DATA_DIR="${FP_ENGINE_DATA_DIR:-${FP_HOME}/ai-engine-data}"
 FP_AI_ENGINE_ENABLED="${FP_AI_ENGINE_ENABLED:-false}"
-# The AI Engine runs behind the "engine" compose profile — activate it only
-# when the user opted in (derived from FP_AI_ENGINE_ENABLED, so reinstalls
-# stay consistent). It is the only profiled service, so this is safe to set.
-if [ "${FP_AI_ENGINE_ENABLED}" = "true" ]; then COMPOSE_PROFILES="engine"; else COMPOSE_PROFILES=""; fi
+# Optional Command Center — always define path under FP_HOME (like Engine).
+FP_COPILOT_DATA_DIR="${FP_COPILOT_DATA_DIR:-${FP_HOME}/copilot-data}"
+FP_COPILOT_ENABLED="${FP_COPILOT_ENABLED:-false}"
+FP_COPILOT_PORT="${FP_COPILOT_PORT:-8090}"
+FP_COPILOT_MODE="${FP_COPILOT_MODE:-clean}"
+FP_AUTH_MODE="${FP_AUTH_MODE:-local}"
+FP_SSO_PROVIDER="${FP_SSO_PROVIDER:-none}"
+FP_SSO_ISSUER="${FP_SSO_ISSUER:-}"
+FP_SSO_CLIENT_ID="${FP_SSO_CLIENT_ID:-}"
+# Optional modules: engine and/or copilot compose profiles.
+COMPOSE_PROFILES=""
+if [ "${FP_AI_ENGINE_ENABLED}" = "true" ]; then COMPOSE_PROFILES="engine"; fi
+if [ "${FP_COPILOT_ENABLED}" = "true" ]; then
+    if [ -n "$COMPOSE_PROFILES" ]; then COMPOSE_PROFILES="${COMPOSE_PROFILES},copilot"
+    else COMPOSE_PROFILES="copilot"; fi
+fi
 FP_REST_PORT="${FP_REST_PORT:-7433}"
 FP_WS_PORT="${FP_WS_PORT:-7434}"
 FP_PUBSUB_PORT="${FP_PUBSUB_PORT:-7435}"
@@ -429,19 +447,29 @@ fp_registry_prompt_settings
 # a safety net for non-interactive runs that supplied bad env credentials.
 fp_registry_ensure_access
 
-# Options: front-door HTTPS, then the optional AI Engine. prompt_ai_engine
-# re-derives COMPOSE_PROFILES from the (possibly sticky) choice — the
-# engine data dir creation and the .env write below consume the
-# post-prompt values. Admin credentials are always the LAST input.
+# Options: front-door HTTPS, auth mode, optional modules, then admin.
 prompt_transport_mode
+prompt_auth_mode
 prompt_ai_engine
+prompt_copilot
+if [ "${FP_COPILOT_ENABLED:-false}" = "true" ]; then
+    fp_check_ports_interactive FP_COPILOT_PORT
+fi
 prompt_admin_credentials
 
 # ── Step 3: Stack directory ─────────────────────────────────────────────────
 log_step "step 3/6 — stack directory"
+# Same plant layout as Linux: all module data under $FP_HOME.
 mkdir -p "$FP_HOME" "$FP_DATA_DIR" "$FP_GATEWAY_DATA_DIR"
-# Create the AI Engine's data dir in the main folder only when it's enabled.
+# Optional modules: create only when enabled.
 [ "$FP_AI_ENGINE_ENABLED" = "true" ] && mkdir -p "$FP_ENGINE_DATA_DIR"
+FP_COPILOT_DATA_DIR="${FP_COPILOT_DATA_DIR:-${FP_HOME}/copilot-data}"
+if [ "${FP_COPILOT_ENABLED:-false}" = "true" ]; then
+    mkdir -p "$FP_COPILOT_DATA_DIR"
+    log_info "Command Center data dir: ${FP_COPILOT_DATA_DIR}"
+fi
+# Stack config files in FP_HOME (gateway.yaml pattern), not inside module data.
+fp_write_auth_policy "${FP_HOME}/auth-policy.json"
 log_success "${FP_HOME} ready"
 
 # ── Step 4: compose.yml + .env ──────────────────────────────────────────────
@@ -565,7 +593,17 @@ FP_GATEWAY_DATA_DIR=${FP_GATEWAY_DATA_DIR}
 # backticks would EXECUTE the command while writing .env.)
 FP_ENGINE_DATA_DIR=${FP_ENGINE_DATA_DIR}
 FP_AI_ENGINE_ENABLED=${FP_AI_ENGINE_ENABLED}
+FP_COPILOT_ENABLED=${FP_COPILOT_ENABLED}
+FP_COPILOT_PORT=${FP_COPILOT_PORT}
+FP_COPILOT_MODE=${FP_COPILOT_MODE}
+FP_COPILOT_DATA_DIR=${FP_COPILOT_DATA_DIR}
+FP_COPILOT_IMAGE_TAG=${FP_COPILOT_IMAGE_TAG:-${FP_VERSION:-latest}}
 COMPOSE_PROFILES=${COMPOSE_PROFILES}
+FP_AUTH_MODE=${FP_AUTH_MODE}
+FP_SSO_PROVIDER=${FP_SSO_PROVIDER}
+FP_SSO_ISSUER=${FP_SSO_ISSUER}
+FP_SSO_CLIENT_ID=${FP_SSO_CLIENT_ID}
+FP_HOME=${FP_HOME}
 FP_UID=${FP_UID}
 FP_GID=${FP_GID}
 FP_REGISTRY=${FP_REGISTRY}
@@ -740,6 +778,10 @@ ${FP_C_GREEN}${FP_C_BOLD}╔═════════════════�
   Web UI:    ${FP_C_CYAN}http://localhost:${FP_UI_PORT}${FP_C_RESET}
   REST API:  ${FP_C_CYAN}http://localhost:${FP_REST_PORT}${FP_C_RESET}
   WebSocket: ${FP_C_CYAN}ws://localhost:${FP_WS_PORT}${FP_C_RESET}
+$(if [ "${FP_COPILOT_ENABLED:-false}" = "true" ]; then
+  printf '  Command Center: %shttp://localhost:%s%s\n' "${FP_C_CYAN}" "${FP_COPILOT_PORT}" "${FP_C_RESET}"
+fi)
+  Auth mode: ${FP_C_BOLD}${FP_AUTH_MODE:-local}${FP_C_RESET}$(if [ "${FP_SSO_PROVIDER:-none}" != "none" ]; then printf ' (SSO: %s)' "${FP_SSO_PROVIDER}"; fi)
 
   Username:  ${FP_C_BOLD}${FP_ADMIN_USER}${FP_C_RESET}
   Password:  ${FP_C_BOLD}${FP_C_YELLOW}the one you saved earlier${FP_C_RESET}

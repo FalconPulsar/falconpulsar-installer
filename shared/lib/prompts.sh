@@ -300,14 +300,31 @@ prompt_transport_mode() {
     export FP_COOKIE_SECURE
 }
 
+# Rebuild COMPOSE_PROFILES from optional-module flags (comma-separated).
+# Call after any change to FP_AI_ENGINE_ENABLED / FP_COPILOT_ENABLED.
+fp_refresh_compose_profiles() {
+    local profiles=""
+    if [ "${FP_AI_ENGINE_ENABLED:-false}" = "true" ]; then
+        profiles="engine"
+    fi
+    if [ "${FP_COPILOT_ENABLED:-false}" = "true" ]; then
+        if [ -n "$profiles" ]; then
+            profiles="${profiles},copilot"
+        else
+            profiles="copilot"
+        fi
+    fi
+    COMPOSE_PROFILES="$profiles"
+    export COMPOSE_PROFILES
+}
+
 # Ask the operator whether to install the optional AI Engine — the agent
 # runtime used to author, simulate and deploy agents. It runs as one extra
 # container behind the "engine" compose profile, and its config + agent
 # state live in the SAME main folder as Core/Gateway.
 #
-# Sets FP_AI_ENGINE_ENABLED to "true" or "false" and derives
-# COMPOSE_PROFILES from it ("engine" or empty). The engine is the only
-# profiled service, so overwriting COMPOSE_PROFILES here is safe.
+# Sets FP_AI_ENGINE_ENABLED to "true" or "false" and refreshes
+# COMPOSE_PROFILES (may also include "copilot" if already enabled).
 #
 # Honors FP_AI_ENGINE_ENABLED pre-set in the environment (or via installer
 # flags) — the installers record that in FP_AI_ENGINE_ENABLED_EXPLICIT
@@ -343,14 +360,176 @@ prompt_ai_engine() {
         fi
     fi
 
-    # Derive the compose profile from the choice — downstream consumers
-    # (engine data dir creation, the .env write) read both variables.
-    if [ "${FP_AI_ENGINE_ENABLED}" = "true" ]; then
-        COMPOSE_PROFILES="engine"
+    export FP_AI_ENGINE_ENABLED
+    fp_refresh_compose_profiles
+}
+
+# Optional Command Center (ops workspace: Investigate / Channels / Approve / Watch).
+# Profile "copilot"; plant default data mode is clean (no demo story).
+prompt_copilot() {
+    FP_COPILOT_PORT="${FP_COPILOT_PORT:-8090}"
+    FP_COPILOT_MODE="${FP_COPILOT_MODE:-clean}"
+
+    if [ "${FP_COPILOT_ENABLED_EXPLICIT:-}" = "1" ]; then
+        FP_COPILOT_ENABLED="${FP_COPILOT_ENABLED:-false}"
+        log_info "Command Center install: ${FP_COPILOT_ENABLED} (FP_COPILOT_ENABLED pre-set)"
+    elif [ "${FP_ASSUME_YES:-0}" = "1" ]; then
+        FP_COPILOT_ENABLED="${FP_COPILOT_ENABLED:-false}"
+        log_info "FP_ASSUME_YES=1 — Command Center install: ${FP_COPILOT_ENABLED}"
     else
-        COMPOSE_PROFILES=""
+        printf '\n%sOptional Command Center%s\n' "${FP_C_BOLD}" "${FP_C_RESET}" >&2
+        printf 'Command Center is an optional ops workspace for incidents, multiplayer\n' >&2
+        printf 'channels, HSE-gated approvals, and line watch. It runs as one extra\n' >&2
+        printf 'container on the shared network (default port 8090). Plant installs use\n' >&2
+        printf 'empty (clean) data — not the demo story. Enable later via\n' >&2
+        printf 'FP_COPILOT_ENABLED=true in .env and "docker compose up -d".\n\n' >&2
+        local cc_default="default-no"
+        if [ "${FP_COPILOT_ENABLED:-false}" = "true" ]; then
+            cc_default="default-yes"
+        fi
+        if confirm "Install the optional Command Center?" "$cc_default"; then
+            FP_COPILOT_ENABLED=true
+        else
+            FP_COPILOT_ENABLED=false
+        fi
     fi
-    export FP_AI_ENGINE_ENABLED COMPOSE_PROFILES
+
+    # Plant default is always clean unless operator explicitly set demo.
+    if [ "${FP_COPILOT_MODE_EXPLICIT:-}" != "1" ]; then
+        FP_COPILOT_MODE=clean
+    fi
+    case "${FP_COPILOT_MODE}" in
+        clean|demo) ;;
+        *) FP_COPILOT_MODE=clean ;;
+    esac
+
+    export FP_COPILOT_ENABLED FP_COPILOT_PORT FP_COPILOT_MODE
+    fp_refresh_compose_profiles
+}
+
+# Interactive auth policy for the plant.
+# Always creates a local break-glass admin (prompt_admin_credentials).
+# Mode is recorded in .env + auth-policy.json for Config Hub / apps.
+#
+#   local      — local users only (default, non-IT friendly)
+#   sso_later  — local now; configure SSO in Web UI Config Hub later
+#   sso_now    — pick provider + optional issuer/client id (details finish in UI)
+prompt_auth_mode() {
+    FP_AUTH_MODE="${FP_AUTH_MODE:-local}"
+    FP_SSO_PROVIDER="${FP_SSO_PROVIDER:-none}"
+    FP_SSO_ISSUER="${FP_SSO_ISSUER:-}"
+    FP_SSO_CLIENT_ID="${FP_SSO_CLIENT_ID:-}"
+
+    if [ "${FP_AUTH_MODE_EXPLICIT:-}" = "1" ]; then
+        log_info "Auth mode: ${FP_AUTH_MODE} (FP_AUTH_MODE pre-set)"
+    elif [ "${FP_ASSUME_YES:-0}" = "1" ]; then
+        FP_AUTH_MODE="${FP_AUTH_MODE:-local}"
+        log_info "FP_ASSUME_YES=1 — auth mode: ${FP_AUTH_MODE}"
+    else
+        printf '\n%sSign-in security%s\n' "${FP_C_BOLD}" "${FP_C_RESET}" >&2
+        printf 'How will operators sign in to FalconPulsar?\n\n' >&2
+        printf '  %s1)%s Local users only (recommended for first install)\n' \
+            "${FP_C_CYAN}" "${FP_C_RESET}" >&2
+        printf '       Manage users in the Web UI. Works offline / air-gapped.\n' >&2
+        printf '  %s2)%s SSO later\n' "${FP_C_CYAN}" "${FP_C_RESET}" >&2
+        printf '       Start with local admin now; connect Entra / Okta / OIDC in Config Hub.\n' >&2
+        printf '  %s3)%s SSO now (advanced / IT)\n' "${FP_C_CYAN}" "${FP_C_RESET}" >&2
+        printf '       Choose a provider and record connection hints; finish mapping in Config Hub.\n\n' >&2
+        printf 'A local break-glass admin is ALWAYS created so the plant stays reachable\n' >&2
+        printf 'if the identity provider is down.\n\n' >&2
+
+        local choice=""
+        local default_choice=1
+        case "${FP_AUTH_MODE}" in
+            sso_later) default_choice=2 ;;
+            sso_now)   default_choice=3 ;;
+            *)         default_choice=1 ;;
+        esac
+        printf 'Choice [1/2/3] (default %s): ' "$default_choice" >&2
+        read -r choice || true
+        choice="${choice:-$default_choice}"
+        case "$choice" in
+            2|sso_later|later) FP_AUTH_MODE=sso_later ;;
+            3|sso_now|sso|now) FP_AUTH_MODE=sso_now ;;
+            *)                 FP_AUTH_MODE=local ;;
+        esac
+    fi
+
+    case "${FP_AUTH_MODE}" in
+        local|sso_later|sso_now) ;;
+        *) FP_AUTH_MODE=local ;;
+    esac
+
+    if [ "${FP_AUTH_MODE}" = "sso_now" ]; then
+        if [ "${FP_SSO_PROVIDER_EXPLICIT:-}" = "1" ] || [ "${FP_ASSUME_YES:-0}" = "1" ]; then
+            FP_SSO_PROVIDER="${FP_SSO_PROVIDER:-oidc}"
+        else
+            printf '\n%sSSO provider%s\n' "${FP_C_BOLD}" "${FP_C_RESET}" >&2
+            printf '  1) Microsoft Entra ID (Azure AD)\n' >&2
+            printf '  2) Okta\n' >&2
+            printf '  3) Generic OIDC (Keycloak, Auth0, …)\n' >&2
+            printf 'Provider [1/2/3] (default 1): ' >&2
+            local pchoice=""
+            read -r pchoice || true
+            pchoice="${pchoice:-1}"
+            case "$pchoice" in
+                2|okta|Okta) FP_SSO_PROVIDER=okta ;;
+                3|oidc|OIDC|generic) FP_SSO_PROVIDER=oidc ;;
+                *) FP_SSO_PROVIDER=entra ;;
+            esac
+            printf 'Issuer URL (optional, blank = configure later): ' >&2
+            read -r FP_SSO_ISSUER || true
+            printf 'Client ID (optional, blank = configure later): ' >&2
+            read -r FP_SSO_CLIENT_ID || true
+        fi
+        case "${FP_SSO_PROVIDER}" in
+            entra|okta|oidc) ;;
+            none|"") FP_SSO_PROVIDER=oidc ;;
+            *) FP_SSO_PROVIDER=oidc ;;
+        esac
+    else
+        if [ "${FP_AUTH_MODE}" = "local" ]; then
+            FP_SSO_PROVIDER=none
+        fi
+        # sso_later keeps provider as none until Config Hub
+        if [ "${FP_AUTH_MODE}" = "sso_later" ] && [ "${FP_SSO_PROVIDER}" = "none" ]; then
+            FP_SSO_PROVIDER=none
+        fi
+    fi
+
+    export FP_AUTH_MODE FP_SSO_PROVIDER FP_SSO_ISSUER FP_SSO_CLIENT_ID
+    log_info "Auth mode: ${FP_AUTH_MODE} (SSO provider: ${FP_SSO_PROVIDER:-none})"
+}
+
+# Write $FP_HOME/auth-policy.json for UI / Command Center first-run.
+# Call after stack dir exists. Does not store secrets.
+fp_write_auth_policy() {
+    local dest="${1:-${FP_HOME}/auth-policy.json}"
+    local mode="${FP_AUTH_MODE:-local}"
+    local provider="${FP_SSO_PROVIDER:-none}"
+    local issuer="${FP_SSO_ISSUER:-}"
+    local client_id="${FP_SSO_CLIENT_ID:-}"
+    # Escape for JSON (minimal)
+    issuer="${issuer//\\/\\\\}"
+    issuer="${issuer//\"/\\\"}"
+    client_id="${client_id//\\/\\\\}"
+    client_id="${client_id//\"/\\\"}"
+    cat >"$dest" <<JSON
+{
+  "version": 1,
+  "authMode": "${mode}",
+  "ssoProvider": "${provider}",
+  "ssoIssuer": "${issuer}",
+  "ssoClientId": "${client_id}",
+  "breakGlassLocalAdmin": true,
+  "notes": "Local break-glass admin always exists. Finish SSO mapping in Web UI Config Hub when ready."
+}
+JSON
+    if [ -n "${FP_USER:-}" ]; then
+        chown "${FP_USER}:${FP_USER}" "$dest" 2>/dev/null || true
+    fi
+    chmod 0644 "$dest" 2>/dev/null || true
+    log_info "wrote auth policy: ${dest}"
 }
 
 prompt_admin_credentials() {

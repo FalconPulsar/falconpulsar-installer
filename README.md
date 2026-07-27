@@ -38,10 +38,16 @@ component live in those repositories and on
 | **UI** | `falconpulsar/ui` | 8080 (nginx → Core + Gateway) |
 | **AI Gateway** | `falconpulsar/ai-gateway` | 7436 (often bound to localhost; UI proxies) |
 
-**Not started by default**: the **AI Engine** (agentics) is offered as an
-opt-in during install on every platform (`FP_AI_ENGINE_ENABLED=true` adds the
-engine compose profile; UI on `localhost:8085`, data in
-`~/falconpulsar/ai-engine-data`). Mobile and copilot remain separate repos.
+**Not started by default** (opt-in during install on every platform):
+
+| Module | Flag / profile | Default port | Notes |
+|--------|----------------|--------------|--------|
+| **AI Engine** | `FP_AI_ENGINE_ENABLED=true` → profile `engine` | 8085 | Data in `$FP_HOME/ai-engine-data` |
+| **Command Center** | `FP_COPILOT_ENABLED=true` → profile `copilot` | 8090 | Clean data; ops workspace |
+
+Install also asks **sign-in security**: local users (default), SSO later, or SSO
+now (Entra / Okta / generic OIDC). A **local break-glass admin** is always
+created; policy is written to `$FP_HOME/auth-policy.json`.
 
 ### Build / run a single component by hand
 

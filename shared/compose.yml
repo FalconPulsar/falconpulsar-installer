@@ -271,6 +271,59 @@ services:
     networks:
       - falconpulsar
 
+  # ── Command Center / Copilot (OPTIONAL) — ops workspace ────────────────
+  # Same data-dir pattern as Core and AI Engine:
+  #   host:  ${FP_COPILOT_DATA_DIR}  (installer: $FP_HOME/copilot-data)
+  #   mount: → /data
+  #   user:  ${FP_UID}:${FP_GID} so ownership matches Core
+  #   env:   FP_COPILOT_DATA_DIR=/data (in-container path only)
+  # Stack config (auth-policy.json) lives in FP_HOME like gateway.yaml.
+  #
+  # Opt-in: profile "copilot". Installer sets FP_COPILOT_ENABLED=true and
+  # adds "copilot" to COMPOSE_PROFILES.
+  copilot:
+    image: ${FP_REGISTRY:-falconpulsar}/copilot:${FP_COPILOT_IMAGE_TAG:-${FP_VERSION:-latest}}
+    container_name: falconpulsar-copilot
+    restart: unless-stopped
+    user: "${FP_UID}:${FP_GID}"
+    profiles: ["copilot"]
+    ports:
+      - "${FP_COPILOT_BIND:-0.0.0.0}:${FP_COPILOT_PORT:-8090}:8080"
+    environment:
+      # In-container data root (host path is only the bind mount source).
+      FP_COPILOT_DATA_DIR: /data
+      FP_CC_DEPLOYMENT_MODE: plant
+      FP_ENGINE_REQUIRED: ${FP_AI_ENGINE_ENABLED:-false}
+      FP_AI_GATEWAY_HOST: ai-gateway
+      FP_AI_GATEWAY_PORT: "7436"
+      FP_AI_ENGINE_HOST: ai-engine
+      FP_AI_ENGINE_PORT: "8085"
+      FP_CORE_HOST: core
+      FP_CORE_PORT: "7433"
+    volumes:
+      # Module state (SQLite) — parallel to Core FP_DATA_DIR→/data
+      - "${FP_COPILOT_DATA_DIR:-${FP_DATA_DIR}/../copilot-data}:/data"
+      # Install-time policy (stack root, like gateway.yaml)
+      - "${FP_HOME:-.}/auth-policy.json:/config/auth-policy.json:ro"
+    depends_on:
+      core:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'wget',
+          '-qO',
+          '/dev/null',
+          'http://127.0.0.1:8080/health',
+        ]
+      interval: 15s
+      timeout: 3s
+      start_period: 15s
+      retries: 3
+    networks:
+      - falconpulsar
+
 # ── Network — bridge between the three services ─────────────────────────
 networks:
   falconpulsar:

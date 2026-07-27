@@ -668,6 +668,12 @@ bold.
 | `FP_PUBSUB_PORT` | `7435` | `compose.yml` | Pub/Sub WebSocket port |
 | `FP_GATEWAY_PORT` | `7436` | `compose.yml` | AI Gateway port |
 | `FP_UI_PORT` | `8080` | `compose.yml` | Web UI port |
+| `FP_COPILOT_ENABLED` | `false` | `prompts.sh`, `compose.yml` | Opt-in Command Center (`copilot` profile) |
+| `FP_COPILOT_PORT` | `8090` | `prompts.sh`, `compose.yml` | Command Center host port |
+| `FP_COPILOT_MODE` | `clean` | `prompts.sh`, `.env` | Plant data mode (`clean` default; `demo` optional) |
+| `FP_AUTH_MODE` | `local` | `prompts.sh`, `.env`, `auth-policy.json` | `local` \| `sso_later` \| `sso_now` |
+| `FP_SSO_PROVIDER` | `none` | `prompts.sh`, `.env` | `none` \| `entra` \| `okta` \| `oidc` |
+| `FP_SSO_ISSUER` / `FP_SSO_CLIENT_ID` | empty | `prompts.sh`, `.env` | Optional SSO connection hints (finish in Config Hub) |
 | `FP_LOG_LEVEL` | `info` | `compose.yml` | Log level: `debug` / `info` / `warn` / `error` |
 | `FP_INSTALL_MODE` | prompted | `linux/install.sh` | `docker` or `systemd` (Linux only) |
 | `FP_BIND` | `0.0.0.0` | `compose.yml` | Core bind address |

@@ -142,7 +142,10 @@ fi
 # flags below) before the defaults fill in the rest — on a reinstall the
 # non-explicit ones are seeded from the previous .env so custom layouts,
 # port remaps and version pins survive the stack-file rewrite.
-for _fp_var in FP_DATA_DIR FP_GATEWAY_DATA_DIR FP_ENGINE_DATA_DIR FP_AI_ENGINE_ENABLED FP_REST_PORT FP_WS_PORT \
+for _fp_var in FP_DATA_DIR FP_GATEWAY_DATA_DIR FP_ENGINE_DATA_DIR FP_COPILOT_DATA_DIR \
+    FP_AI_ENGINE_ENABLED FP_COPILOT_ENABLED FP_COPILOT_PORT FP_COPILOT_MODE \
+    FP_AUTH_MODE FP_SSO_PROVIDER \
+    FP_REST_PORT FP_WS_PORT \
     FP_PUBSUB_PORT FP_GATEWAY_PORT FP_UI_PORT FP_COOKIE_SECURE FP_UPDATE_MODE; do
     eval "${_fp_var}_EXPLICIT=\${${_fp_var}:+1}"
 done
@@ -153,10 +156,24 @@ FP_GATEWAY_DATA_DIR="${FP_GATEWAY_DATA_DIR:-${FP_HOME}/ai-gateway-data}"
 # config + agent state live in the SAME main folder as Core/Gateway.
 FP_ENGINE_DATA_DIR="${FP_ENGINE_DATA_DIR:-${FP_HOME}/ai-engine-data}"
 FP_AI_ENGINE_ENABLED="${FP_AI_ENGINE_ENABLED:-false}"
-# The AI Engine runs behind the "engine" compose profile — activate it only
-# when the user opted in (derived from FP_AI_ENGINE_ENABLED). It is the only
-# profiled service, so this is safe to set.
-if [ "${FP_AI_ENGINE_ENABLED}" = "true" ]; then COMPOSE_PROFILES="engine"; else COMPOSE_PROFILES=""; fi
+# Optional Command Center — same layout: sibling of data/ under FP_HOME.
+# Path is always defined (like FP_ENGINE_DATA_DIR); directory is created
+# only when the module is enabled.
+FP_COPILOT_DATA_DIR="${FP_COPILOT_DATA_DIR:-${FP_HOME}/copilot-data}"
+FP_COPILOT_ENABLED="${FP_COPILOT_ENABLED:-false}"
+FP_COPILOT_PORT="${FP_COPILOT_PORT:-8090}"
+FP_COPILOT_MODE="${FP_COPILOT_MODE:-clean}"
+FP_AUTH_MODE="${FP_AUTH_MODE:-local}"
+FP_SSO_PROVIDER="${FP_SSO_PROVIDER:-none}"
+FP_SSO_ISSUER="${FP_SSO_ISSUER:-}"
+FP_SSO_CLIENT_ID="${FP_SSO_CLIENT_ID:-}"
+# Optional modules use compose profiles (engine, copilot) — derived below.
+COMPOSE_PROFILES=""
+if [ "${FP_AI_ENGINE_ENABLED}" = "true" ]; then COMPOSE_PROFILES="engine"; fi
+if [ "${FP_COPILOT_ENABLED}" = "true" ]; then
+    if [ -n "$COMPOSE_PROFILES" ]; then COMPOSE_PROFILES="${COMPOSE_PROFILES},copilot"
+    else COMPOSE_PROFILES="copilot"; fi
+fi
 FP_INSTALL_MODE="${FP_INSTALL_MODE:-}"        # docker | systemd
 FP_REST_PORT="${FP_REST_PORT:-7433}"
 FP_WS_PORT="${FP_WS_PORT:-7434}"
@@ -433,7 +450,10 @@ fi
 # with it — before we get here.
 if [ -f "${FP_HOME}/.env" ]; then
     _fp_seeded=""
-    for _fp_var in FP_DATA_DIR FP_GATEWAY_DATA_DIR FP_ENGINE_DATA_DIR FP_AI_ENGINE_ENABLED FP_REST_PORT FP_WS_PORT \
+    for _fp_var in FP_DATA_DIR FP_GATEWAY_DATA_DIR FP_ENGINE_DATA_DIR FP_COPILOT_DATA_DIR \
+        FP_AI_ENGINE_ENABLED FP_COPILOT_ENABLED FP_COPILOT_PORT FP_COPILOT_MODE \
+        FP_AUTH_MODE FP_SSO_PROVIDER \
+        FP_REST_PORT FP_WS_PORT \
         FP_PUBSUB_PORT FP_GATEWAY_PORT FP_UI_PORT FP_REGISTRY FP_VERSION \
         FP_COOKIE_SECURE FP_UPDATE_MODE; do
         _fp_explicit=""
@@ -656,12 +676,15 @@ esac
 # ── Step 6: Generate compose.yml + .env + gateway.yaml ──────────────────────
 log_step "step 6/8 — stack files in ${FP_HOME}"
 
-# Options: front-door HTTPS, then the optional AI Engine. prompt_ai_engine
-# re-derives COMPOSE_PROFILES from the (possibly sticky) choice — the
-# engine data dir creation and the .env write below consume the
-# post-prompt values. Admin credentials are always the LAST input.
+# Options: front-door HTTPS, optional modules, auth mode, then admin.
+# prompt_ai_engine / prompt_copilot refresh COMPOSE_PROFILES; admin last.
 prompt_transport_mode
+prompt_auth_mode
 prompt_ai_engine
+prompt_copilot
+if [ "${FP_COPILOT_ENABLED:-false}" = "true" ]; then
+    fp_check_ports_interactive FP_COPILOT_PORT
+fi
 prompt_admin_credentials
 
 install -m 0644 -o "$FP_USER" -g "$FP_USER" \
@@ -696,9 +719,21 @@ if [ -f "${FP_HOME}/gateway.yaml" ]; then
     sed -i 's/\r$//' "${FP_HOME}/gateway.yaml" 2>/dev/null || true
 fi
 
+# Data dirs — same pattern for every plant module:
+#   install -d -m 0750 -o $FP_USER  under $FP_HOME
+#   absolute path written to .env
+#   compose bind-mounts that path → /data (or /app/data for gateway)
 install -d -m 0750 -o "$FP_USER" -g "$FP_USER" "$FP_DATA_DIR"
-# AI Engine data dir in the main folder, only when the engine is enabled.
+install -d -m 0750 -o "$FP_USER" -g "$FP_USER" "$FP_GATEWAY_DATA_DIR"
+# Optional modules: only create when enabled (same as historical engine path).
 [ "$FP_AI_ENGINE_ENABLED" = "true" ] && install -d -m 0750 -o "$FP_USER" -g "$FP_USER" "$FP_ENGINE_DATA_DIR"
+FP_COPILOT_DATA_DIR="${FP_COPILOT_DATA_DIR:-${FP_HOME}/copilot-data}"
+if [ "${FP_COPILOT_ENABLED:-false}" = "true" ]; then
+  install -d -m 0750 -o "$FP_USER" -g "$FP_USER" "$FP_COPILOT_DATA_DIR"
+  log_info "Command Center data dir: ${FP_COPILOT_DATA_DIR}"
+fi
+# Stack-level config files live in FP_HOME (like gateway.yaml), not inside module data.
+fp_write_auth_policy "${FP_HOME}/auth-policy.json"
 
 # Copy root's Docker Hub credentials into the falconpulsar user's home so
 # `sudo -u falconpulsar -g docker -H bash -c 'docker compose pull'` can
@@ -805,10 +840,27 @@ FP_GATEWAY_DATA_DIR=${FP_GATEWAY_DATA_DIR}
 # backticks would EXECUTE the command while writing .env.)
 FP_ENGINE_DATA_DIR=${FP_ENGINE_DATA_DIR}
 FP_AI_ENGINE_ENABLED=${FP_AI_ENGINE_ENABLED}
+# Optional Command Center (clean plant default). Enable with
+# FP_COPILOT_ENABLED=true and COMPOSE_PROFILES including copilot.
+# Optional Command Center — data lives under FP_HOME like Core/Gateway/Engine.
+# To enable later: FP_COPILOT_ENABLED=true, add copilot to COMPOSE_PROFILES,
+# mkdir -p "$FP_COPILOT_DATA_DIR", docker compose up -d.
+FP_COPILOT_ENABLED=${FP_COPILOT_ENABLED}
+FP_COPILOT_PORT=${FP_COPILOT_PORT}
+FP_COPILOT_MODE=${FP_COPILOT_MODE}
+FP_COPILOT_DATA_DIR=${FP_COPILOT_DATA_DIR}
+# Image tag: plant pulls :latest (or FP_VERSION). Demo image is separate.
+FP_COPILOT_IMAGE_TAG=${FP_COPILOT_IMAGE_TAG:-${FP_VERSION:-latest}}
 COMPOSE_PROFILES=${COMPOSE_PROFILES}
+# Auth policy (local | sso_later | sso_now). Break-glass local admin always.
+FP_AUTH_MODE=${FP_AUTH_MODE}
+FP_SSO_PROVIDER=${FP_SSO_PROVIDER}
+FP_SSO_ISSUER=${FP_SSO_ISSUER}
+FP_SSO_CLIENT_ID=${FP_SSO_CLIENT_ID}
 # Anchor the gateway.yaml mount to the stack dir — compose's default
 # resolves relative to FP_DATA_DIR, which breaks with a custom --data-dir.
 FP_GATEWAY_CONFIG=${FP_HOME}/gateway.yaml
+FP_HOME=${FP_HOME}
 FP_UID=${FP_UID}
 FP_GID=${FP_GID}
 FP_REGISTRY=${FP_REGISTRY}
@@ -1119,6 +1171,8 @@ chmod 0755 "${FP_HOME}/bin" "${FP_HOME}/bin/fp" 2>/dev/null || true
 log_step "verifying installation health"
 HEALTH_OK=true
 HEALTH_SVCS="falconpulsar-core falconpulsar-ui falconpulsar-ai-gateway"
+[ "${FP_AI_ENGINE_ENABLED:-false}" = "true" ] && HEALTH_SVCS="${HEALTH_SVCS} falconpulsar-ai-engine"
+[ "${FP_COPILOT_ENABLED:-false}" = "true" ] && HEALTH_SVCS="${HEALTH_SVCS} falconpulsar-copilot"
 for svc in $HEALTH_SVCS; do
     if docker ps --filter "name=$svc" --filter "status=running" -q 2>/dev/null | grep -q .; then
         log_success "$svc: running"
@@ -1127,6 +1181,33 @@ for svc in $HEALTH_SVCS; do
         HEALTH_OK=false
     fi
 done
+if [ "${FP_COPILOT_ENABLED:-false}" = "true" ]; then
+    if curl -sf "http://127.0.0.1:${FP_COPILOT_PORT}/health" >/dev/null 2>&1; then
+        log_success "Command Center: process health on port ${FP_COPILOT_PORT}"
+        # Phase 2 — server-side stack links (Core/Gateway/Engine)
+        CC_STACK="$(curl -sf "http://127.0.0.1:${FP_COPILOT_PORT}/api/cc/stack-status" 2>/dev/null || true)"
+        if [ -n "$CC_STACK" ]; then
+            CC_READY="$(printf '%s' "$CC_STACK" | sed -n 's/.*"readyForOps":\s*\(true\|false\).*/\1/p' | head -1)"
+            CC_CORE="$(printf '%s' "$CC_STACK" | sed -n 's/.*"core":{[^}]*"status":"\([^"]*\)".*/\1/p' | head -1)"
+            if [ "$CC_CORE" = "ok" ]; then
+                log_success "Command Center → Core: linked"
+            else
+                log_warn "Command Center → Core: not linked yet (open setup UI or run scripts/validate-stack.sh)"
+                log_warn "  Install only starts containers; stack communication is validated next."
+            fi
+            if [ "$CC_READY" = "true" ]; then
+                log_success "Command Center stack links: readyForOps"
+            else
+                log_warn "Command Center stack links: not fully ready — complete setup in the UI"
+            fi
+        else
+            log_warn "Command Center /api/cc/stack-status unavailable (rebuild image with lifecycle support)"
+        fi
+    else
+        log_warn "Command Center: not responding yet on port ${FP_COPILOT_PORT}"
+        HEALTH_OK=false
+    fi
+fi
 
 if curl -sf "http://localhost:${FP_REST_PORT}/api/v1/health" >/dev/null 2>&1; then
     log_success "REST API: responding on port ${FP_REST_PORT}"
@@ -1160,6 +1241,10 @@ ${FP_C_GREEN}${FP_C_BOLD}╔═════════════════�
   Web UI:    ${FP_C_CYAN}http://${HOST_IP}:${FP_UI_PORT}${FP_C_RESET}
   REST API:  ${FP_C_CYAN}http://${HOST_IP}:${FP_REST_PORT}${FP_C_RESET}
   WebSocket: ${FP_C_CYAN}ws://${HOST_IP}:${FP_WS_PORT}${FP_C_RESET}
+$(if [ "${FP_COPILOT_ENABLED:-false}" = "true" ]; then
+  printf '  Command Center: %shttp://%s:%s%s\n' "${FP_C_CYAN}" "${HOST_IP}" "${FP_COPILOT_PORT}" "${FP_C_RESET}"
+fi)
+  Auth mode: ${FP_C_BOLD}${FP_AUTH_MODE:-local}${FP_C_RESET}$(if [ "${FP_SSO_PROVIDER:-none}" != "none" ]; then printf ' (SSO: %s)' "${FP_SSO_PROVIDER}"; fi)
 
   Username:  ${FP_C_BOLD}${FP_ADMIN_USER}${FP_C_RESET}
   Password:  ${FP_C_BOLD}${FP_C_YELLOW}the one you saved earlier${FP_C_RESET}
