@@ -472,6 +472,21 @@ struct OptionsPage: View {
             }
             .toggleStyle(.checkbox)
 
+            Toggle(isOn: Binding(
+                get: { state.copilotEnabled },
+                set: { state.copilotEnabled = $0; state.copilotUserSet = true }
+            )) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Install the optional Command Center")
+                        .font(.callout.bold())
+                    Text("Optional plant-ops workspace (Investigate · Channels · Approve · Watch) — adds one container. You can enable it later by re-running the installer.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .toggleStyle(.checkbox)
+
             Spacer()
         }
         .padding(30)

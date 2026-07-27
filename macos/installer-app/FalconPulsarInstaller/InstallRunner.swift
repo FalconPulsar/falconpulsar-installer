@@ -72,6 +72,7 @@ enum InstallRunner {
         log("[info] Admin user: \(state.adminUser)")
         log("[info] Admin password: (not logged)")
         log("[info] AI Engine opt-in: \(state.aiEngineEnabled ? "yes" : "no")")
+        log("[info] Command Center opt-in: \(state.copilotEnabled ? "yes" : "no")")
 
         // Step 0: Pre-flight checks
         updateStep(0, .running)
@@ -183,9 +184,10 @@ enum InstallRunner {
         let stackHome = "\(NSHomeDirectory())/falconpulsar"
         var upgradeFastPath = state.installAction == .upgrade
             && FileManager.default.fileExists(atPath: "\(stackHome)/compose.yml")
-        // The upgrade fast-path never re-asks about the optional AI Engine —
-        // it honors whatever the surviving .env says (sticky opt-in).
+        // The upgrade fast-path never re-asks about the optional AI Engine /
+        // Command Center — it honors whatever the surviving .env says (sticky).
         var fastPathEngineEnabled = false
+        var fastPathCopilotEnabled = false
         if upgradeFastPath {
             let envText = (try? String(contentsOfFile: "\(stackHome)/.env", encoding: .utf8)) ?? ""
             let composeText = (try? String(contentsOfFile: "\(stackHome)/compose.yml", encoding: .utf8)) ?? ""
@@ -216,6 +218,13 @@ enum InstallRunner {
                 .map({ $0.trimmingCharacters(in: .whitespacesAndNewlines) })
                 .last(where: { $0.hasPrefix(engineKey) }) {
                 fastPathEngineEnabled = (String(line.dropFirst(engineKey.count))
+                    .trimmingCharacters(in: .whitespacesAndNewlines) == "true")
+            }
+            let copilotKey = "FP_COPILOT_ENABLED="
+            if let line = envText.split(separator: "\n")
+                .map({ $0.trimmingCharacters(in: .whitespacesAndNewlines) })
+                .last(where: { $0.hasPrefix(copilotKey) }) {
+                fastPathCopilotEnabled = (String(line.dropFirst(copilotKey.count))
                     .trimmingCharacters(in: .whitespacesAndNewlines) == "true")
             }
         }
@@ -279,7 +288,7 @@ enum InstallRunner {
             // surviving .env opted into the AI Engine — CLI --profile flags
             // REPLACE COMPOSE_PROFILES from .env, so without it an enabled
             // engine would silently be skipped by pull/up.
-            let profileFlags = "--profile ai" + (fastPathEngineEnabled ? " --profile engine" : "")
+            let profileFlags = "--profile ai" + (fastPathEngineEnabled ? " --profile engine" : "") + (fastPathCopilotEnabled ? " --profile copilot" : "")
             updateStep(4, .running)
             log("[info] Running: docker compose \(profileFlags) pull")
             let (out1, pullCode) = ShellRunner.run("cd '\(stackHome)' && \(dockerPath) compose \(profileFlags) pull 2>&1", timeout: 600)
@@ -300,7 +309,8 @@ enum InstallRunner {
             // that carry no project label; a labelled container of any project
             // is left untouched.
             for reserved in ["falconpulsar-core", "falconpulsar-ui",
-                             "falconpulsar-ai-gateway", "falconpulsar-ai-engine"] {
+                             "falconpulsar-ai-gateway", "falconpulsar-ai-engine",
+                             "falconpulsar-copilot"] {
                 let (proj, inspectCode) = ShellRunner.run(
                     "\(dockerPath) inspect -f '{{index .Config.Labels \"com.docker.compose.project\"}}' '\(reserved)' 2>/dev/null",
                     timeout: 30)
@@ -392,6 +402,9 @@ enum InstallRunner {
             // derives COMPOSE_PROFILES=engine and creates the engine data
             // dir when this is true.
             "export FP_AI_ENGINE_ENABLED=\(state.aiEngineEnabled ? "true" : "false")",
+            // Optional Command Center opt-in from the Options page. install.sh
+            // derives COMPOSE_PROFILES=copilot and creates the copilot data dir.
+            "export FP_COPILOT_ENABLED=\(state.copilotEnabled ? "true" : "false")",
             // Cached-image cleanup is performed by fp_apply_existing_action
             // (bash), not by the GUI — pass the checkbox through. Bash
             // defaults to "true", so the unchecked state must be exported

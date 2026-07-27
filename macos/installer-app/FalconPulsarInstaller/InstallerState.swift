@@ -38,6 +38,10 @@ struct ExistingInstall {
     // file or key is absent). Used to make the AI Engine checkbox sticky
     // across reinstalls/upgrades.
     var envAIEngineEnabled: Bool? = nil
+    // FP_COPILOT_ENABLED parsed from the surviving .env (nil when the file or
+    // key is absent). Makes the Command Center checkbox sticky across
+    // reinstalls/upgrades.
+    var envCopilotEnabled: Bool? = nil
 
     var isEmpty: Bool {
         !stackDirExists && containers.isEmpty && images.isEmpty && !dataDirExists && !menuBarInstalled
@@ -76,6 +80,13 @@ class InstallerState: ObservableObject {
     // unless the user has already toggled it this session.
     @Published var aiEngineEnabled = false
     var aiEngineUserSet = false
+
+    // Optional Command Center (plant ops workspace). Off by default — the
+    // checkbox on the Options page opts in, which install.sh turns into
+    // FP_COPILOT_ENABLED=true / COMPOSE_PROFILES=copilot. Sticky on reinstall:
+    // seeded from the surviving .env unless toggled this session.
+    @Published var copilotEnabled = false
+    var copilotUserSet = false
 
     // Environment detection
     @Published var dockerFound = false
@@ -182,6 +193,13 @@ class InstallerState: ObservableObject {
                     found.envAIEngineEnabled = (String(line.dropFirst(key.count))
                         .trimmingCharacters(in: .whitespacesAndNewlines) == "true")
                 }
+                let copKey = "FP_COPILOT_ENABLED="
+                if let copLine = envText.split(separator: "\n")
+                    .map({ $0.trimmingCharacters(in: .whitespacesAndNewlines) })
+                    .last(where: { $0.hasPrefix(copKey) }) {
+                    found.envCopilotEnabled = (String(copLine.dropFirst(copKey.count))
+                        .trimmingCharacters(in: .whitespacesAndNewlines) == "true")
+                }
             }
 
             if let docker = ShellRunner.findDocker() {
@@ -230,6 +248,9 @@ class InstallerState: ObservableObject {
                 // (detection re-runs when navigating back to earlier pages).
                 if let sticky = found.envAIEngineEnabled, self?.aiEngineUserSet != true {
                     self?.aiEngineEnabled = sticky
+                }
+                if let sticky = found.envCopilotEnabled, self?.copilotUserSet != true {
+                    self?.copilotEnabled = sticky
                 }
             }
         }
