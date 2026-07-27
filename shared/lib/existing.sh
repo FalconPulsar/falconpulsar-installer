@@ -90,7 +90,13 @@ fp_detect_existing_install() {
 
 # Container names the stack claims — keep in sync with the
 # `container_name:` fields in shared/compose.yml.
-FP_RESERVED_CONTAINER_NAMES="falconpulsar-core falconpulsar-ui falconpulsar-ai-gateway"
+# falconpulsar-ai-engine belongs here too: it is an opt-in module with a fixed
+# container_name, so a label-less copy (e.g. one started via `docker run`, or a
+# previous non-compose launch) holds the name and makes `compose up` abort with
+# "container name is already in use" — while a project-scoped `compose down`
+# cannot see it. Its omission is exactly what let that orphan slip past phantom
+# detection and break the upgrade.
+FP_RESERVED_CONTAINER_NAMES="falconpulsar-core falconpulsar-ui falconpulsar-ai-gateway falconpulsar-ai-engine"
 
 FP_PHANTOM_CONTAINERS=()
 fp_detect_phantom_containers() {

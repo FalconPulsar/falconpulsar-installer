@@ -289,6 +289,29 @@ enum InstallRunner {
             }
             updateStep(4, .passed)
 
+            // Clear any container that holds one of our fixed container_names
+            // but was NOT started by compose (no compose-project label) — most
+            // often an AI Engine launched via `docker run`. `compose up` uses
+            // fixed container_names, so such an orphan aborts the up with
+            // "container name is already in use", and a project-scoped
+            // `compose down` can't remove it (no project label) — which is why
+            // the fast path skipped it and the upgrade failed. Compose
+            // reconciles its OWN containers on `up`, so we only remove ones
+            // that carry no project label; a labelled container of any project
+            // is left untouched.
+            for reserved in ["falconpulsar-core", "falconpulsar-ui",
+                             "falconpulsar-ai-gateway", "falconpulsar-ai-engine"] {
+                let (proj, inspectCode) = ShellRunner.run(
+                    "\(dockerPath) inspect -f '{{index .Config.Labels \"com.docker.compose.project\"}}' '\(reserved)' 2>/dev/null",
+                    timeout: 30)
+                guard inspectCode == 0 else { continue }  // no such container
+                let p = proj.trimmingCharacters(in: .whitespacesAndNewlines)
+                if p.isEmpty || p == "<no value>" {
+                    log("[info] Removing non-compose container holding reserved name: \(reserved)")
+                    _ = ShellRunner.run("\(dockerPath) rm -f '\(reserved)' 2>&1", timeout: 60)
+                }
+            }
+
             updateStep(5, .running)
             log("[info] Running: docker compose \(profileFlags) up -d")
             let (out2, code) = ShellRunner.run("cd '\(stackHome)' && \(dockerPath) compose \(profileFlags) up -d 2>&1", timeout: 180)
