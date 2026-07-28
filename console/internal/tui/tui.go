@@ -1082,6 +1082,13 @@ func (a *App) showAbout() {
 	uiInfo := actions.GetContainerInfo(ctx, "falconpulsar-ui")
 	gwInfo := actions.GetContainerInfo(ctx, "falconpulsar-ai-gateway")
 	composeVer := actions.GetComposeVersion(ctx)
+	engInfo := actions.GetContainerInfo(ctx, "falconpulsar-ai-engine")
+	// Command Center is optional — only show it when the install opted in.
+	copilotLine := ""
+	if actions.CopilotEnabled() {
+		copilotLine = fmt.Sprintf("  Command Center  %s\n",
+			actions.GetContainerInfo(ctx, "falconpulsar-copilot").DisplayString())
+	}
 
 	tv := tview.NewTextView().SetDynamicColors(true).SetWrap(false)
 	tv.SetBackgroundColor(theme.Panel)
@@ -1093,6 +1100,8 @@ func (a *App) showAbout() {
 			"  Core Engine     %s\n"+
 			"  Web UI          %s\n"+
 			"  AI Capabilities %s\n"+
+			"  AI Engine       %s\n"+
+			"%s"+
 			"  Compose         %s\n\n"+
 			"[::b]Endpoints:[-:-:-]\n"+
 			"  Web UI          %s\n"+
@@ -1108,6 +1117,8 @@ func (a *App) showAbout() {
 		coreInfo.DisplayString(),
 		uiInfo.DisplayString(),
 		gwInfo.DisplayString(),
+		engInfo.DisplayString(),
+		copilotLine,
 		composeVer,
 		actions.UIURL(),
 		actions.RestURL(),

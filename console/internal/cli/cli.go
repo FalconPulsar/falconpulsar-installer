@@ -519,6 +519,10 @@ func cmdAbout() *cobra.Command {
 			fmt.Printf("  Core Engine     %s\n", actions.GetContainerInfo(ctx, "falconpulsar-core").DisplayString())
 			fmt.Printf("  Web UI          %s\n", actions.GetContainerInfo(ctx, "falconpulsar-ui").DisplayString())
 			fmt.Printf("  AI Capabilities %s\n", actions.GetContainerInfo(ctx, "falconpulsar-ai-gateway").DisplayString())
+			fmt.Printf("  AI Engine       %s\n", actions.GetContainerInfo(ctx, "falconpulsar-ai-engine").DisplayString())
+			if actions.CopilotEnabled() {
+				fmt.Printf("  Command Center  %s\n", actions.GetContainerInfo(ctx, "falconpulsar-copilot").DisplayString())
+			}
 			fmt.Printf("  Compose         %s\n", actions.GetComposeVersion(ctx))
 			fmt.Println()
 

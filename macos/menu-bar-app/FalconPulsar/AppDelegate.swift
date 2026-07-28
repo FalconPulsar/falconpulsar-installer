@@ -1407,7 +1407,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func showAbout() {
         let w: CGFloat = 540
-        let h: CGFloat = 480
+        // 528 (was 480): the component grid now has a third row (AI Engine +
+        // optional Command Center) below Core/Compose/Web UI/AI Capabilities.
+        let h: CGFloat = 528
         let aboutWindow = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: w, height: h),
             styleMask: [.titled, .closable, .fullSizeContentView],
@@ -1479,14 +1481,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let coreInfo = getContainerInfo("falconpulsar-core")
         let uiInfo = getContainerInfo("falconpulsar-ui")
         let gwInfo = getContainerInfo("falconpulsar-ai-gateway")
+        let engInfo = getContainerInfo("falconpulsar-ai-engine")
         let composeVer = getComposeVersion()
 
-        let components: [(String, String, Bool)] = [
+        // AI Engine is standard; Command Center appears when the install opted in.
+        var components: [(String, String, Bool)] = [
             ("Core Engine", coreInfo.displayString, coreRunning),
             ("Compose", composeVer, true),
             ("Web UI", uiInfo.displayString, uiRunning),
-            ("AI Capabilities", gwInfo.displayString, gatewayRunning)
+            ("AI Capabilities", gwInfo.displayString, gatewayRunning),
+            ("AI Engine", engInfo.displayString, engineRunning)
         ]
+        if copilotEnabled {
+            components.append(("Command Center",
+                getContainerInfo("falconpulsar-copilot").displayString, copilotRunning))
+        }
 
         // 2x2 grid of 2-line cells. Each cell:
         //
@@ -1545,7 +1554,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // so that bumping rowH (cell height) automatically pushes the
         // links down without us having to remember to update this constant
         // too. Bottom of last row = gridY - rowH; links sit ~37px below.
-        let linksY = (gridY - rowH) - 37
+        let linksY = (gridY - 2 * rowH) - 37
         let linkData: [(String, String)] = [
             ("Documentation", "https://falconpulsar.com/docs"),
             ("Release Notes", "https://github.com/FalconPulsar/falconpulsar-installer/releases"),
