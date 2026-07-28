@@ -214,16 +214,17 @@ Name: "cookiesecure"; \
     GroupDescription: "Security:"; \
     Flags: checkedonce
 
-; Optional AI Engine (agent runtime). Default UNCHECKED on every fresh
-; install -- plain `unchecked` (NOT checkedonce) so Inno Setup's recorded
+; Optional Command Center (plant-ops workspace). Default UNCHECKED on every
+; fresh install -- plain `unchecked` (NOT checkedonce) so Inno Setup's recorded
 ; task state from a prior run still pre-fills a re-run, and the .env-driven
 ; sticky logic in NextButtonClick (Existing page) can override it with the
-; ground truth read from the surviving WSL .env (FP_AI_ENGINE_ENABLED=true
+; ground truth read from the surviving WSL .env (FP_COPILOT_ENABLED=true
 ; pre-checks the box on Upgrade/Reinstall). The selection is forwarded to
-; 40-run-fp-installer.ps1 as -AiEngine true|false, which exports
-; FP_AI_ENGINE_ENABLED into the bash installer's env file.
-Name: "aiengine"; \
-    Description: "Install the optional AI Engine (agent runtime — adds one container; can be enabled later)"; \
+; 40-run-fp-installer.ps1 as -Copilot true|false, which exports
+; FP_COPILOT_ENABLED into the bash installer's env file. (AI Engine is no
+; longer optional -- it installs by default with the rest of the stack.)
+Name: "copilot"; \
+    Description: "Install the optional Command Center (plant-ops workspace — adds one container; can be enabled later)"; \
     GroupDescription: "Optional components:"; \
     Flags: unchecked
 
@@ -356,10 +357,10 @@ var
   ExistingHasImages: Boolean;
   ExistingInventoryText: String;
 
-  // Sticky AI-Engine opt-in: True when the existing-install scan found
-  // FP_AI_ENGINE_ENABLED=true in the surviving WSL .env. Drives the
-  // pre-check of the 'aiengine' task on Upgrade/Reinstall paths.
-  AiEngineFromEnv: Boolean;
+  // Sticky Command Center opt-in: True when the existing-install scan found
+  // FP_COPILOT_ENABLED=true in the surviving WSL .env. Drives the
+  // pre-check of the 'copilot' task on Upgrade/Reinstall paths.
+  CopilotFromEnv: Boolean;
 
 // Create the installation checklist on the Installing (progress) page.
 // Called once at the start of the install phase.
@@ -768,6 +769,7 @@ var
   RegistrySkipArg: String;
   CookieSecureArg: String;
   AiEngineArg: String;
+  CopilotArg: String;
   Distro: String;
   DistroArg: String;
   DockerExePath: String;
@@ -797,18 +799,22 @@ begin
     else
       CookieSecureArg := '-CookieSecure "false"';
 
-    // Optional AI Engine checkbox. Default unchecked — see [Tasks] above.
-    // Forwarded as FP_AI_ENGINE_ENABLED to the bash installer (which maps
-    // true to COMPOSE_PROFILES=engine, creates the engine data dir, and
-    // pulls/starts the engine image via the compose profile).
-    if WizardIsTaskSelected('aiengine') then
+    // AI Engine is now a STANDARD service (always installed) — force-enabled.
+    // The bash installer also force-enables it; this is belt-and-suspenders.
+    AiEngineArg := '-AiEngine "true"';
+
+    // Optional Command Center checkbox. Default unchecked — see [Tasks] above.
+    // Forwarded as FP_COPILOT_ENABLED to the bash installer (which maps true
+    // to COMPOSE_PROFILES=copilot, creates the copilot data dir, and
+    // pulls/starts the copilot image via the compose profile).
+    if WizardIsTaskSelected('copilot') then
     begin
-      AiEngineArg := '-AiEngine "true"';
-      LogInfo('AI Engine opt-in: yes');
+      CopilotArg := '-Copilot "true"';
+      LogInfo('Command Center opt-in: yes');
     end else
     begin
-      AiEngineArg := '-AiEngine "false"';
-      LogInfo('AI Engine opt-in: no');
+      CopilotArg := '-Copilot "false"';
+      LogInfo('Command Center opt-in: no');
     end;
 
     if IsUpgrade and (InstallAction = 'upgrade') then
@@ -939,7 +945,7 @@ begin
         AdminUserArg + ' ' + AdminPassArg + ' ' +
         RegistryArg + ' ' + RegistryUserArg + ' ' +
         RegistryPassArg + ' ' + RegistrySkipArg + ' ' +
-        CookieSecureArg + ' ' + AiEngineArg + ' ' +
+        CookieSecureArg + ' ' + AiEngineArg + ' ' + CopilotArg + ' ' +
         '-InstallAction "' + InstallAction + '"',
         'Installing FalconPulsar inside WSL (this may take 5-10 minutes)...') then begin UpdateStep(4, 'fail'); Abort; end;
     UpdateStep(4, 'done');
@@ -1488,7 +1494,7 @@ begin
   ExistingHasContainers := False;
   ExistingHasImages     := False;
   ExistingInventoryText := '';
-  AiEngineFromEnv       := False;
+  CopilotFromEnv        := False;
 
   // Extract to temp so we can run before {app} exists.
   ExtractTemporaryFile('lib.ps1');
@@ -1577,26 +1583,26 @@ begin
   if ExistingInventoryText = '' then
     ExistingInventoryText := '  (nothing detected)';
 
-  // Sticky AI-Engine opt-in: read FP_AI_ENGINE_ENABLED from the surviving
+  // Sticky Command Center opt-in: read FP_COPILOT_ENABLED from the surviving
   // WSL .env. Read-only probe (grep exit code only), run the same way the
   // other WSL probes are (wsl.exe -d <distro> -u root -- bash -c ...), so
   // it is safe to execute before the Legal page. The result pre-checks the
-  // 'aiengine' task on Upgrade/Reinstall in NextButtonClick.
+  // 'copilot' task on Upgrade/Reinstall in NextButtonClick.
   if SentinelGet(Content, 'WslEnv') = 'yes' then
   begin
     ProbeDistro := SentinelGet(Content, 'Distro');
     if ProbeDistro <> '' then
     begin
-      BashCmd := 'grep -q ''^FP_AI_ENGINE_ENABLED=true'' ''' + WslStackPath + '/.env''';
+      BashCmd := 'grep -q ''^FP_COPILOT_ENABLED=true'' ''' + WslStackPath + '/.env''';
       if Exec('wsl.exe', '-d ' + ProbeDistro + ' -u root -- bash -c "' + BashCmd + '"',
               '', SW_HIDE, ewWaitUntilTerminated, RC) then
-        AiEngineFromEnv := (RC = 0);
+        CopilotFromEnv := (RC = 0);
     end;
   end;
-  if AiEngineFromEnv then
-    LogInfo('Existing .env: FP_AI_ENGINE_ENABLED=true (AI Engine task will be pre-checked on Upgrade/Reinstall)')
+  if CopilotFromEnv then
+    LogInfo('Existing .env: FP_COPILOT_ENABLED=true (Command Center task will be pre-checked on Upgrade/Reinstall)')
   else
-    LogInfo('Existing .env: AI Engine not enabled (or no .env found)');
+    LogInfo('Existing .env: Command Center not enabled (or no .env found)');
 
   if ExistingHasPrior then
     LogInfo('Existing-install detection complete: prior state found')
@@ -2267,32 +2273,32 @@ begin
       // Fresh install = clean slate. Force both tasks back to their safe
       // defaults: re-check cookiesecure so a user who unchecked it on a
       // prior install doesn't silently inherit "HTTP-only", and de-select
-      // aiengine (opt-in, default unchecked) so a prior opt-in isn't
+      // copilot (opt-in, default unchecked) so a prior opt-in isn't
       // silently inherited either. The `checkedonce`/persisted task state
       // would otherwise pre-fill both boxes here. WizardSelectTasks uses
       // /MERGETASKS syntax (a leading ! de-selects); tasks not named in
       // the call are unaffected.
-      WizardSelectTasks('cookiesecure,!aiengine');
+      WizardSelectTasks('cookiesecure,!copilot');
     end
     else if ExistingReinstallRadio.Checked then
     begin
       InstallAction := 'reinstall';
-      // Sticky AI-Engine opt-in: pre-check the task when the existing
-      // install's .env recorded FP_AI_ENGINE_ENABLED=true, so the Tasks
+      // Sticky Command Center opt-in: pre-check the task when the existing
+      // install's .env recorded FP_COPILOT_ENABLED=true, so the Tasks
       // page opens reflecting the real installed state.
-      if AiEngineFromEnv then
-        WizardSelectTasks('aiengine');
+      if CopilotFromEnv then
+        WizardSelectTasks('copilot');
     end
     else
     begin
       InstallAction := 'upgrade';
       // Same stickiness on upgrade -- keeps the checkbox honest. The
-      // upgrade fast-path itself carries FP_AI_ENGINE_ENABLED forward in
+      // upgrade fast-path itself carries FP_COPILOT_ENABLED forward in
       // the stack's surviving .env regardless (40-run-fp-installer.ps1
-      // deliberately does not export it on that path), so the engine
-      // choice is never re-asked or clobbered by an upgrade.
-      if AiEngineFromEnv then
-        WizardSelectTasks('aiengine');
+      // deliberately does not export it on that path), so the Command
+      // Center choice is never re-asked or clobbered by an upgrade.
+      if CopilotFromEnv then
+        WizardSelectTasks('copilot');
     end;
     LogInfo('User chose install action: ' + InstallAction);
   end;

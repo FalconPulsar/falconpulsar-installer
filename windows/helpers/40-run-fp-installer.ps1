@@ -44,6 +44,9 @@ param(
     # full-install path only -- the upgrade fast-path deliberately lets
     # the surviving .env value carry forward instead (see below).
     [string] $AiEngine = 'false',
+    # Command Center (copilot) opt-in, forwarded as FP_COPILOT_ENABLED. AI
+    # Engine is standard now, so $AiEngine arrives 'true' from the installer.
+    [string] $Copilot = 'false',
     [string] $InstallAction = ''
 )
 
@@ -284,7 +287,8 @@ if (-not $InstallAction) {
     else              { $InstallAction = 'fresh' }
 }
 Write-Info "Install action: $InstallAction"
-Write-Info "AI Engine opt-in: $AiEngine"
+Write-Info "AI Engine: standard (always installed)"
+Write-Info "Command Center opt-in: $Copilot"
 
 if ($InstallAction -eq 'upgrade' -and $hasExisting -and -not $hasLegacyInstall) {
     Write-Info 'Upgrading in place -- delegating to the bundled bash installer'
@@ -741,6 +745,7 @@ $regSkipVal = if ($RegistrySkip) { '1' } else { '0' }
 # Normalize to exactly 'true'/'false' -- the value feeds the bash
 # installer's COMPOSE_PROFILES=engine decision, so nothing fuzzy goes in.
 $aiEngineVal = if ($AiEngine -eq 'true') { 'true' } else { 'false' }
+$copilotVal = if ($Copilot -eq 'true') { 'true' } else { 'false' }
 
 $runScript = @"
 set -e
@@ -762,6 +767,7 @@ export FP_REGISTRY_SKIP='$regSkipVal'
 export FP_INSTALL_ACTION='$InstallAction'
 export FP_COOKIE_SECURE='$CookieSecure'
 export FP_AI_ENGINE_ENABLED='$aiEngineVal'
+export FP_COPILOT_ENABLED='$copilotVal'
 export FP_INVOKING_USER='$WslUser'
 FPEOF
 . "`$ENVFILE"

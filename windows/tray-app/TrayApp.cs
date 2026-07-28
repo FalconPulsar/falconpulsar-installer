@@ -42,6 +42,8 @@ namespace FalconPulsar.Tray
         private bool _apiHealthy;
         private bool _engineEnabled;
         private bool _engineRunning;
+        private bool _copilotEnabled;
+        private bool _copilotRunning;
 
         private ToolStripMenuItem _coreItem;
         private ToolStripMenuItem _uiItem;
@@ -49,6 +51,8 @@ namespace FalconPulsar.Tray
         private ToolStripMenuItem _apiItem;
         private ToolStripMenuItem _engineItem;
         private ToolStripMenuItem _openEngineItem;
+        private ToolStripMenuItem _copilotItem;
+        private ToolStripMenuItem _openCopilotItem;
         private ToolStripMenuItem _startItem;
         private ToolStripMenuItem _stopItem;
         private ToolStripMenuItem _restartItem;
@@ -226,6 +230,7 @@ namespace FalconPulsar.Tray
         private string RestPort => EnvValue("FP_REST_PORT") ?? "7433";
         private string UiPort => EnvValue("FP_UI_PORT") ?? "8080";
         private string EnginePort => EnvValue("FP_ENGINE_PORT") ?? "8085";
+        private string CopilotPort => EnvValue("FP_COPILOT_PORT") ?? "8090";
 
         // Optional AI Engine service (compose profile "engine"). The
         // installer writes FP_AI_ENGINE_ENABLED=true into .env when the
@@ -233,6 +238,12 @@ namespace FalconPulsar.Tray
         // insensitive so a hand-edited "True" still counts.
         private bool EngineEnabled =>
             string.Equals(EnvValue("FP_AI_ENGINE_ENABLED")?.Trim(), "true",
+                StringComparison.OrdinalIgnoreCase);
+
+        // Optional Command Center service (compose profile "copilot"). The
+        // installer writes FP_COPILOT_ENABLED=true when the user opts in.
+        private bool CopilotEnabled =>
+            string.Equals(EnvValue("FP_COPILOT_ENABLED")?.Trim(), "true",
                 StringComparison.OrdinalIgnoreCase);
 
         // Automatic update *checking* opt-in: FP_UPDATE_CHECK_AUTO=true in
@@ -291,11 +302,16 @@ namespace FalconPulsar.Tray
             // in .env; visibility is re-evaluated on every poll in UpdateUI.
             _engineItem = new ToolStripMenuItem("AI Engine: checking...")
             { Visible = false };
+            // Optional Command Center row — hidden unless FP_COPILOT_ENABLED=true
+            // in .env; visibility is re-evaluated on every poll in UpdateUI.
+            _copilotItem = new ToolStripMenuItem("Command Center: checking...")
+            { Visible = false };
             menu.Items.Add(_coreItem);
             menu.Items.Add(_uiItem);
             menu.Items.Add(_gatewayItem);
             menu.Items.Add(_apiItem);
             menu.Items.Add(_engineItem);
+            menu.Items.Add(_copilotItem);
             menu.Items.Add(new ToolStripSeparator());
 
             // Actions
@@ -312,6 +328,14 @@ namespace FalconPulsar.Tray
             _openEngineItem.Image = CreateGlyphIcon("\uE99A", Color.FromArgb(70, 70, 70));  // Robot
             _openEngineItem.Visible = false;
             menu.Items.Add(_openEngineItem);
+
+            // Optional Command Center UI \u2014 hidden unless FP_COPILOT_ENABLED=true
+            // in .env; visibility is re-evaluated on every poll in UpdateUI.
+            _openCopilotItem = new ToolStripMenuItem("Open Command Center", null,
+                (s, e) => OpenCopilot());
+            _openCopilotItem.Image = CreateGlyphIcon("\uE80F", Color.FromArgb(70, 70, 70));  // Home
+            _openCopilotItem.Visible = false;
+            menu.Items.Add(_openCopilotItem);
 
             _startItem = new ToolStripMenuItem("Start Stack", null,
                 async (s, e) => await RunComposeCommand("up -d"));
@@ -435,6 +459,7 @@ namespace FalconPulsar.Tray
             // Re-read the AI Engine opt-in each poll (cheap .env read) so
             // enabling/disabling it takes effect without restarting the tray.
             _engineEnabled = EngineEnabled;
+            _copilotEnabled = CopilotEnabled;
 
             // Same for the auto update-check flag: a hand-edit of .env
             // arms/disarms the timers without restarting the tray.
@@ -447,6 +472,7 @@ namespace FalconPulsar.Tray
                 _uiRunning = await IsContainerRunning("falconpulsar-ui");
                 _gatewayRunning = await IsContainerRunning("falconpulsar-ai-gateway");
                 _engineRunning = _engineEnabled && await IsContainerRunning("falconpulsar-ai-engine");
+                _copilotRunning = _copilotEnabled && await IsContainerRunning("falconpulsar-copilot");
                 _apiHealthy = await IsApiHealthy();
             }
             else
@@ -455,6 +481,7 @@ namespace FalconPulsar.Tray
                 _uiRunning = false;
                 _gatewayRunning = false;
                 _engineRunning = false;
+                _copilotRunning = false;
                 _apiHealthy = false;
             }
 
@@ -470,9 +497,10 @@ namespace FalconPulsar.Tray
                 // install opted in — a disabled engine must not drag an
                 // otherwise-healthy stack down to "partially running".
                 var allExpected = _coreRunning && _uiRunning && _gatewayRunning
-                    && (!_engineEnabled || _engineRunning);
+                    && (!_engineEnabled || _engineRunning)
+                    && (!_copilotEnabled || _copilotRunning);
                 var anyRunning = _coreRunning || _uiRunning || _gatewayRunning
-                    || _engineRunning;
+                    || _engineRunning || _copilotRunning;
                 if (allExpected && _apiHealthy)
                     _status = StackStatus.Running;
                 else if (anyRunning)
@@ -551,6 +579,8 @@ namespace FalconPulsar.Tray
             // restarting the tray.
             _engineItem.Visible = _engineEnabled;
             _openEngineItem.Visible = _engineEnabled;
+            _copilotItem.Visible = _copilotEnabled;
+            _openCopilotItem.Visible = _copilotEnabled;
 
             // Update menu items. When Docker daemon is down, show a single
             // "Docker Desktop not running" item instead of N red dots —
@@ -567,6 +597,8 @@ namespace FalconPulsar.Tray
                 _apiItem.Image = null;
                 _engineItem.Text = "";
                 _engineItem.Image = null;
+                _copilotItem.Text = "";
+                _copilotItem.Image = null;
             }
             else
             {
@@ -580,6 +612,8 @@ namespace FalconPulsar.Tray
                 _apiItem.Image = CreateDot(_apiHealthy ? Color.Green : Color.Gray);
                 _engineItem.Text = _engineRunning ? "AI Engine: Running" : "AI Engine: Stopped";
                 _engineItem.Image = CreateDot(_engineRunning ? Color.Green : Color.Red);
+                _copilotItem.Text = _copilotRunning ? "Command Center: Running" : "Command Center: Stopped";
+                _copilotItem.Image = CreateDot(_copilotRunning ? Color.Green : Color.Red);
             }
 
             // Enable/disable actions based on state
@@ -1276,8 +1310,16 @@ namespace FalconPulsar.Tray
         // OVERRIDES COMPOSE_PROFILES from .env, so without it Start/Stop/
         // Restart/Logs would silently skip the AI Engine on engine-enabled
         // installs.
-        private string ComposeProfileArgs =>
-            EngineEnabled ? "--profile ai --profile engine" : "--profile ai";
+        private string ComposeProfileArgs
+        {
+            get
+            {
+                var args = "--profile ai";
+                if (EngineEnabled) args += " --profile engine";
+                if (CopilotEnabled) args += " --profile copilot";
+                return args;
+            }
+        }
 
         private async Task RunComposeCommand(string command)
         {
@@ -1321,6 +1363,12 @@ namespace FalconPulsar.Tray
         private void OpenAiEngine()
         {
             Process.Start(new ProcessStartInfo($"http://localhost:{EnginePort}")
+            { UseShellExecute = true });
+        }
+
+        private void OpenCopilot()
+        {
+            Process.Start(new ProcessStartInfo($"http://localhost:{CopilotPort}")
             { UseShellExecute = true });
         }
 
@@ -1493,7 +1541,7 @@ namespace FalconPulsar.Tray
             var aboutForm = new Form
             {
                 Text = "About FalconPulsar",
-                ClientSize = new Size(540, 480),
+                ClientSize = new Size(540, 528),
                 StartPosition = FormStartPosition.CenterScreen,
                 FormBorderStyle = FormBorderStyle.FixedDialog,
                 MaximizeBox = false,
@@ -1586,28 +1634,41 @@ namespace FalconPulsar.Tray
             var coreInfo = new ContainerInfo { Version = "…", Revision = string.Empty };
             var uiInfo = coreInfo;
             var gwInfo = coreInfo;
+            var engInfo = coreInfo;
+            var copInfo = coreInfo;
             var composeVer = "…";
+            bool copilot = CopilotEnabled;
             try
             {
-                ContainerInfo c = default, u = default, g = default;
+                ContainerInfo c = default, u = default, g = default, e = default, cp = default;
                 string cv = string.Empty;
                 var gather = Task.Run(() =>
                 {
                     c  = GetContainerInfo("falconpulsar-core");
                     u  = GetContainerInfo("falconpulsar-ui");
                     g  = GetContainerInfo("falconpulsar-ai-gateway");
+                    e  = GetContainerInfo("falconpulsar-ai-engine");
+                    if (copilot) cp = GetContainerInfo("falconpulsar-copilot");
                     cv = GetComposeVersion();
                 });
                 if (gather.Wait(4000))
                 {
-                    coreInfo = c; uiInfo = u; gwInfo = g; composeVer = cv;
+                    coreInfo = c; uiInfo = u; gwInfo = g; engInfo = e; copInfo = cp; composeVer = cv;
                 }
             }
             catch { /* leave the "…" placeholders — never let About hang */ }
 
-            string[] names = { "Core Engine", "Compose", "Web UI", "AI Capabilities" };
-            string[] vers  = { coreInfo.DisplayString, composeVer, uiInfo.DisplayString, gwInfo.DisplayString };
-            bool[] oks     = { _coreRunning, true, _uiRunning, _gatewayRunning };
+            // AI Engine is standard; Command Center appears when the install opted in.
+            var namesList = new System.Collections.Generic.List<string> { "Core Engine", "Compose", "Web UI", "AI Capabilities", "AI Engine" };
+            var versList  = new System.Collections.Generic.List<string> { coreInfo.DisplayString, composeVer, uiInfo.DisplayString, gwInfo.DisplayString, engInfo.DisplayString };
+            var oksList   = new System.Collections.Generic.List<bool>   { _coreRunning, true, _uiRunning, _gatewayRunning, _engineRunning };
+            if (copilot)
+            {
+                namesList.Add("Command Center"); versList.Add(copInfo.DisplayString); oksList.Add(_copilotRunning);
+            }
+            string[] names = namesList.ToArray();
+            string[] vers  = versList.ToArray();
+            bool[] oks     = oksList.ToArray();
 
             // 2x2 grid of 2-line cells. Each cell:
             //
@@ -1627,7 +1688,7 @@ namespace FalconPulsar.Tray
             int gridY = 260;
             const int rowH = 48;     // was 30 (single-line); 48 fits 2 stacked Labels with breathing room
             const int lineGap = 22;  // vertical distance between the two lines within a cell
-            for (int i = 0; i < 4; i++)
+            for (int i = 0; i < names.Length; i++)
             {
                 int col = i % 2;
                 int row = i / 2;
