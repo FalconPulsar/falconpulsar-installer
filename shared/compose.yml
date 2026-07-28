@@ -260,6 +260,12 @@ services:
       # Bearer service token (the same one Core mints for the gateway),
       # written to .env by the installer after first-run init.
       FP_CORE_TOKEN: ${FP_CORE_TOKEN:-${FP_API_KEY:-}}
+      # Key material for encrypting connection credentials at rest in the
+      # engine's SQLite registry (services/bff/src/secrets.ts derives an
+      # engine-specific key from it via HKDF). Deliberately the gateway
+      # secret and NOT FP_API_KEY: this must have a stable lifecycle, and a
+      # rotating service token would orphan every stored credential.
+      FP_GATEWAY_SECRET: ${FP_GATEWAY_SECRET:-}
       # Never enable simulation mode on a plant host — it trusts client role
       # headers (x-fp-role / x-fp-user) and is a full auth bypass.
       FP_SIM: ${FP_SIM:-}
