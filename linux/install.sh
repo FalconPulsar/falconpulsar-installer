@@ -450,8 +450,12 @@ fi
 # with it — before we get here.
 if [ -f "${FP_HOME}/.env" ]; then
     _fp_seeded=""
+    # FP_AI_ENGINE_ENABLED is deliberately NOT carried forward: the engine is
+    # a standard service now and the value is force-set true above. Seeding it
+    # from a pre-change .env would silently restore "false" and skip creating
+    # the engine data dir while compose starts the container regardless.
     for _fp_var in FP_DATA_DIR FP_GATEWAY_DATA_DIR FP_ENGINE_DATA_DIR FP_COPILOT_DATA_DIR \
-        FP_AI_ENGINE_ENABLED FP_COPILOT_ENABLED FP_COPILOT_PORT FP_COPILOT_MODE \
+        FP_COPILOT_ENABLED FP_COPILOT_PORT FP_COPILOT_MODE \
         FP_AUTH_MODE FP_SSO_PROVIDER \
         FP_REST_PORT FP_WS_PORT \
         FP_PUBSUB_PORT FP_GATEWAY_PORT FP_UI_PORT FP_REGISTRY FP_VERSION \
@@ -1187,7 +1191,7 @@ if [ "${FP_COPILOT_ENABLED:-false}" = "true" ]; then
         # Phase 2 — server-side stack links (Core/Gateway/Engine)
         CC_STACK="$(curl -sf "http://127.0.0.1:${FP_COPILOT_PORT}/api/cc/stack-status" 2>/dev/null || true)"
         if [ -n "$CC_STACK" ]; then
-            CC_READY="$(printf '%s' "$CC_STACK" | sed -n 's/.*"readyForOps":\s*\(true\|false\).*/\1/p' | head -1)"
+            CC_READY="$(printf '%s' "$CC_STACK" | sed -n 's/.*"readyForOps":[[:space:]]*\(true\|false\).*/\1/p' | head -1)"
             CC_CORE="$(printf '%s' "$CC_STACK" | sed -n 's/.*"core":{[^}]*"status":"\([^"]*\)".*/\1/p' | head -1)"
             if [ "$CC_CORE" = "ok" ]; then
                 log_success "Command Center → Core: linked"

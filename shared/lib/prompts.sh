@@ -313,6 +313,14 @@ fp_refresh_compose_profiles() {
     export COMPOSE_PROFILES
 }
 
+# DEPRECATED / INTENTIONALLY UNCALLED. The AI Engine is a STANDARD service
+# now: it has no compose profile and every installer force-sets
+# FP_AI_ENGINE_ENABLED=true. This function is kept only for reference (and
+# for a possible future re-opt-in) — do NOT wire it back in without also
+# restoring the "engine" profile in shared/compose.yml, or it will set the
+# flag false while compose starts the container anyway. Command Center
+# (prompt_copilot) is the only optional module.
+#
 # Ask the operator whether to install the optional AI Engine — the agent
 # runtime used to author, simulate and deploy agents. It runs as one extra
 # container behind the "engine" compose profile, and its config + agent

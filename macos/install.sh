@@ -358,8 +358,11 @@ fp_seed_from_existing_env() {
     log_info "carried ${var}=${val} forward from existing .env"
 }
 if [ -f "${FP_HOME}/.env" ]; then
+    # FP_AI_ENGINE_ENABLED is deliberately NOT carried forward: the engine is
+    # a standard service now and the value is force-set true below. (Matches
+    # linux/install.sh — keep the two lists identical.)
     for setting in FP_DATA_DIR FP_GATEWAY_DATA_DIR FP_ENGINE_DATA_DIR FP_COPILOT_DATA_DIR \
-                   FP_AI_ENGINE_ENABLED FP_COPILOT_ENABLED FP_COPILOT_PORT FP_COPILOT_MODE \
+                   FP_COPILOT_ENABLED FP_COPILOT_PORT FP_COPILOT_MODE \
                    FP_AUTH_MODE FP_SSO_PROVIDER \
                    FP_REST_PORT FP_WS_PORT FP_PUBSUB_PORT FP_GATEWAY_PORT FP_UI_PORT \
                    FP_COOKIE_SECURE FP_UPDATE_MODE; do
@@ -747,6 +750,8 @@ fp_offer_path_append "$FP_HOME"
 log_step "verifying installation health"
 HEALTH_OK=true
 HEALTH_SVCS="falconpulsar-core falconpulsar-ui falconpulsar-ai-gateway"
+[ "${FP_AI_ENGINE_ENABLED:-false}" = "true" ] && HEALTH_SVCS="${HEALTH_SVCS} falconpulsar-ai-engine"
+[ "${FP_COPILOT_ENABLED:-false}" = "true" ] && HEALTH_SVCS="${HEALTH_SVCS} falconpulsar-copilot"
 for svc in $HEALTH_SVCS; do
     if docker ps --filter "name=$svc" --filter "status=running" -q 2>/dev/null | grep -q .; then
         log_success "$svc: running"
@@ -755,6 +760,35 @@ for svc in $HEALTH_SVCS; do
         HEALTH_OK=false
     fi
 done
+
+# Command Center verification — mirrors linux/install.sh so both platforms
+# report the same thing: process health, then the server-side stack links.
+if [ "${FP_COPILOT_ENABLED:-false}" = "true" ]; then
+    if curl -sf "http://127.0.0.1:${FP_COPILOT_PORT}/health" >/dev/null 2>&1; then
+        log_success "Command Center: process health on port ${FP_COPILOT_PORT}"
+        CC_STACK="$(curl -sf "http://127.0.0.1:${FP_COPILOT_PORT}/api/cc/stack-status" 2>/dev/null || true)"
+        if [ -n "$CC_STACK" ]; then
+            CC_READY="$(printf '%s' "$CC_STACK" | sed -n 's/.*"readyForOps":[[:space:]]*\(true\|false\).*/\1/p' | head -1)"
+            CC_CORE="$(printf '%s' "$CC_STACK" | sed -n 's/.*"core":{[^}]*"status":"\([^"]*\)".*/\1/p' | head -1)"
+            if [ "$CC_CORE" = "ok" ]; then
+                log_success "Command Center → Core: linked"
+            else
+                log_warn "Command Center → Core: not linked yet (open setup UI or run scripts/validate-stack.sh)"
+                log_warn "  Install only starts containers; stack communication is validated next."
+            fi
+            if [ "$CC_READY" = "true" ]; then
+                log_success "Command Center stack links: readyForOps"
+            else
+                log_warn "Command Center stack links: not fully ready — complete setup in the UI"
+            fi
+        else
+            log_warn "Command Center /api/cc/stack-status unavailable (rebuild image with lifecycle support)"
+        fi
+    else
+        log_warn "Command Center: not responding yet on port ${FP_COPILOT_PORT}"
+        HEALTH_OK=false
+    fi
+fi
 
 if curl -sf "http://localhost:${FP_REST_PORT}/api/v1/health" >/dev/null 2>&1; then
     log_success "REST API: responding on port ${FP_REST_PORT}"

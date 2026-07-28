@@ -294,7 +294,10 @@ services:
       # In-container data root (host path is only the bind mount source).
       FP_COPILOT_DATA_DIR: /data
       FP_CC_DEPLOYMENT_MODE: plant
-      FP_ENGINE_REQUIRED: ${FP_AI_ENGINE_ENABLED:-false}
+      # AI Engine is a standard service now, so the default is true — a .env
+      # predating that change (no key) must not tell Command Center the engine
+      # is absent while the container is in fact running.
+      FP_ENGINE_REQUIRED: ${FP_AI_ENGINE_ENABLED:-true}
       FP_AI_GATEWAY_HOST: ai-gateway
       FP_AI_GATEWAY_PORT: "7436"
       FP_AI_ENGINE_HOST: ai-engine

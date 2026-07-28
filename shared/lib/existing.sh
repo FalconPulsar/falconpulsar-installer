@@ -481,6 +481,22 @@ fp_try_upgrade_fastpath() {
             printf '%s\n' "$env_content" > "${home}/.env"
             log_info "set FP_AI_GATEWAY_ENABLED=true in .env (AI Capabilities are a mandatory component)"
         fi
+        # Legacy .env compat: the AI Engine used to be an opt-in module
+        # behind compose profile "engine". It is now a STANDARD service
+        # (no profile), so compose starts it regardless — but every
+        # consumer that still gates on the flag (fp console, both trays,
+        # and the copilot service's FP_ENGINE_REQUIRED) would hide it
+        # while it runs. Force the recorded value true on upgrade.
+        if grep -q '^FP_AI_ENGINE_ENABLED=' "${home}/.env" \
+           && ! grep -q '^FP_AI_ENGINE_ENABLED=true$' "${home}/.env"; then
+            local eng_env_content
+            eng_env_content=$(sed 's/^FP_AI_ENGINE_ENABLED=.*/FP_AI_ENGINE_ENABLED=true/' "${home}/.env")
+            printf '%s\n' "$eng_env_content" > "${home}/.env"
+            log_info "set FP_AI_ENGINE_ENABLED=true in .env (the AI Engine is now a standard component)"
+        elif ! grep -q '^FP_AI_ENGINE_ENABLED=' "${home}/.env"; then
+            printf 'FP_AI_ENGINE_ENABLED=true\n' >> "${home}/.env"
+            log_info "added FP_AI_ENGINE_ENABLED=true to .env (the AI Engine is now a standard component)"
+        fi
         # SEC-001: legacy installs that skipped the gateway have no bridge
         # secret. Generate one only when absent — both core and ai-gateway
         # read it, and they pick it up on the recreate below.
@@ -536,6 +552,60 @@ fp_try_upgrade_fastpath() {
             fi
             log_info "created AI Gateway data directory: ${gw_data_dir}"
         fi
+        # Same treatment for the AI Engine's bind mount: the engine is now
+        # a standard service, so a legacy install that had declined it has
+        # no ai-engine-data dir — Docker would auto-create it root-owned
+        # and the container (running as FP_UID:FP_GID) could not write.
+        local eng_data_dir
+        eng_data_dir="$(sed -n 's/^FP_ENGINE_DATA_DIR=//p' "${home}/.env" | head -n1)"
+        if [ -z "$eng_data_dir" ]; then
+            local eng_base_dir
+            eng_base_dir="$(sed -n 's/^FP_DATA_DIR=//p' "${home}/.env" | head -n1)"
+            [ -n "$eng_base_dir" ] && eng_data_dir="${eng_base_dir}/../ai-engine-data"
+        fi
+        if [ -n "$eng_data_dir" ] && [ ! -d "$eng_data_dir" ]; then
+            mkdir -p "$eng_data_dir" || die "could not create ${eng_data_dir}"
+            local eng_uid eng_gid
+            eng_uid="$(sed -n 's/^FP_UID=//p' "${home}/.env" | head -n1)"
+            eng_gid="$(sed -n 's/^FP_GID=//p' "${home}/.env" | head -n1)"
+            if [ -n "$eng_uid" ] && [ -n "$eng_gid" ]; then
+                chown "${eng_uid}:${eng_gid}" "$eng_data_dir" 2>/dev/null || true
+            fi
+            log_info "created AI Engine data directory: ${eng_data_dir}"
+        fi
+        # Command Center's data dir + the auth-policy.json the refreshed
+        # compose.yml bind-mounts read-only into it. Only when opted in:
+        # without the file Docker auto-creates a DIRECTORY at that path and
+        # copilot crash-loops (same failure mode as gateway.yaml above).
+        if grep -q '^FP_COPILOT_ENABLED=true' "${home}/.env" 2>/dev/null; then
+            local cop_data_dir
+            cop_data_dir="$(sed -n 's/^FP_COPILOT_DATA_DIR=//p' "${home}/.env" | head -n1)"
+            [ -z "$cop_data_dir" ] && cop_data_dir="${home}/copilot-data"
+            if [ ! -d "$cop_data_dir" ]; then
+                mkdir -p "$cop_data_dir" || die "could not create ${cop_data_dir}"
+                local cop_uid cop_gid
+                cop_uid="$(sed -n 's/^FP_UID=//p' "${home}/.env" | head -n1)"
+                cop_gid="$(sed -n 's/^FP_GID=//p' "${home}/.env" | head -n1)"
+                if [ -n "$cop_uid" ] && [ -n "$cop_gid" ]; then
+                    chown "${cop_uid}:${cop_gid}" "$cop_data_dir" 2>/dev/null || true
+                fi
+                log_info "created Command Center data directory: ${cop_data_dir}"
+            fi
+            if [ -d "${home}/auth-policy.json" ]; then
+                log_warn "${home}/auth-policy.json is a directory (docker auto-created it) — removing it"
+                rm -rf "${home}/auth-policy.json"
+            fi
+            if [ ! -f "${home}/auth-policy.json" ]; then
+                if declare -f fp_write_auth_policy >/dev/null 2>&1; then
+                    fp_write_auth_policy "${home}/auth-policy.json"
+                else
+                    printf '{\n  "version": 1,\n  "authMode": "local",\n  "ssoProvider": "none",\n  "ssoIssuer": "",\n  "ssoClientId": "",\n  "breakGlassLocalAdmin": true,\n  "notes": "Local break-glass admin always exists. Finish SSO mapping in Web UI Config Hub when ready."\n}\n' \
+                        > "${home}/auth-policy.json"
+                fi
+                chmod 0644 "${home}/auth-policy.json" 2>/dev/null || true
+                log_info "provisioned ${home}/auth-policy.json for Command Center"
+            fi
+        fi
     fi
 
     # Snapshot the image IDs each compose service currently resolves to,
@@ -556,9 +626,22 @@ fp_try_upgrade_fastpath() {
     # compat (pre-mandatory-gateway installs gated ai-gateway behind the
     # profile, and the stack-file refresh above can be skipped when the
     # bundle is incomplete); a no-op on current compose.yml files.
+    #
+    # --profile copilot is added when the surviving .env opted into Command
+    # Center. A --profile flag on the CLI *REPLACES* COMPOSE_PROFILES from
+    # .env (see the note in fp_apply_existing_action), so without naming it
+    # here the upgrade would pull+recreate every service EXCEPT copilot,
+    # leaving Command Center running the pre-upgrade image. AI Engine needs
+    # no profile — it is a standard service.
+    local _fp_profiles="--profile ai"
+    if grep -q '^FP_COPILOT_ENABLED=true' "${home}/.env" 2>/dev/null; then
+        _fp_profiles="${_fp_profiles} --profile copilot"
+    fi
     if cd "$home" 2>/dev/null; then
-        for svc in $(docker compose --profile ai config --services 2>/dev/null); do
-            current_image=$(docker compose --profile ai images -q "$svc" 2>/dev/null | head -1 || true)
+        # shellcheck disable=SC2086  # word-splitting of the flag list is intended
+        for svc in $(docker compose $_fp_profiles config --services 2>/dev/null); do
+            # shellcheck disable=SC2086
+            current_image=$(docker compose $_fp_profiles images -q "$svc" 2>/dev/null | head -1 || true)
             if [ -n "$current_image" ]; then
                 prev_image_ids="${prev_image_ids} ${current_image}"
             fi
@@ -570,10 +653,12 @@ fp_try_upgrade_fastpath() {
     if declare -f fp_compose_pull_with_retry >/dev/null 2>&1; then
         fp_compose_pull_with_retry "$home" || return 1
     else
-        ( cd "$home" && docker compose --profile ai pull ) || return 1
+        # shellcheck disable=SC2086
+        ( cd "$home" && docker compose $_fp_profiles pull ) || return 1
     fi
     log_step "Upgrade in place: recreating containers"
-    ( cd "$home" && docker compose --profile ai up -d ) || return 1
+    # shellcheck disable=SC2086
+    ( cd "$home" && docker compose $_fp_profiles up -d ) || return 1
 
     # ── Gateway bootstrap for migrated installs ─────────────────────────
     # Legacy installs that declined the (formerly optional) AI Gateway
@@ -607,7 +692,8 @@ fp_try_upgrade_fastpath() {
                 fp_bootstrap_gateway_token "${home}/.env"
             bootstrapped_gateway=1
             # Recreate so the gateway container picks up the fresh key.
-            ( cd "$home" && docker compose --profile ai up -d ) || return 1
+            # shellcheck disable=SC2086
+            ( cd "$home" && docker compose $_fp_profiles up -d ) || return 1
         else
             ai_setup_incomplete=1
             log_warn "cannot mint the AI Gateway service token without admin credentials"

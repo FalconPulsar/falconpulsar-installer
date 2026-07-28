@@ -520,7 +520,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             } else {
                 let allExpectedRunning = self.coreRunning && self.uiRunning && self.gatewayRunning
                     && (!engineExpected || self.engineRunning)
-                let anyRunning = self.coreRunning || self.uiRunning || self.gatewayRunning || self.engineRunning
+                    && (!copilotExpected || self.copilotRunning)
+                let anyRunning = self.coreRunning || self.uiRunning || self.gatewayRunning
+                    || self.engineRunning || self.copilotRunning
                 if allExpectedRunning && self.apiHealthy {
                     self.status = .running
                 } else if allExpectedRunning {

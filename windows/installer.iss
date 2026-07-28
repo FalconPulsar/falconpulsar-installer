@@ -135,6 +135,10 @@ Source: "..\shared\lib\bootstrap.sh";                       DestDir: "{app}\shar
 Source: "..\shared\lib\registry_auth.sh";                   DestDir: "{app}\shared\lib";     Flags: ignoreversion
 Source: "..\shared\lib\fpcli.sh";                           DestDir: "{app}\shared\lib";     Flags: ignoreversion
 Source: "..\shared\lib\existing.sh";                        DestDir: "{app}\shared\lib";     Flags: ignoreversion
+; auth.sh — shipped by bundle.sh and build-dmg.sh too. Without it the
+; reinstall admin-password gate silently no-ops and the planted uninstaller
+; falls through to "auth.sh not found — proceeding without admin auth".
+Source: "..\shared\lib\auth.sh";                            DestDir: "{app}\shared\lib";     Flags: ignoreversion
 
 ; ── PowerShell helpers ──────────────────────────────────────────────────────
 Source: "helpers\lib.ps1";                                  DestDir: "{app}\helpers";        Flags: ignoreversion

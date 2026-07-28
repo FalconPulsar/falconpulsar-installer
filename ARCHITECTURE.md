@@ -621,13 +621,16 @@ emergency uninstall when Core is completely broken.
 
 ### `shared/compose.yml`
 
-Three services on a single user-defined bridge network `falconpulsar`:
+Five services on a single user-defined bridge network `falconpulsar`. Four are
+standard; only `copilot` is gated behind a compose profile:
 
-| Service | Image | Ports | Depends on |
-|---|---|---|---|
-| `core` | `${FP_REGISTRY}/core:${FP_VERSION}` | 7433 / 7434 / 7435 | — |
-| `ui` | `falconpulsar/ui:latest` | 8080 | `core` (healthy) |
-| `ai-gateway` | `falconpulsar/ai-gateway:latest` | 7436 | `core` (healthy) |
+| Service | Image | Ports | Depends on | Profile |
+|---|---|---|---|---|
+| `core` | `${FP_REGISTRY}/core:${FP_VERSION}` | 7433 / 7434 / 7435 | — | — |
+| `ui` | `falconpulsar/ui:latest` | 8080 | `core` (healthy) | — |
+| `ai-gateway` | `falconpulsar/ai-gateway:latest` | 7436 | `core` (healthy) | — |
+| `ai-engine` | `${FP_REGISTRY}/ai-engine:${FP_VERSION}` | 8085 | `core` (healthy) | — (standard) |
+| `copilot` | `${FP_REGISTRY}/copilot:${FP_COPILOT_IMAGE_TAG}` | 8090 → 8080 | `core` (healthy) | `copilot` |
 
 - The `core` service has a `bash /dev/tcp/localhost/7433` healthcheck (5 retries × 15 s interval, 90 s start period)
 - The `ai-gateway` service has the same `bash /dev/tcp/localhost/7436` healthcheck shape (the image ships without curl)

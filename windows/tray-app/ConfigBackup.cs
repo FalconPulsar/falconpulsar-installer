@@ -419,7 +419,7 @@ namespace FalconPulsar.Tray
         // ports, flags, admin user) is portable and carried from the backup.
         private static readonly string[] MachineSpecificEnvKeys =
         {
-            "FP_DATA_DIR", "FP_GATEWAY_DATA_DIR", "FP_ENGINE_DATA_DIR",
+            "FP_DATA_DIR", "FP_GATEWAY_DATA_DIR", "FP_ENGINE_DATA_DIR", "FP_COPILOT_DATA_DIR",
             "FP_GATEWAY_CONFIG", "FP_UID", "FP_GID",
         };
 

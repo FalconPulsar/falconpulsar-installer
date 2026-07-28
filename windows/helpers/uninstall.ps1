@@ -263,6 +263,18 @@ fi
 # in Step 3 below.
 rm -f "`$HOME_DIR/compose.yml" 2>/dev/null
 if [ "`$PURGE" = "1" ]; then
+    # Custom data dirs pointed OUTSIDE the stack home are not covered by the
+    # `rm -rf` of the home in Step 3, so they would survive a full purge.
+    # Harvest them from .env BEFORE it is deleted just below — same set and
+    # same guards as linux/uninstall.sh and macos/uninstall.sh.
+    HOME_ABS=`$(cd "`$HOME_DIR" 2>/dev/null && pwd -P || echo "`$HOME_DIR")
+    for V in FP_DATA_DIR FP_GATEWAY_DATA_DIR FP_ENGINE_DATA_DIR FP_COPILOT_DATA_DIR; do
+        D=`$(sed -n "s/^`$V=//p" "`$HOME_DIR/.env" 2>/dev/null | tail -n1 | tr -d '\r')
+        case "`$D" in /*) ;; *) continue ;; esac
+        DABS=`$(cd "`$D" 2>/dev/null && pwd -P || echo "`$D")
+        case "`$DABS" in ""|/|"`$HOME_ABS"|"`$HOME_ABS"/*) continue ;; esac
+        rm -rf "`$DABS" 2>/dev/null && echo "[info] removed custom data dir `$DABS"
+    done
     rm -f "`$HOME_DIR/.env" "`$HOME_DIR/gateway.yaml" 2>/dev/null
 fi
 echo "[info] cleaned `$HOME_DIR"

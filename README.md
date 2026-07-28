@@ -37,12 +37,12 @@ component live in those repositories and on
 | **Core** | `falconpulsar/core` | 7433 REST, 7434 WS, 7435 pub/sub |
 | **UI** | `falconpulsar/ui` | 8080 (nginx → Core + Gateway) |
 | **AI Gateway** | `falconpulsar/ai-gateway` | 7436 (often bound to localhost; UI proxies) |
+| **AI Engine** | `falconpulsar/ai-engine` | 8085 (bound to localhost by default) — data in `$FP_HOME/ai-engine-data` |
 
-**Not started by default** (opt-in during install on every platform):
+**Optional module** (opt-in during install on every platform):
 
 | Module | Flag / profile | Default port | Notes |
 |--------|----------------|--------------|--------|
-| **AI Engine** | `FP_AI_ENGINE_ENABLED=true` → profile `engine` | 8085 | Data in `$FP_HOME/ai-engine-data` |
 | **Command Center** | `FP_COPILOT_ENABLED=true` → profile `copilot` | 8090 | Clean data; ops workspace |
 
 Install also asks **sign-in security**: local users (default), SSO later, or SSO

@@ -1740,7 +1740,11 @@ namespace FalconPulsar.Tray
             // Links
             // Below the 2x2 component grid (row 1 version line ends ~y=350);
             // was 340, which overlapped the Web UI / AI Capabilities versions.
-            int linksY = 365;
+            // Derived from the grid so adding a component row (AI Engine is
+            // standard now, Command Center is optional) pushes the links and
+            // the two footer lines down instead of overlapping the last cell.
+            int gridRows = (names.Length + 1) / 2;
+            int linksY = gridY + gridRows * rowH + 15;
             var linkData = new[] {
                 ("Documentation", "https://falconpulsar.com/docs"),
                 ("Release Notes", "https://github.com/FalconPulsar/falconpulsar-installer/releases"),
@@ -1773,7 +1777,7 @@ namespace FalconPulsar.Tray
                 BackColor = Color.Transparent,
                 AutoSize = false,
                 Size = new Size(540, 18),
-                Location = new Point(0, 390),
+                Location = new Point(0, linksY + 25),
                 TextAlign = ContentAlignment.MiddleCenter
             });
 
@@ -1785,7 +1789,7 @@ namespace FalconPulsar.Tray
                 BackColor = Color.Transparent,
                 AutoSize = false,
                 Size = new Size(540, 18),
-                Location = new Point(0, 410),
+                Location = new Point(0, linksY + 45),
                 TextAlign = ContentAlignment.MiddleCenter
             });
 

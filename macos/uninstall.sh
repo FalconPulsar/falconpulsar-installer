@@ -277,20 +277,20 @@ if [ -f "${FP_HOME}/compose.yml" ]; then
     # NB: stderr is INTENTIONALLY surfaced here. Previous versions had
     # `2>/dev/null` which hid the actual error when docker compose failed,
     # so the user saw "Containers stopped" but nothing was actually removed.
-    # --profile ai --profile engine: a --profile CLI flag REPLACES the .env
+    # --profile ai --profile engine --profile copilot: a --profile CLI flag REPLACES the .env
     # COMPOSE_PROFILES, so BOTH known profiles must be named for their
     # services to be in the `down` model — "ai" for legacy pre-mandatory-
     # gateway stacks that hid ai-gateway behind it, "engine" for the
     # optional ai-engine. Without "engine" the ai-engine container is left
     # Up and holds the bridge network open.
     if [ "$FP_PURGE" = "1" ]; then
-        if ( cd "$FP_HOME" && docker compose --profile ai --profile engine down --remove-orphans --volumes ); then
+        if ( cd "$FP_HOME" && docker compose --profile ai --profile engine --profile copilot down --remove-orphans --volumes ); then
             log_info "Containers and named volumes removed"
         else
             log_warn "docker compose down failed (see error above) — continuing anyway"
         fi
     else
-        if ( cd "$FP_HOME" && docker compose --profile ai --profile engine down --remove-orphans ); then
+        if ( cd "$FP_HOME" && docker compose --profile ai --profile engine --profile copilot down --remove-orphans ); then
             log_info "Containers stopped and removed (volumes preserved)"
         else
             log_warn "docker compose down failed (see error above) — continuing anyway"
@@ -327,12 +327,12 @@ log_step "Removing Docker images"
 set +e
 FP_IMAGE_RM_FAILED=0
 if [ -f "${FP_HOME}/compose.yml" ]; then
-    # --profile ai --profile engine: a --profile flag REPLACES the .env
+    # --profile ai --profile engine --profile copilot: a --profile flag REPLACES the .env
     # COMPOSE_PROFILES, so both must be named to enumerate every gated
     # image — "ai" for a legacy compose.yml that omitted the ai-gateway
     # image, "engine" for the optional ai-engine image. Without them those
     # images survive the uninstall.
-    IMAGES="$( cd "$FP_HOME" && docker compose --profile ai --profile engine config --images 2>/dev/null | sort -u )"
+    IMAGES="$( cd "$FP_HOME" && docker compose --profile ai --profile engine --profile copilot config --images 2>/dev/null | sort -u )"
     if [ -n "$IMAGES" ]; then
         # Process substitution (not a pipe): a `while` on the right of a
         # pipe runs in a subshell, so the counter would be lost.
