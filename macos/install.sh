@@ -387,7 +387,10 @@ FP_GATEWAY_DATA_DIR="${FP_GATEWAY_DATA_DIR:-${FP_HOME}/ai-gateway-data}"
 # Optional AI Engine (author/simulate/deploy agents). Off by default; its
 # config + agent state live in the SAME main folder as Core/Gateway.
 FP_ENGINE_DATA_DIR="${FP_ENGINE_DATA_DIR:-${FP_HOME}/ai-engine-data}"
-FP_AI_ENGINE_ENABLED="${FP_AI_ENGINE_ENABLED:-false}"
+# AI Engine is now a STANDARD service (always installed). Force-enabled so the
+# fp console / tray / update-check surfaces always show it (Command Center is
+# the only optional opt-in now).
+FP_AI_ENGINE_ENABLED="true"
 # Optional Command Center — always define path under FP_HOME (like Engine).
 FP_COPILOT_DATA_DIR="${FP_COPILOT_DATA_DIR:-${FP_HOME}/copilot-data}"
 FP_COPILOT_ENABLED="${FP_COPILOT_ENABLED:-false}"
@@ -397,13 +400,10 @@ FP_AUTH_MODE="${FP_AUTH_MODE:-local}"
 FP_SSO_PROVIDER="${FP_SSO_PROVIDER:-none}"
 FP_SSO_ISSUER="${FP_SSO_ISSUER:-}"
 FP_SSO_CLIENT_ID="${FP_SSO_CLIENT_ID:-}"
-# Optional modules: engine and/or copilot compose profiles.
+# Command Center is the only profile-gated optional module; AI Engine is now a
+# standard service (no compose profile).
 COMPOSE_PROFILES=""
-if [ "${FP_AI_ENGINE_ENABLED}" = "true" ]; then COMPOSE_PROFILES="engine"; fi
-if [ "${FP_COPILOT_ENABLED}" = "true" ]; then
-    if [ -n "$COMPOSE_PROFILES" ]; then COMPOSE_PROFILES="${COMPOSE_PROFILES},copilot"
-    else COMPOSE_PROFILES="copilot"; fi
-fi
+if [ "${FP_COPILOT_ENABLED}" = "true" ]; then COMPOSE_PROFILES="copilot"; fi
 FP_REST_PORT="${FP_REST_PORT:-7433}"
 FP_WS_PORT="${FP_WS_PORT:-7434}"
 FP_PUBSUB_PORT="${FP_PUBSUB_PORT:-7435}"
@@ -450,7 +450,6 @@ fp_registry_ensure_access
 # Options: front-door HTTPS, auth mode, optional modules, then admin.
 prompt_transport_mode
 prompt_auth_mode
-prompt_ai_engine
 prompt_copilot
 if [ "${FP_COPILOT_ENABLED:-false}" = "true" ]; then
     fp_check_ports_interactive FP_COPILOT_PORT

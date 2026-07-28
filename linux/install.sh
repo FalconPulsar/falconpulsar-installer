@@ -155,7 +155,10 @@ FP_GATEWAY_DATA_DIR="${FP_GATEWAY_DATA_DIR:-${FP_HOME}/ai-gateway-data}"
 # Optional AI Engine (author/simulate/deploy agents). Off by default; its
 # config + agent state live in the SAME main folder as Core/Gateway.
 FP_ENGINE_DATA_DIR="${FP_ENGINE_DATA_DIR:-${FP_HOME}/ai-engine-data}"
-FP_AI_ENGINE_ENABLED="${FP_AI_ENGINE_ENABLED:-false}"
+# AI Engine is now a STANDARD service (always installed). Force-enabled so the
+# fp console / tray / update-check surfaces always show it (Command Center is
+# the only optional opt-in now).
+FP_AI_ENGINE_ENABLED="true"
 # Optional Command Center — same layout: sibling of data/ under FP_HOME.
 # Path is always defined (like FP_ENGINE_DATA_DIR); directory is created
 # only when the module is enabled.
@@ -167,13 +170,10 @@ FP_AUTH_MODE="${FP_AUTH_MODE:-local}"
 FP_SSO_PROVIDER="${FP_SSO_PROVIDER:-none}"
 FP_SSO_ISSUER="${FP_SSO_ISSUER:-}"
 FP_SSO_CLIENT_ID="${FP_SSO_CLIENT_ID:-}"
-# Optional modules use compose profiles (engine, copilot) — derived below.
+# Command Center is the only profile-gated optional module; AI Engine is now a
+# standard service (no compose profile).
 COMPOSE_PROFILES=""
-if [ "${FP_AI_ENGINE_ENABLED}" = "true" ]; then COMPOSE_PROFILES="engine"; fi
-if [ "${FP_COPILOT_ENABLED}" = "true" ]; then
-    if [ -n "$COMPOSE_PROFILES" ]; then COMPOSE_PROFILES="${COMPOSE_PROFILES},copilot"
-    else COMPOSE_PROFILES="copilot"; fi
-fi
+if [ "${FP_COPILOT_ENABLED}" = "true" ]; then COMPOSE_PROFILES="copilot"; fi
 FP_INSTALL_MODE="${FP_INSTALL_MODE:-}"        # docker | systemd
 FP_REST_PORT="${FP_REST_PORT:-7433}"
 FP_WS_PORT="${FP_WS_PORT:-7434}"
@@ -676,11 +676,11 @@ esac
 # ── Step 6: Generate compose.yml + .env + gateway.yaml ──────────────────────
 log_step "step 6/8 — stack files in ${FP_HOME}"
 
-# Options: front-door HTTPS, optional modules, auth mode, then admin.
-# prompt_ai_engine / prompt_copilot refresh COMPOSE_PROFILES; admin last.
+# Options: front-door HTTPS, auth mode, optional module (Command Center), admin.
+# AI Engine is standard (always installed) — no prompt. prompt_copilot refreshes
+# COMPOSE_PROFILES; admin last.
 prompt_transport_mode
 prompt_auth_mode
-prompt_ai_engine
 prompt_copilot
 if [ "${FP_COPILOT_ENABLED:-false}" = "true" ]; then
     fp_check_ports_interactive FP_COPILOT_PORT

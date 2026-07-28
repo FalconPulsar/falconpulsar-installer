@@ -458,21 +458,6 @@ struct OptionsPage: View {
             }
 
             Toggle(isOn: Binding(
-                get: { state.aiEngineEnabled },
-                set: { state.aiEngineEnabled = $0; state.aiEngineUserSet = true }
-            )) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Install the optional AI Engine")
-                        .font(.callout.bold())
-                    Text("Optional agent runtime — adds one container to the stack. You can enable it later by re-running the installer.")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            .toggleStyle(.checkbox)
-
-            Toggle(isOn: Binding(
                 get: { state.copilotEnabled },
                 set: { state.copilotEnabled = $0; state.copilotUserSet = true }
             )) {

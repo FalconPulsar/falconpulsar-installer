@@ -303,16 +303,11 @@ prompt_transport_mode() {
 # Rebuild COMPOSE_PROFILES from optional-module flags (comma-separated).
 # Call after any change to FP_AI_ENGINE_ENABLED / FP_COPILOT_ENABLED.
 fp_refresh_compose_profiles() {
+    # AI Engine is a standard service (no compose profile). Command Center is
+    # the only profile-gated optional module.
     local profiles=""
-    if [ "${FP_AI_ENGINE_ENABLED:-false}" = "true" ]; then
-        profiles="engine"
-    fi
     if [ "${FP_COPILOT_ENABLED:-false}" = "true" ]; then
-        if [ -n "$profiles" ]; then
-            profiles="${profiles},copilot"
-        else
-            profiles="copilot"
-        fi
+        profiles="copilot"
     fi
     COMPOSE_PROFILES="$profiles"
     export COMPOSE_PROFILES

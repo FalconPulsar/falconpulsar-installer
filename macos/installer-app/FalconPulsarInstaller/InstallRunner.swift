@@ -71,7 +71,7 @@ enum InstallRunner {
         log("[info] Registry: \(state.registryUrl)")
         log("[info] Admin user: \(state.adminUser)")
         log("[info] Admin password: (not logged)")
-        log("[info] AI Engine opt-in: \(state.aiEngineEnabled ? "yes" : "no")")
+        log("[info] AI Engine: standard (always installed)")
         log("[info] Command Center opt-in: \(state.copilotEnabled ? "yes" : "no")")
 
         // Step 0: Pre-flight checks
@@ -398,10 +398,10 @@ enum InstallRunner {
             // .env. The installer itself no longer branches on it — AI
             // capabilities are always installed.
             "export FP_AI_GATEWAY_ENABLED=true",
-            // Optional AI Engine opt-in from the Options page. install.sh
-            // derives COMPOSE_PROFILES=engine and creates the engine data
-            // dir when this is true.
-            "export FP_AI_ENGINE_ENABLED=\(state.aiEngineEnabled ? "true" : "false")",
+            // AI Engine is now a STANDARD service (always installed) — no longer
+            // an opt-in. Exported true so any surface that still reads the flag
+            // treats it as present; install.sh also force-enables it.
+            "export FP_AI_ENGINE_ENABLED=true",
             // Optional Command Center opt-in from the Options page. install.sh
             // derives COMPOSE_PROFILES=copilot and creates the copilot data dir.
             "export FP_COPILOT_ENABLED=\(state.copilotEnabled ? "true" : "false")",

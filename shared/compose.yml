@@ -241,7 +241,8 @@ services:
     container_name: falconpulsar-ai-engine
     restart: unless-stopped
     user: "${FP_UID}:${FP_GID}"
-    profiles: ["engine"]
+    # AI Engine is a standard stack service (no compose profile) — always
+    # installed alongside Core / Web UI / AI Gateway.
     ports:
       # Serves its own Cockpit/Canvas UI. Bound to localhost by default so it
       # is not exposed on the LAN; set FP_ENGINE_BIND=0.0.0.0 in .env for LAN.
