@@ -59,7 +59,8 @@ use that component’s README (manual Docker and from-source steps):
 | Core | [falconpulsar-core](https://github.com/FalconPulsar/falconpulsar-core#build-from-source-linux) |
 | AI Gateway | [falconpulsar-ai-gateway](https://github.com/FalconPulsar/falconpulsar-ai-gateway#build-from-source-manual) |
 | UI | [falconpulsar-ui](https://github.com/FalconPulsar/falconpulsar-ui#build-from-source-manual) |
-| AI Engine (optional) | [falconpulsar-ai-engine](https://github.com/FalconPulsar/falconpulsar-ai-engine) |
+| AI Engine | [falconpulsar-ai-engine](https://github.com/FalconPulsar/falconpulsar-ai-engine) |
+| Command Center (optional) | [falconpulsar-copilot](https://github.com/FalconPulsar/falconpulsar-copilot) |
 
 Compose file used by all platforms: [`shared/compose.yml`](shared/compose.yml).
 Important secrets (generated or preserved by install): `FP_API_KEY`,
@@ -162,12 +163,12 @@ End to end, all three installers do the same six things:
      `~/falconpulsar/`.
 4. **Generate the production stack files** — `compose.yml`, `.env`, and
    `gateway.yaml` — in the stack directory.
-5. **Pull and start the containers** — `core`, `ui`, and `ai-gateway`
-   (the FalconPulsar Gateway — a required component on every platform;
-   it powers Workspace commands, standing watches, and the AI assistant.
-   LLM providers and models are optional and configured post-install in
-   ConfigHub), plus `ai-engine` when the optional AI Engine was
-   selected. Wait for healthchecks to pass.
+5. **Pull and start the containers** — `core`, `ui`, `ai-gateway`, and
+   `ai-engine` (all standard; the FalconPulsar Gateway is required on
+   every platform — it powers Workspace commands, standing watches, and
+   the AI assistant. LLM providers and models are optional and configured
+   post-install in ConfigHub), plus `copilot` (Command Center) when the
+   optional module was selected. Wait for healthchecks to pass.
 6. **Register lifecycle management** — optional systemd user unit on
    Linux, `restart: unless-stopped` on macOS, Start Menu shortcuts +
    system tray auto-start on Windows.
