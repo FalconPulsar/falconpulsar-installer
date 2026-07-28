@@ -673,7 +673,8 @@ bold.
 | `FP_UI_PORT` | `8080` | `compose.yml` | Web UI port |
 | `FP_COPILOT_ENABLED` | `false` | `prompts.sh`, `compose.yml` | Opt-in Command Center (`copilot` profile) |
 | `FP_COPILOT_PORT` | `8090` | `prompts.sh`, `compose.yml` | Command Center host port |
-| `FP_COPILOT_MODE` | `clean` | `prompts.sh`, `.env` | Plant data mode (`clean` default; `demo` optional) |
+| `FP_COPILOT_IMAGE_TAG` | `${FP_VERSION:-latest}` | `.env`, `compose.yml` | Command Center image tag. The published image is always CLEAN (empty workspace) — data mode is baked at build time (`VITE_CC_DATA_MODE`) and no demo image is published, so point this at your own build if you need the demo story. |
+| `COMPOSE_PROFILES` | *(empty)* | `prompts.sh`, `.env` | Gated services. Only `copilot` uses a profile; Core/UI/AI Gateway/AI Engine are standard. This — not `FP_COPILOT_ENABLED` alone — is what starts Command Center. |
 | `FP_AUTH_MODE` | `local` | `prompts.sh`, `.env`, `auth-policy.json` | `local` \| `sso_later` \| `sso_now` |
 | `FP_SSO_PROVIDER` | `none` | `prompts.sh`, `.env` | `none` \| `entra` \| `okta` \| `oidc` |
 | `FP_SSO_ISSUER` / `FP_SSO_CLIENT_ID` | empty | `prompts.sh`, `.env` | Optional SSO connection hints (finish in Config Hub) |

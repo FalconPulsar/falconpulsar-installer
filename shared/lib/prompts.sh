@@ -368,10 +368,13 @@ prompt_ai_engine() {
 }
 
 # Optional Command Center (ops workspace: Investigate / Channels / Approve / Watch).
-# Profile "copilot"; plant default data mode is clean (no demo story).
+# Profile "copilot". The published image is always CLEAN (empty workspace) —
+# data mode is baked at build time (VITE_CC_DATA_MODE), not switchable at
+# install time, and no demo image is published. An operator who builds their
+# own demo image points FP_COPILOT_IMAGE_TAG at it; there is deliberately no
+# FP_COPILOT_MODE knob, because a setting nothing reads only misleads.
 prompt_copilot() {
     FP_COPILOT_PORT="${FP_COPILOT_PORT:-8090}"
-    FP_COPILOT_MODE="${FP_COPILOT_MODE:-clean}"
 
     if [ "${FP_COPILOT_ENABLED_EXPLICIT:-}" = "1" ]; then
         FP_COPILOT_ENABLED="${FP_COPILOT_ENABLED:-false}"
@@ -397,16 +400,7 @@ prompt_copilot() {
         fi
     fi
 
-    # Plant default is always clean unless operator explicitly set demo.
-    if [ "${FP_COPILOT_MODE_EXPLICIT:-}" != "1" ]; then
-        FP_COPILOT_MODE=clean
-    fi
-    case "${FP_COPILOT_MODE}" in
-        clean|demo) ;;
-        *) FP_COPILOT_MODE=clean ;;
-    esac
-
-    export FP_COPILOT_ENABLED FP_COPILOT_PORT FP_COPILOT_MODE
+    export FP_COPILOT_ENABLED FP_COPILOT_PORT
     fp_refresh_compose_profiles
 }
 

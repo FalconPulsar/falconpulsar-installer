@@ -143,7 +143,7 @@ fi
 # non-explicit ones are seeded from the previous .env so custom layouts,
 # port remaps and version pins survive the stack-file rewrite.
 for _fp_var in FP_DATA_DIR FP_GATEWAY_DATA_DIR FP_ENGINE_DATA_DIR FP_COPILOT_DATA_DIR \
-    FP_AI_ENGINE_ENABLED FP_COPILOT_ENABLED FP_COPILOT_PORT FP_COPILOT_MODE \
+    FP_AI_ENGINE_ENABLED FP_COPILOT_ENABLED FP_COPILOT_PORT \
     FP_AUTH_MODE FP_SSO_PROVIDER \
     FP_REST_PORT FP_WS_PORT \
     FP_PUBSUB_PORT FP_GATEWAY_PORT FP_UI_PORT FP_COOKIE_SECURE FP_UPDATE_MODE; do
@@ -165,7 +165,6 @@ FP_AI_ENGINE_ENABLED="true"
 FP_COPILOT_DATA_DIR="${FP_COPILOT_DATA_DIR:-${FP_HOME}/copilot-data}"
 FP_COPILOT_ENABLED="${FP_COPILOT_ENABLED:-false}"
 FP_COPILOT_PORT="${FP_COPILOT_PORT:-8090}"
-FP_COPILOT_MODE="${FP_COPILOT_MODE:-clean}"
 FP_AUTH_MODE="${FP_AUTH_MODE:-local}"
 FP_SSO_PROVIDER="${FP_SSO_PROVIDER:-none}"
 FP_SSO_ISSUER="${FP_SSO_ISSUER:-}"
@@ -455,7 +454,7 @@ if [ -f "${FP_HOME}/.env" ]; then
     # from a pre-change .env would silently restore "false" and skip creating
     # the engine data dir while compose starts the container regardless.
     for _fp_var in FP_DATA_DIR FP_GATEWAY_DATA_DIR FP_ENGINE_DATA_DIR FP_COPILOT_DATA_DIR \
-        FP_COPILOT_ENABLED FP_COPILOT_PORT FP_COPILOT_MODE \
+        FP_COPILOT_ENABLED FP_COPILOT_PORT \
         FP_AUTH_MODE FP_SSO_PROVIDER \
         FP_REST_PORT FP_WS_PORT \
         FP_PUBSUB_PORT FP_GATEWAY_PORT FP_UI_PORT FP_REGISTRY FP_VERSION \
@@ -851,7 +850,6 @@ FP_AI_ENGINE_ENABLED=${FP_AI_ENGINE_ENABLED}
 # mkdir -p "$FP_COPILOT_DATA_DIR", docker compose up -d.
 FP_COPILOT_ENABLED=${FP_COPILOT_ENABLED}
 FP_COPILOT_PORT=${FP_COPILOT_PORT}
-FP_COPILOT_MODE=${FP_COPILOT_MODE}
 FP_COPILOT_DATA_DIR=${FP_COPILOT_DATA_DIR}
 # Image tag: plant pulls :latest (or FP_VERSION). Demo image is separate.
 FP_COPILOT_IMAGE_TAG=${FP_COPILOT_IMAGE_TAG:-${FP_VERSION:-latest}}
