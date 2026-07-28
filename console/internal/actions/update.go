@@ -607,6 +607,12 @@ func ApplyUpdates(ctx context.Context, stdout, stderr io.Writer) error {
 	}
 	fmt.Fprintln(stdout, "Recreating containers…")
 	if err := Compose(ctx, stdout, stderr, "up", "-d"); err != nil {
+		// Compose's own message for a name clash names only the offending
+		// container id, which tells the operator nothing about who owns it.
+		// Resolve the owner and say what to do about it.
+		if hint := DiagnoseNameConflicts(ctx); hint != "" {
+			fmt.Fprint(stderr, hint)
+		}
 		return fmt.Errorf("docker compose up -d failed: %w", err)
 	}
 

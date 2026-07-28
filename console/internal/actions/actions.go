@@ -485,6 +485,101 @@ func containerRunning(ctx context.Context, name string) bool {
 	return err == nil && len(strings.TrimSpace(string(out))) > 0
 }
 
+// reservedContainerNames are the fixed container_name values the stack's
+// compose.yml claims. Mirrors FP_RESERVED_CONTAINER_NAMES in
+// shared/lib/existing.sh — keep the two lists in step.
+var reservedContainerNames = []string{
+	"falconpulsar-core",
+	"falconpulsar-ui",
+	"falconpulsar-ai-gateway",
+	"falconpulsar-ai-engine",
+	"falconpulsar-copilot",
+}
+
+// DiagnoseNameConflicts explains a `docker compose up` failure caused by
+// another container already holding one of our fixed container_names.
+//
+// Docker container names are GLOBAL, not per-compose-project, so a container
+// from an unrelated project (a developer running the app's own compose file,
+// say) silently blocks the stack — and Compose reports only an opaque
+// "container name is already in use by container <id>" with no hint as to
+// who owns it or what to do.
+//
+// Returns "" when no conflict is found, so the caller can fall back to the
+// raw error. Deliberately DIAGNOSES ONLY: a squatter that belongs to another
+// compose project may be someone's working environment, and force-removing it
+// would destroy their state. (The bash installer removes only *label-less*
+// containers, which is a different, genuinely-orphaned case.)
+func DiagnoseNameConflicts(ctx context.Context) string {
+	ours := composeProjectName(ctx)
+	var b strings.Builder
+	for _, name := range reservedContainerNames {
+		project, configFile, ok := containerOwner(ctx, name)
+		if !ok || project == ours {
+			continue
+		}
+		if b.Len() == 0 {
+			b.WriteString("\nA container is already using a name this stack needs:\n")
+		}
+		if project == "" {
+			fmt.Fprintf(&b, "\n  %s — not managed by any compose project (started with `docker run`?)\n", name)
+			fmt.Fprintf(&b, "      Remove it, then retry:  docker rm -f %s\n", name)
+			continue
+		}
+		fmt.Fprintf(&b, "\n  %s — owned by compose project %q\n", name, project)
+		if configFile != "" {
+			fmt.Fprintf(&b, "      defined in: %s\n", configFile)
+		}
+		fmt.Fprintf(&b, "      That is a different stack, so it is NOT removed automatically.\n")
+		fmt.Fprintf(&b, "      Free the name (keeps the container):  docker stop %s && docker rename %s %s-old\n", name, name, name)
+		fmt.Fprintf(&b, "      Or discard it entirely:               docker rm -f %s\n", name)
+	}
+	if b.Len() > 0 {
+		b.WriteString("\nThen re-run the update.\n")
+	}
+	return b.String()
+}
+
+// containerOwner returns the compose project and config file that own a
+// container. ok is false when no such container exists.
+func containerOwner(ctx context.Context, name string) (project, configFile string, ok bool) {
+	out, err := exec.CommandContext(ctx, dockerPath(), "inspect", "-f",
+		`{{index .Config.Labels "com.docker.compose.project"}}|{{index .Config.Labels "com.docker.compose.project.config_files"}}`,
+		name).Output()
+	if err != nil {
+		return "", "", false // no such container
+	}
+	parts := strings.SplitN(strings.TrimSpace(string(out)), "|", 2)
+	project = strings.TrimSpace(parts[0])
+	// `docker inspect` renders a missing label as "<no value>".
+	if project == "<no value>" {
+		project = ""
+	}
+	if len(parts) > 1 {
+		configFile = strings.TrimSpace(parts[1])
+		if configFile == "<no value>" {
+			configFile = ""
+		}
+	}
+	return project, configFile, true
+}
+
+// composeProjectName is the project this stack's containers belong to. Read
+// from a container we know we own rather than guessed, so a COMPOSE_PROJECT_NAME
+// override or a renamed stack directory doesn't produce false conflicts.
+// Falls back to compose's default (the stack directory name).
+func composeProjectName(ctx context.Context) string {
+	for _, probe := range []string{"falconpulsar-core", "falconpulsar-ui", "falconpulsar-ai-gateway"} {
+		if project, _, ok := containerOwner(ctx, probe); ok && project != "" {
+			return project
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("COMPOSE_PROJECT_NAME")); v != "" {
+		return v
+	}
+	return filepath.Base(HomeDir())
+}
+
 // EnsureGatewayConfig makes sure ~/falconpulsar/gateway.yaml is a valid
 // config file. Replaces the file if:
 //  1. It's a directory (Docker creates one when the bind-mount source is
