@@ -218,7 +218,7 @@ Name: "cookiesecure"; \
     GroupDescription: "Security:"; \
     Flags: checkedonce
 
-; Optional Command Center (plant-ops workspace). Default UNCHECKED on every
+; Optional Command Center (ops workspace). Default UNCHECKED on every
 ; fresh install -- plain `unchecked` (NOT checkedonce) so Inno Setup's recorded
 ; task state from a prior run still pre-fills a re-run, and the .env-driven
 ; sticky logic in NextButtonClick (Existing page) can override it with the
@@ -228,7 +228,7 @@ Name: "cookiesecure"; \
 ; FP_COPILOT_ENABLED into the bash installer's env file. (AI Engine is no
 ; longer optional -- it installs by default with the rest of the stack.)
 Name: "copilot"; \
-    Description: "Install the optional Command Center (plant-ops workspace — adds one container; can be enabled later)"; \
+    Description: "Install the optional Command Center (ops workspace — adds one container; can be enabled later)"; \
     GroupDescription: "Optional components:"; \
     Flags: unchecked
 

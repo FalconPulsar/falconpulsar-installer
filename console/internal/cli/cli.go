@@ -377,9 +377,9 @@ func cmdUpdate() *cobra.Command {
 			"version on the configured registry (FP_REGISTRY). When run with\n" +
 			"--apply, performs the upgrade in place via install.sh's fast-path.\n" +
 			"\n" +
-			"Source of truth for image updates is the same Docker registry the\n" +
-			"operator already pulls from — air-gapped and private-registry\n" +
-			"deploys work the same as public Docker Hub. Host components (the\n" +
+			"Source of truth for image updates is the same Docker registry you\n" +
+			"already pull from — air-gapped and private-registry deploys\n" +
+			"work the same as public Docker Hub. Host components (the\n" +
 			"fp CLI, tray apps) are additionally checked against the published\n" +
 			"installer release version; that probe is best-effort and reports\n" +
 			"'unknown' when offline instead of failing the check.",

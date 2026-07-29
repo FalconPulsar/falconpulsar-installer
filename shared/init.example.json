@@ -2,8 +2,8 @@
   "admin_user": "admin",
   "admin_password": "your-secure-password",
 
-  "normal_user": "operator",
-  "normal_password": "operator-password",
+  "normal_user": "member",
+  "normal_password": "another-secure-password",
   "generate_token": true,
 
   "network": {

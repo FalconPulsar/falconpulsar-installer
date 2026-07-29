@@ -244,7 +244,7 @@ services:
     # AI Engine is a standard stack service (no compose profile) — always
     # installed alongside Core / Web UI / AI Gateway.
     ports:
-      # Serves its own Cockpit/Canvas UI. Bound to localhost by default so it
+      # Serves its own Fleet/Canvas UI. Bound to localhost by default so it
       # is not exposed on the LAN; set FP_ENGINE_BIND=0.0.0.0 in .env for LAN.
       - "${FP_ENGINE_BIND:-127.0.0.1}:${FP_ENGINE_PORT:-8085}:8085"
     volumes:
@@ -266,7 +266,7 @@ services:
       # secret and NOT FP_API_KEY: this must have a stable lifecycle, and a
       # rotating service token would orphan every stored credential.
       FP_GATEWAY_SECRET: ${FP_GATEWAY_SECRET:-}
-      # Never enable simulation mode on a plant host — it trusts client role
+      # Never enable simulation mode on a production host — it trusts client role
       # headers (x-fp-role / x-fp-user) and is a full auth bypass.
       FP_SIM: ${FP_SIM:-}
     healthcheck:

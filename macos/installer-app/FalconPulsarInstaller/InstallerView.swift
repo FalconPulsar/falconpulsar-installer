@@ -464,7 +464,7 @@ struct OptionsPage: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Install the optional Command Center")
                         .font(.callout.bold())
-                    Text("Optional plant-ops workspace (Investigate · Channels · Approve · Watch) — adds one container. You can enable it later by re-running the installer.")
+                    Text("Optional ops workspace (Investigate · Channels · Approve · Watch) — adds one container. You can enable it later by re-running the installer.")
                         .font(.caption)
                         .foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)

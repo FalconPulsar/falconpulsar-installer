@@ -81,7 +81,7 @@ class InstallerState: ObservableObject {
     @Published var aiEngineEnabled = false
     var aiEngineUserSet = false
 
-    // Optional Command Center (plant ops workspace). Off by default — the
+    // Optional Command Center (ops workspace). Off by default — the
     // checkbox on the Options page opts in, which install.sh turns into
     // FP_COPILOT_ENABLED=true / COMPOSE_PROFILES=copilot. Sticky on reinstall:
     // seeded from the surviving .env unless toggled this session.

@@ -722,7 +722,7 @@ if [ -f "${FP_HOME}/gateway.yaml" ]; then
     sed -i 's/\r$//' "${FP_HOME}/gateway.yaml" 2>/dev/null || true
 fi
 
-# Data dirs — same pattern for every plant module:
+# Data dirs — same pattern for every module:
 #   install -d -m 0750 -o $FP_USER  under $FP_HOME
 #   absolute path written to .env
 #   compose bind-mounts that path → /data (or /app/data for gateway)
@@ -843,7 +843,7 @@ FP_GATEWAY_DATA_DIR=${FP_GATEWAY_DATA_DIR}
 # backticks would EXECUTE the command while writing .env.)
 FP_ENGINE_DATA_DIR=${FP_ENGINE_DATA_DIR}
 FP_AI_ENGINE_ENABLED=${FP_AI_ENGINE_ENABLED}
-# Optional Command Center (clean plant default). Enable with
+# Optional Command Center (clean default). Enable with
 # FP_COPILOT_ENABLED=true and COMPOSE_PROFILES including copilot.
 # Optional Command Center — data lives under FP_HOME like Core/Gateway/Engine.
 # To enable later: FP_COPILOT_ENABLED=true, add copilot to COMPOSE_PROFILES,
@@ -851,7 +851,7 @@ FP_AI_ENGINE_ENABLED=${FP_AI_ENGINE_ENABLED}
 FP_COPILOT_ENABLED=${FP_COPILOT_ENABLED}
 FP_COPILOT_PORT=${FP_COPILOT_PORT}
 FP_COPILOT_DATA_DIR=${FP_COPILOT_DATA_DIR}
-# Image tag: plant pulls :latest (or FP_VERSION). Demo image is separate.
+# Image tag: standard installs pull :latest (or FP_VERSION). Demo image is separate.
 FP_COPILOT_IMAGE_TAG=${FP_COPILOT_IMAGE_TAG:-${FP_VERSION:-latest}}
 COMPOSE_PROFILES=${COMPOSE_PROFILES}
 # Auth policy (local | sso_later | sso_now). Break-glass local admin always.

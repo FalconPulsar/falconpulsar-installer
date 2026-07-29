@@ -459,7 +459,7 @@ prompt_admin_credentials
 
 # ── Step 3: Stack directory ─────────────────────────────────────────────────
 log_step "step 3/6 — stack directory"
-# Same plant layout as Linux: all module data under $FP_HOME.
+# Same layout as Linux: all module data under $FP_HOME.
 mkdir -p "$FP_HOME" "$FP_DATA_DIR" "$FP_GATEWAY_DATA_DIR"
 # Optional modules: create only when enabled.
 [ "$FP_AI_ENGINE_ENABLED" = "true" ] && mkdir -p "$FP_ENGINE_DATA_DIR"

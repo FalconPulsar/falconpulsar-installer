@@ -280,7 +280,7 @@ prompt_transport_mode() {
         return 0
     fi
     printf '\n%sFront-door HTTPS%s\n' "${FP_C_BOLD}" "${FP_C_RESET}" >&2
-    printf 'How will operators connect to FalconPulsar?\n\n' >&2
+    printf 'How will users connect to FalconPulsar?\n\n' >&2
     printf '  %sHTTPS%s — recommended. Session cookies get the Secure flag and\n' \
         "${FP_C_CYAN}" "${FP_C_RESET}" >&2
     printf '          the __Host- prefix. Required for cloud / public deploys\n' >&2
@@ -385,8 +385,8 @@ prompt_copilot() {
     else
         printf '\n%sOptional Command Center%s\n' "${FP_C_BOLD}" "${FP_C_RESET}" >&2
         printf 'Command Center is an optional ops workspace for incidents, multiplayer\n' >&2
-        printf 'channels, HSE-gated approvals, and line watch. It runs as one extra\n' >&2
-        printf 'container on the shared network (default port 8090). Plant installs use\n' >&2
+        printf 'channels, safety-gated approvals, and line watch. It runs as one extra\n' >&2
+        printf 'container on the shared network (default port 8090). Standard installs use\n' >&2
         printf 'empty (clean) data — not the demo story. Enable later via\n' >&2
         printf 'FP_COPILOT_ENABLED=true in .env and "docker compose up -d".\n\n' >&2
         local cc_default="default-no"
@@ -404,7 +404,7 @@ prompt_copilot() {
     fp_refresh_compose_profiles
 }
 
-# Interactive auth policy for the plant.
+# Interactive auth policy for the deployment.
 # Always creates a local break-glass admin (prompt_admin_credentials).
 # Mode is recorded in .env + auth-policy.json for Config Hub / apps.
 #
@@ -424,7 +424,7 @@ prompt_auth_mode() {
         log_info "FP_ASSUME_YES=1 — auth mode: ${FP_AUTH_MODE}"
     else
         printf '\n%sSign-in security%s\n' "${FP_C_BOLD}" "${FP_C_RESET}" >&2
-        printf 'How will operators sign in to FalconPulsar?\n\n' >&2
+        printf 'How will users sign in to FalconPulsar?\n\n' >&2
         printf '  %s1)%s Local users only (recommended for first install)\n' \
             "${FP_C_CYAN}" "${FP_C_RESET}" >&2
         printf '       Manage users in the Web UI. Works offline / air-gapped.\n' >&2
@@ -432,7 +432,7 @@ prompt_auth_mode() {
         printf '       Start with local admin now; connect Entra / Okta / OIDC in Config Hub.\n' >&2
         printf '  %s3)%s SSO now (advanced / IT)\n' "${FP_C_CYAN}" "${FP_C_RESET}" >&2
         printf '       Choose a provider and record connection hints; finish mapping in Config Hub.\n\n' >&2
-        printf 'A local break-glass admin is ALWAYS created so the plant stays reachable\n' >&2
+        printf 'A local break-glass admin is ALWAYS created so the system stays reachable\n' >&2
         printf 'if the identity provider is down.\n\n' >&2
 
         local choice=""
