@@ -315,7 +315,7 @@ namespace FalconPulsar.Tray
             menu.Items.Add(new ToolStripSeparator());
 
             // Actions
-            var openUi = new ToolStripMenuItem("Open Web UI", null,
+            var openUi = new ToolStripMenuItem("Open FalconPulsar", null,
                 (s, e) => OpenWebUI());
             openUi.Font = new Font(openUi.Font, FontStyle.Bold);
             openUi.Image = CreateGlyphIcon("\uE774", Color.FromArgb(70, 70, 70));  // Globe
@@ -1354,23 +1354,29 @@ namespace FalconPulsar.Tray
             }
         }
 
-        private void OpenWebUI()
+        /// <summary>
+        /// Every destination is a route in the unified shell.
+        ///
+        /// These used to open the surfaces on their own ports, which was right
+        /// when they were three separate applications. They are now embedded,
+        /// and reaching one directly means arriving without the shell around
+        /// it: no mode switcher, no alarm lane, no identity, and an app waiting
+        /// on a handshake from a parent frame that is not there.
+        ///
+        /// The health polling still uses EnginePort and CopilotPort. That is a
+        /// check on the service, and belongs where the service actually lives.
+        /// </summary>
+        private void OpenShell(string path = "")
         {
-            Process.Start(new ProcessStartInfo($"http://localhost:{UiPort}")
+            Process.Start(new ProcessStartInfo($"http://localhost:{UiPort}{path}")
             { UseShellExecute = true });
         }
 
-        private void OpenAiEngine()
-        {
-            Process.Start(new ProcessStartInfo($"http://localhost:{EnginePort}")
-            { UseShellExecute = true });
-        }
+        private void OpenWebUI() => OpenShell();
 
-        private void OpenCopilot()
-        {
-            Process.Start(new ProcessStartInfo($"http://localhost:{CopilotPort}")
-            { UseShellExecute = true });
-        }
+        private void OpenAiEngine() => OpenShell("/agents");
+
+        private void OpenCopilot() => OpenShell("/workplace");
 
         private void ViewLogs()
         {

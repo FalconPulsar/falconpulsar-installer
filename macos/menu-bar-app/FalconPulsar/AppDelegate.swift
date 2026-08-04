@@ -110,9 +110,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(copilotStatus)
         menu.addItem(.separator())
 
-        let openUI = NSMenuItem(title: "Open Web UI", action: #selector(openWebUI), keyEquivalent: "o")
+        let openUI = NSMenuItem(title: "Open FalconPulsar", action: #selector(openWebUI), keyEquivalent: "o")
         openUI.target = self
-        openUI.attributedTitle = inlineIconTitle("Open Web UI", symbol: "safari", bold: true)
+        openUI.attributedTitle = inlineIconTitle("Open FalconPulsar", symbol: "safari", bold: true)
         menu.addItem(openUI)
 
         // Optional AI Engine UI — visibility mirrors the status row above.
@@ -662,19 +662,32 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Actions
 
-    @objc func openWebUI() {
-        guard let url = URL(string: "http://localhost:\(uiPort)") else { return }
+    /// Every destination is a route in the unified shell.
+    ///
+    /// These used to open the surfaces on their own ports — the Engine on
+    /// \(enginePort), the Command Center on \(copilotPort) — which was right
+    /// when they were three separate applications. They are now embedded, and
+    /// reaching one directly means arriving without the shell around it: no
+    /// mode switcher, no alarm lane, no identity, and an app waiting for a
+    /// handshake from a parent frame that is not there.
+    ///
+    /// The status rows above still probe the services on their own ports.
+    /// That is a health check and belongs where the service actually lives.
+    private func openShell(path: String = "") {
+        guard let url = URL(string: "http://localhost:\(uiPort)\(path)") else { return }
         NSWorkspace.shared.open(url)
+    }
+
+    @objc func openWebUI() {
+        openShell()
     }
 
     @objc func openAIEngine() {
-        guard let url = URL(string: "http://localhost:\(enginePort)") else { return }
-        NSWorkspace.shared.open(url)
+        openShell(path: "/agents")
     }
 
     @objc func openCommandCenter() {
-        guard let url = URL(string: "http://localhost:\(copilotPort)") else { return }
-        NSWorkspace.shared.open(url)
+        openShell(path: "/workplace")
     }
 
     /// Compose profile flags shared by EVERY compose invocation.
