@@ -384,12 +384,14 @@ prompt_copilot() {
         FP_COPILOT_ENABLED="${FP_COPILOT_ENABLED:-true}"
         log_info "FP_ASSUME_YES=1 — Command Center install: ${FP_COPILOT_ENABLED}"
     else
-        printf '\n%sOptional Command Center%s\n' "${FP_C_BOLD}" "${FP_C_RESET}" >&2
-        printf 'Command Center is an optional ops workspace for incidents, multiplayer\n' >&2
-        printf 'channels, safety-gated approvals, and line watch. It runs as one extra\n' >&2
-        printf 'container on the shared network (default port 8090). Standard installs use\n' >&2
-        printf 'empty (clean) data — not the demo story. Enable later via\n' >&2
-        printf 'FP_COPILOT_ENABLED=true in .env and "docker compose up -d".\n\n' >&2
+        printf '\n%sCommand Center%s\n' "${FP_C_BOLD}" "${FP_C_RESET}" >&2
+        printf 'Command Center is the Workplace mode of the web shell: incidents,\n' >&2
+        printf 'multiplayer channels, safety-gated approvals, and line watch. It runs as\n' >&2
+        printf 'one extra container on the shared network (default port 8090). Standard\n' >&2
+        printf 'installs use empty (clean) data — not the demo story.\n' >&2
+        printf 'Declining does not remove the Workplace mode from the shell; that mode\n' >&2
+        printf 'is not gated, so it will open to an unavailable surface until you set\n' >&2
+        printf 'FP_COPILOT_ENABLED=true in .env and run "docker compose up -d".\n\n' >&2
         local cc_default="default-yes"
         if [ "${FP_COPILOT_ENABLED:-true}" = "false" ]; then
             cc_default="default-no"

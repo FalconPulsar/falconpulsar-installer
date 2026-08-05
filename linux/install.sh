@@ -167,8 +167,9 @@ FP_COPILOT_DATA_DIR="${FP_COPILOT_DATA_DIR:-${FP_HOME}/copilot-data}"
 # Command Center is the shell's Workplace mode, so it is installed by default
 # now rather than opted into. The shell shows Home, Workplace and Agents as
 # one switcher; leaving Copilot out gave a default install a mode that opened
-# to nothing. Still removable — set FP_COPILOT_ENABLED=false and the mode
-# stops being advertised.
+# to nothing. Still removable with FP_COPILOT_ENABLED=false, but note that
+# Workplace is not gated on reachability the way Agents is: it stays in the
+# switcher and opens to an unavailable surface.
 FP_COPILOT_ENABLED="${FP_COPILOT_ENABLED:-true}"
 FP_COPILOT_PORT="${FP_COPILOT_PORT:-8090}"
 FP_AUTH_MODE="${FP_AUTH_MODE:-local}"
@@ -862,8 +863,9 @@ FP_AI_ENGINE_ENABLED=${FP_AI_ENGINE_ENABLED}
 # Command Center — the shell's Workplace mode. Installed by default; data
 # lives under FP_HOME like Core/Gateway/Engine. To remove it later: set
 # FP_COPILOT_ENABLED=false, drop copilot from COMPOSE_PROFILES, and run
-# docker compose up -d --remove-orphans. The shell then stops offering the
-# Workplace mode rather than showing one that opens to nothing.
+# docker compose up -d --remove-orphans. The shell still shows a Workplace
+# mode in that case — unlike Agents it is not gated on reachability — so it
+# opens to an unavailable surface.
 FP_COPILOT_ENABLED=${FP_COPILOT_ENABLED}
 FP_COPILOT_PORT=${FP_COPILOT_PORT}
 FP_COPILOT_DATA_DIR=${FP_COPILOT_DATA_DIR}
