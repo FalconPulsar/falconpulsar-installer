@@ -111,6 +111,8 @@ while [ $# -gt 0 ]; do
         --data-dir)    FP_DATA_DIR="$2"; shift 2 ;;
         --rest-port)   FP_REST_PORT="$2"; shift 2 ;;
         --ui-port)     FP_UI_PORT="$2"; shift 2 ;;
+        --engine-port) FP_ENGINE_PORT="$2"; shift 2 ;;
+        --public-host) FP_PUBLIC_HOST="$2"; shift 2 ;;
         -y|--yes)      FP_ASSUME_YES=1; shift ;;
         --debug)       FP_DEBUG=1; shift ;;
         -h|--help)     print_help; exit 0 ;;
@@ -364,6 +366,7 @@ if [ -f "${FP_HOME}/.env" ]; then
                    FP_COPILOT_ENABLED FP_COPILOT_PORT \
                    FP_AUTH_MODE FP_SSO_PROVIDER \
                    FP_REST_PORT FP_WS_PORT FP_PUBSUB_PORT FP_GATEWAY_PORT FP_UI_PORT \
+                   FP_ENGINE_PORT FP_PUBLIC_HOST \
                    FP_COOKIE_SECURE FP_UPDATE_MODE; do
         fp_seed_from_existing_env "$setting"
     done
@@ -410,6 +413,13 @@ FP_WS_PORT="${FP_WS_PORT:-7434}"
 FP_PUBSUB_PORT="${FP_PUBSUB_PORT:-7435}"
 FP_GATEWAY_PORT="${FP_GATEWAY_PORT:-7436}"
 FP_UI_PORT="${FP_UI_PORT:-8080}"
+FP_ENGINE_PORT="${FP_ENGINE_PORT:-8085}"
+# The host a BROWSER types to reach this machine. Not a bind address and not
+# a container name: the shell embeds Command Center and AI Engine as frames,
+# so the browser resolves their origins itself. Those origins go into the
+# shell's CSP and into each surface's frame-ancestors, and if they name a
+# host the browser cannot reach, both modes are blank rectangles.
+FP_PUBLIC_HOST="${FP_PUBLIC_HOST:-localhost}"
 
 # ── Phantom-container sweep ─────────────────────────────────────────────────
 # Same problem the Linux installer solves: containers from a previous
@@ -430,7 +440,7 @@ fi
 # external — the prompt lets the user remap our port, re-check, or
 # abort instead of dying outright.
 log_step "verifying required TCP ports are free"
-fp_check_ports_interactive FP_REST_PORT FP_WS_PORT FP_PUBSUB_PORT FP_GATEWAY_PORT FP_UI_PORT
+fp_check_ports_interactive FP_REST_PORT FP_WS_PORT FP_PUBSUB_PORT FP_GATEWAY_PORT FP_UI_PORT FP_ENGINE_PORT
 
 # Container registry — wizard-style prompt (parity with the Linux installer
 # and the Mac SwiftUI RegistryPage / Windows Inno Setup RegistryPage).
@@ -612,6 +622,9 @@ FP_WS_PORT=${FP_WS_PORT}
 FP_PUBSUB_PORT=${FP_PUBSUB_PORT}
 FP_GATEWAY_PORT=${FP_GATEWAY_PORT}
 FP_UI_PORT=${FP_UI_PORT}
+FP_ENGINE_PORT=${FP_ENGINE_PORT}
+# Browser-visible host for the shell and the two surfaces it embeds.
+FP_PUBLIC_HOST=${FP_PUBLIC_HOST}
 FP_LOG_LEVEL=${FP_LOG_LEVEL}
 # AI Capabilities are a mandatory component; this key exists only so older
 # fp / menu-bar binaries that still read it stay on the enabled path.

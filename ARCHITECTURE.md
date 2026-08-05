@@ -670,7 +670,12 @@ bold.
 | `FP_WS_PORT` | `7434` | `compose.yml` | WebSocket port |
 | `FP_PUBSUB_PORT` | `7435` | `compose.yml` | Pub/Sub WebSocket port |
 | `FP_GATEWAY_PORT` | `7436` | `compose.yml` | AI Gateway port |
-| `FP_UI_PORT` | `8080` | `compose.yml` | Web UI port |
+| `FP_UI_PORT` | `8080` | `compose.yml` | Web UI port — this is the shell |
+| `FP_ENGINE_PORT` | `8085` | `.env`, `compose.yml` | AI Engine host port. Published, not just internal: the shell embeds the Engine as a frame, so a browser resolves this origin itself |
+| `FP_ENGINE_BIND` | `0.0.0.0` | `compose.yml` | Interface the Engine binds. Matches `FP_COPILOT_BIND` — a loopback-only surface cannot be framed by a browser on another machine |
+| `FP_PUBLIC_HOST` | `localhost` | `.env`, `compose.yml` | The host a **browser** types to reach this machine. Not a bind address and not a container name. The shell embeds Command Center and AI Engine by origin, so these origins go into the shell's CSP `frame-src`/`connect-src` and into each surface's `frame-ancestors`. Name a host the browser cannot reach and both modes are blank rectangles with nothing in the console explaining why. Set it to the machine's hostname or address for any install reached from another computer |
+| `FP_SURFACE_ORIGINS` | *(derived)* | `compose.yml` → `ui` | Space-separated origins the shell may frame. Built from `FP_PUBLIC_HOST` + the copilot/engine ports; the image turns it into the CSP at container start |
+| `FP_SHELL_ORIGIN` | *(derived)* | `compose.yml` → `copilot`, `ai-engine` | The shell's origin, as each surface sees it. Sets that surface's `frame-ancestors` and the `<meta name="fp-shell-origin">` its HTML carries, which is what the embedded page checks before accepting a session from the parent frame. Unset, it falls back to the dev shell on `5173` and the handshake is refused — the surface then asks for a second login inside the frame |
 | `FP_COPILOT_ENABLED` | `false` | `prompts.sh`, `compose.yml` | Opt-in Command Center (`copilot` profile) |
 | `FP_COPILOT_PORT` | `8090` | `prompts.sh`, `compose.yml` | Command Center host port |
 | `FP_COPILOT_IMAGE_TAG` | `${FP_VERSION:-latest}` | `.env`, `compose.yml` | Command Center image tag. The published image is always CLEAN (empty workspace) — data mode is baked at build time (`VITE_CC_DATA_MODE`) and no demo image is published, so point this at your own build if you need the demo story. |

@@ -1,0 +1,116 @@
+{
+  "format": 1,
+  "restore": {
+    "/Users/icterusicterus/dev/falconpulsar-workspace-new/falconpulsar-installer/windows/tray-app/FalconPulsarTray.csproj": {}
+  },
+  "projects": {
+    "/Users/icterusicterus/dev/falconpulsar-workspace-new/falconpulsar-installer/windows/tray-app/FalconPulsarTray.csproj": {
+      "version": "0.1.0",
+      "restore": {
+        "projectUniqueName": "/Users/icterusicterus/dev/falconpulsar-workspace-new/falconpulsar-installer/windows/tray-app/FalconPulsarTray.csproj",
+        "projectName": "FalconPulsarTray",
+        "projectPath": "/Users/icterusicterus/dev/falconpulsar-workspace-new/falconpulsar-installer/windows/tray-app/FalconPulsarTray.csproj",
+        "packagesPath": "/Users/icterusicterus/.nuget/packages/",
+        "outputPath": "/Users/icterusicterus/dev/falconpulsar-workspace-new/falconpulsar-installer/windows/tray-app/obj/",
+        "projectStyle": "PackageReference",
+        "configFilePaths": [
+          "/Users/icterusicterus/.nuget/NuGet/NuGet.Config"
+        ],
+        "originalTargetFrameworks": [
+          "net8.0-windows"
+        ],
+        "sources": {
+          "/opt/homebrew/Cellar/dotnet/10.0.302/libexec/library-packs": {},
+          "https://api.nuget.org/v3/index.json": {}
+        },
+        "frameworks": {
+          "net8.0-windows": {
+            "framework": "net8.0-windows7.0",
+            "targetAlias": "net8.0-windows",
+            "projectReferences": {}
+          }
+        },
+        "warningProperties": {
+          "warnAsError": [
+            "NU1605"
+          ]
+        },
+        "restoreAuditProperties": {
+          "enableAudit": "true",
+          "auditLevel": "low",
+          "auditMode": "direct"
+        },
+        "SdkAnalysisLevel": "10.0.300"
+      },
+      "frameworks": {
+        "net8.0-windows": {
+          "framework": "net8.0-windows7.0",
+          "targetAlias": "net8.0-windows",
+          "dependencies": {
+            "Microsoft.NET.ILLink.Tasks": {
+              "suppressParent": "All",
+              "target": "Package",
+              "version": "[8.0.29, )",
+              "autoReferenced": true
+            }
+          },
+          "imports": [
+            "net461",
+            "net462",
+            "net47",
+            "net471",
+            "net472",
+            "net48",
+            "net481"
+          ],
+          "assetTargetFallback": true,
+          "warn": true,
+          "downloadDependencies": [
+            {
+              "name": "Microsoft.AspNetCore.App.Ref",
+              "version": "[8.0.29, 8.0.29]"
+            },
+            {
+              "name": "Microsoft.AspNetCore.App.Runtime.win-x64",
+              "version": "[8.0.29, 8.0.29]"
+            },
+            {
+              "name": "Microsoft.NETCore.App.Host.win-x64",
+              "version": "[8.0.29, 8.0.29]"
+            },
+            {
+              "name": "Microsoft.NETCore.App.Ref",
+              "version": "[8.0.29, 8.0.29]"
+            },
+            {
+              "name": "Microsoft.NETCore.App.Runtime.win-x64",
+              "version": "[8.0.29, 8.0.29]"
+            },
+            {
+              "name": "Microsoft.WindowsDesktop.App.Ref",
+              "version": "[8.0.29, 8.0.29]"
+            },
+            {
+              "name": "Microsoft.WindowsDesktop.App.Runtime.win-x64",
+              "version": "[8.0.29, 8.0.29]"
+            }
+          ],
+          "frameworkReferences": {
+            "Microsoft.NETCore.App": {
+              "privateAssets": "all"
+            },
+            "Microsoft.WindowsDesktop.App.WindowsForms": {
+              "privateAssets": "none"
+            }
+          },
+          "runtimeIdentifierGraphPath": "/opt/homebrew/Cellar/dotnet/10.0.302/libexec/sdk/10.0.302/PortableRuntimeIdentifierGraph.json"
+        }
+      },
+      "runtimes": {
+        "win-x64": {
+          "#import": []
+        }
+      }
+    }
+  }
+}

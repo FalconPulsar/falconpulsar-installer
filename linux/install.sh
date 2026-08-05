@@ -146,7 +146,8 @@ for _fp_var in FP_DATA_DIR FP_GATEWAY_DATA_DIR FP_ENGINE_DATA_DIR FP_COPILOT_DAT
     FP_AI_ENGINE_ENABLED FP_COPILOT_ENABLED FP_COPILOT_PORT \
     FP_AUTH_MODE FP_SSO_PROVIDER \
     FP_REST_PORT FP_WS_PORT \
-    FP_PUBSUB_PORT FP_GATEWAY_PORT FP_UI_PORT FP_COOKIE_SECURE FP_UPDATE_MODE; do
+    FP_PUBSUB_PORT FP_GATEWAY_PORT FP_UI_PORT FP_ENGINE_PORT FP_PUBLIC_HOST \
+    FP_COOKIE_SECURE FP_UPDATE_MODE; do
     eval "${_fp_var}_EXPLICIT=\${${_fp_var}:+1}"
 done
 unset _fp_var
@@ -179,6 +180,15 @@ FP_WS_PORT="${FP_WS_PORT:-7434}"
 FP_PUBSUB_PORT="${FP_PUBSUB_PORT:-7435}"
 FP_GATEWAY_PORT="${FP_GATEWAY_PORT:-7436}"
 FP_UI_PORT="${FP_UI_PORT:-8080}"
+FP_ENGINE_PORT="${FP_ENGINE_PORT:-8085}"
+# The host a BROWSER types to reach this machine. Not a bind address and not
+# a container name: the shell embeds Command Center and AI Engine as frames,
+# so the browser resolves their origins itself. Those origins go into the
+# shell's CSP and into each surface's frame-ancestors, and if they name a
+# host the browser cannot reach, both modes are blank rectangles. localhost
+# is right for a workstation install; set this to the machine's hostname or
+# address for anything reached from another computer.
+FP_PUBLIC_HOST="${FP_PUBLIC_HOST:-localhost}"
 FP_LOG_LEVEL="${FP_LOG_LEVEL:-info}"
 
 # ── Argument parsing ────────────────────────────────────────────────────────
@@ -457,7 +467,8 @@ if [ -f "${FP_HOME}/.env" ]; then
         FP_COPILOT_ENABLED FP_COPILOT_PORT \
         FP_AUTH_MODE FP_SSO_PROVIDER \
         FP_REST_PORT FP_WS_PORT \
-        FP_PUBSUB_PORT FP_GATEWAY_PORT FP_UI_PORT FP_REGISTRY FP_VERSION \
+        FP_PUBSUB_PORT FP_GATEWAY_PORT FP_UI_PORT FP_ENGINE_PORT FP_PUBLIC_HOST \
+        FP_REGISTRY FP_VERSION \
         FP_COOKIE_SECURE FP_UPDATE_MODE; do
         _fp_explicit=""
         eval "_fp_explicit=\${${_fp_var}_EXPLICIT:-}"
@@ -502,7 +513,7 @@ fi
 # we surface what's holding it and let the user remap our port, re-check
 # after fixing manually, or abort.
 log_step "verifying required TCP ports are free"
-fp_check_ports_interactive FP_REST_PORT FP_WS_PORT FP_PUBSUB_PORT FP_GATEWAY_PORT FP_UI_PORT
+fp_check_ports_interactive FP_REST_PORT FP_WS_PORT FP_PUBSUB_PORT FP_GATEWAY_PORT FP_UI_PORT FP_ENGINE_PORT
 
 # Container registry — wizard-style prompt (Linux parity with Mac SwiftUI
 # RegistryPage and Windows Inno Setup RegistryPage). Collects URL +
@@ -872,6 +883,11 @@ FP_WS_PORT=${FP_WS_PORT}
 FP_PUBSUB_PORT=${FP_PUBSUB_PORT}
 FP_GATEWAY_PORT=${FP_GATEWAY_PORT}
 FP_UI_PORT=${FP_UI_PORT}
+FP_ENGINE_PORT=${FP_ENGINE_PORT}
+# Browser-visible host for the shell and the two surfaces it embeds. See the
+# note in this script; changing it requires 'docker compose up -d' so the new
+# origins reach the CSP and the frame-ancestors headers.
+FP_PUBLIC_HOST=${FP_PUBLIC_HOST}
 FP_LOG_LEVEL=${FP_LOG_LEVEL}
 # Legacy key kept for older fp/tray binaries that still read it. The AI
 # Gateway is a mandatory component — this is always true.

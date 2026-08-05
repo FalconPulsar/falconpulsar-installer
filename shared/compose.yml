@@ -132,6 +132,19 @@ services:
     restart: unless-stopped
     ports:
       - "${FP_UI_PORT:-8080}:8080"
+    environment:
+      # The origins the shell is permitted to embed. The image turns this into
+      # the CSP `frame-src` and `connect-src` at container start; with it
+      # unset, the browser refuses to render either surface and the Workplace
+      # and Agents modes are blank rectangles with nothing in the console to
+      # say why.
+      #
+      # These are BROWSER-VISIBLE origins, so they cannot be the compose
+      # service names: the surfaces are framed by origin, not proxied through
+      # this nginx. FP_PUBLIC_HOST is whatever a user types in the address
+      # bar — localhost for a workstation install, the machine's hostname or
+      # address for anything reached from another computer.
+      FP_SURFACE_ORIGINS: "http://${FP_PUBLIC_HOST:-localhost}:${FP_COPILOT_PORT:-8090} http://${FP_PUBLIC_HOST:-localhost}:${FP_ENGINE_PORT:-8085}"
     volumes:
       # Override the built-in nginx.conf so AI Gateway DNS is resolved lazily.
       # Without this mount, the image's default upstream{} block crashes
@@ -244,9 +257,15 @@ services:
     # AI Engine is a standard stack service (no compose profile) — always
     # installed alongside Core / Web UI / AI Gateway.
     ports:
-      # Serves its own Fleet/Canvas UI. Bound to localhost by default so it
-      # is not exposed on the LAN; set FP_ENGINE_BIND=0.0.0.0 in .env for LAN.
-      - "${FP_ENGINE_BIND:-127.0.0.1}:${FP_ENGINE_PORT:-8085}:8085"
+      # Serves its own Fleet/Builder/Reports UI, which the shell embeds as the
+      # Agents mode. The browser frames it BY ORIGIN rather than proxying it
+      # through the shell's nginx, so it has to be reachable from wherever the
+      # browser runs — loopback-only meant Agents worked on the machine that
+      # installed it and was an empty rectangle from anywhere else. Matches
+      # FP_COPILOT_BIND, which has always defaulted this way for the same
+      # reason. Set FP_ENGINE_BIND=127.0.0.1 to keep it off the LAN, and
+      # accept that a remote browser then cannot show the Agents mode.
+      - "${FP_ENGINE_BIND:-0.0.0.0}:${FP_ENGINE_PORT:-8085}:8085"
     volumes:
       - "${FP_ENGINE_DATA_DIR:-${FP_DATA_DIR}/../ai-engine-data}:/data"
     depends_on:
@@ -254,6 +273,10 @@ services:
         condition: service_healthy
     environment:
       FP_PORT: "8085"
+      # As for Copilot: sets this surface's `frame-ancestors` and the
+      # <meta name="fp-shell-origin"> the embedded page reads to decide which
+      # parent may hand it a session. See the note on the ui service.
+      FP_SHELL_ORIGIN: "http://${FP_PUBLIC_HOST:-localhost}:${FP_UI_PORT:-8080}"
       FP_CORE_URL: http://core:7433
       FP_CORE_WS: ws://core:7434/ws
       FP_AI_GATEWAY_URL: http://ai-gateway:7436
@@ -297,6 +320,13 @@ services:
     ports:
       - "${FP_COPILOT_BIND:-0.0.0.0}:${FP_COPILOT_PORT:-8090}:8080"
     environment:
+      # The shell's origin. Two things depend on it: the `frame-ancestors`
+      # this surface sends, and the <meta name="fp-shell-origin"> it puts in
+      # its HTML so the embedded page knows which parent to accept a session
+      # handshake from. Left unset it falls back to the dev shell on 5173,
+      # which is wrong for every real install — the handshake is refused and
+      # the surface asks for a second login inside the frame.
+      FP_SHELL_ORIGIN: "http://${FP_PUBLIC_HOST:-localhost}:${FP_UI_PORT:-8080}"
       # In-container data root (host path is only the bind mount source).
       FP_COPILOT_DATA_DIR: /data
       FP_CC_DEPLOYMENT_MODE: plant

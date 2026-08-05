@@ -119,6 +119,24 @@ if ($gwRc -eq 0) {
     Write-Warn '  AI Gateway: not responding yet (may still be starting)'
 }
 
+# Check the two surfaces the shell embeds. A shell whose surfaces are
+# unreachable still loads and still looks fine — the Workplace and Agents
+# modes are simply empty rectangles, with nothing on screen to say why. That
+# is the failure this check exists to name.
+Write-Info 'Checking embedded surfaces...'
+foreach ($surface in @(
+    @{ Label = 'AI Engine';      Port = 8085 },
+    @{ Label = 'Command Center'; Port = 8090 }
+)) {
+    $sScript = "curl -sf http://localhost:$($surface.Port)/ >/dev/null 2>&1"
+    $sRc = Invoke-WslBash -Distro $Distro -Script $sScript -User root
+    if ($sRc -eq 0) {
+        Write-Info "  $($surface.Label): responding on port $($surface.Port)"
+    } else {
+        Write-Warn "  $($surface.Label): not responding on port $($surface.Port) — the shell will show this mode as unavailable"
+    }
+}
+
 Write-Step 'Health check summary'
 if ($allOk) {
     Write-Output ''
@@ -128,6 +146,7 @@ if ($allOk) {
     Write-Output '  REST API:   http://localhost:7433'
     Write-Output '  WebSocket:  ws://localhost:7434'
     Write-Output '  AI Gateway: http://localhost:7436'
+    Write-Output '  AI Engine:  http://localhost:8085'
     Write-Output ''
     exit 0
 } else {
