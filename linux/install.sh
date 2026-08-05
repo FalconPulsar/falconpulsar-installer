@@ -164,7 +164,12 @@ FP_AI_ENGINE_ENABLED="true"
 # Path is always defined (like FP_ENGINE_DATA_DIR); directory is created
 # only when the module is enabled.
 FP_COPILOT_DATA_DIR="${FP_COPILOT_DATA_DIR:-${FP_HOME}/copilot-data}"
-FP_COPILOT_ENABLED="${FP_COPILOT_ENABLED:-false}"
+# Command Center is the shell's Workplace mode, so it is installed by default
+# now rather than opted into. The shell shows Home, Workplace and Agents as
+# one switcher; leaving Copilot out gave a default install a mode that opened
+# to nothing. Still removable — set FP_COPILOT_ENABLED=false and the mode
+# stops being advertised.
+FP_COPILOT_ENABLED="${FP_COPILOT_ENABLED:-true}"
 FP_COPILOT_PORT="${FP_COPILOT_PORT:-8090}"
 FP_AUTH_MODE="${FP_AUTH_MODE:-local}"
 FP_SSO_PROVIDER="${FP_SSO_PROVIDER:-none}"
@@ -854,11 +859,11 @@ FP_GATEWAY_DATA_DIR=${FP_GATEWAY_DATA_DIR}
 # backticks would EXECUTE the command while writing .env.)
 FP_ENGINE_DATA_DIR=${FP_ENGINE_DATA_DIR}
 FP_AI_ENGINE_ENABLED=${FP_AI_ENGINE_ENABLED}
-# Optional Command Center (clean default). Enable with
-# FP_COPILOT_ENABLED=true and COMPOSE_PROFILES including copilot.
-# Optional Command Center — data lives under FP_HOME like Core/Gateway/Engine.
-# To enable later: FP_COPILOT_ENABLED=true, add copilot to COMPOSE_PROFILES,
-# mkdir -p "$FP_COPILOT_DATA_DIR", docker compose up -d.
+# Command Center — the shell's Workplace mode. Installed by default; data
+# lives under FP_HOME like Core/Gateway/Engine. To remove it later: set
+# FP_COPILOT_ENABLED=false, drop copilot from COMPOSE_PROFILES, and run
+# docker compose up -d --remove-orphans. The shell then stops offering the
+# Workplace mode rather than showing one that opens to nothing.
 FP_COPILOT_ENABLED=${FP_COPILOT_ENABLED}
 FP_COPILOT_PORT=${FP_COPILOT_PORT}
 FP_COPILOT_DATA_DIR=${FP_COPILOT_DATA_DIR}

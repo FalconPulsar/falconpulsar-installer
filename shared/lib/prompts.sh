@@ -367,7 +367,8 @@ prompt_ai_engine() {
     fp_refresh_compose_profiles
 }
 
-# Optional Command Center (ops workspace: Investigate / Channels / Approve / Watch).
+# Command Center (ops workspace: Investigate / Channels / Approve / Watch),
+# reached as the shell's Workplace mode. Installed by default.
 # Profile "copilot". The published image is always CLEAN (empty workspace) —
 # data mode is baked at build time (VITE_CC_DATA_MODE), not switchable at
 # install time, and no demo image is published. An operator who builds their
@@ -377,10 +378,10 @@ prompt_copilot() {
     FP_COPILOT_PORT="${FP_COPILOT_PORT:-8090}"
 
     if [ "${FP_COPILOT_ENABLED_EXPLICIT:-}" = "1" ]; then
-        FP_COPILOT_ENABLED="${FP_COPILOT_ENABLED:-false}"
+        FP_COPILOT_ENABLED="${FP_COPILOT_ENABLED:-true}"
         log_info "Command Center install: ${FP_COPILOT_ENABLED} (FP_COPILOT_ENABLED pre-set)"
     elif [ "${FP_ASSUME_YES:-0}" = "1" ]; then
-        FP_COPILOT_ENABLED="${FP_COPILOT_ENABLED:-false}"
+        FP_COPILOT_ENABLED="${FP_COPILOT_ENABLED:-true}"
         log_info "FP_ASSUME_YES=1 — Command Center install: ${FP_COPILOT_ENABLED}"
     else
         printf '\n%sOptional Command Center%s\n' "${FP_C_BOLD}" "${FP_C_RESET}" >&2
@@ -389,9 +390,9 @@ prompt_copilot() {
         printf 'container on the shared network (default port 8090). Standard installs use\n' >&2
         printf 'empty (clean) data — not the demo story. Enable later via\n' >&2
         printf 'FP_COPILOT_ENABLED=true in .env and "docker compose up -d".\n\n' >&2
-        local cc_default="default-no"
-        if [ "${FP_COPILOT_ENABLED:-false}" = "true" ]; then
-            cc_default="default-yes"
+        local cc_default="default-yes"
+        if [ "${FP_COPILOT_ENABLED:-true}" = "false" ]; then
+            cc_default="default-no"
         fi
         if confirm "Install the optional Command Center?" "$cc_default"; then
             FP_COPILOT_ENABLED=true

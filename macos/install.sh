@@ -398,7 +398,12 @@ FP_ENGINE_DATA_DIR="${FP_ENGINE_DATA_DIR:-${FP_HOME}/ai-engine-data}"
 FP_AI_ENGINE_ENABLED="true"
 # Optional Command Center — always define path under FP_HOME (like Engine).
 FP_COPILOT_DATA_DIR="${FP_COPILOT_DATA_DIR:-${FP_HOME}/copilot-data}"
-FP_COPILOT_ENABLED="${FP_COPILOT_ENABLED:-false}"
+# Command Center is the shell's Workplace mode, so it is installed by default
+# now rather than opted into. The shell shows Home, Workplace and Agents as
+# one switcher; leaving Copilot out gave a default install a mode that opened
+# to nothing. Still removable — set FP_COPILOT_ENABLED=false and the mode
+# stops being advertised.
+FP_COPILOT_ENABLED="${FP_COPILOT_ENABLED:-true}"
 FP_COPILOT_PORT="${FP_COPILOT_PORT:-8090}"
 FP_AUTH_MODE="${FP_AUTH_MODE:-local}"
 FP_SSO_PROVIDER="${FP_SSO_PROVIDER:-none}"
