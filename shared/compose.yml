@@ -197,6 +197,11 @@ services:
       # the installer/enable flows. If unset, the gateway falls back to
       # storing provider keys in plaintext (legacy mode).
       FP_GATEWAY_SECRET: ${FP_GATEWAY_SECRET:-}
+      # Worker pool size. Each worker that serves vector work lazily loads
+      # its own ~1.3GB embedding model, so 4 workers can reach ~5.5GB RSS.
+      # 0 = the gateway default, min(cpu_count, 4). Memory-constrained hosts
+      # want 2.
+      FP_GATEWAY_WORKERS: ${FP_GATEWAY_WORKERS:-0}
       # Wave 3: refuse to start AI Gateway if encryption / bridge secrets are empty.
       # Installer always mints these into .env; this is a belt-and-suspenders gate.
       FP_REQUIRE_SECRETS: ${FP_REQUIRE_SECRETS:-1}
