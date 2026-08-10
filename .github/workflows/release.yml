@@ -71,7 +71,7 @@ jobs:
       # Publishing both was noise -- 16 assets became 14 meaningful ones.
 
       - name: Upload bundles
-        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: bundles-shell
           path: dist/
@@ -142,7 +142,7 @@ jobs:
           ls -lh "dist/fp-${{ matrix.suffix }}${{ matrix.ext }}"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: fp-${{ matrix.suffix }}
           path: console/dist/fp-${{ matrix.suffix }}${{ matrix.ext }}
@@ -264,7 +264,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Upload .exe
-        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: bundles-windows
           path: windows/Output/*.exe
@@ -414,7 +414,7 @@ jobs:
           rm -f "$RUNNER_TEMP/notary/AuthKey.p8" 2>/dev/null || true
 
       - name: Upload DMG
-        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: bundles-macos
           path: dist/FalconPulsar-Setup*.dmg
