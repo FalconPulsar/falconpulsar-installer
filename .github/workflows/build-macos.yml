@@ -28,7 +28,7 @@ jobs:
     name: build macOS DMG
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Go (for fp console CLI bundled in the DMG)
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
