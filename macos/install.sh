@@ -59,11 +59,14 @@ FP_VERSION_FROM_ENV="${FP_VERSION:-}"
 # the environment, while a value merely seeded from a surviving .env
 # further down only flips the prompt's default. Snapshot explicitness
 # before the defaults / carry-forward fill the variable in.
-# shellcheck disable=SC2034  # consumed by prompt_* in prompts.sh
-FP_AI_ENGINE_ENABLED_EXPLICIT="${FP_AI_ENGINE_ENABLED:+1}"
-FP_COPILOT_ENABLED_EXPLICIT="${FP_COPILOT_ENABLED:+1}"
-FP_AUTH_MODE_EXPLICIT="${FP_AUTH_MODE:+1}"
-FP_SSO_PROVIDER_EXPLICIT="${FP_SSO_PROVIDER:+1}"
+# shellcheck disable=SC2034  # consumed by prompt_* in prompts.sh; a
+# directive covers one command, so the group extends it to all four
+{
+    FP_AI_ENGINE_ENABLED_EXPLICIT="${FP_AI_ENGINE_ENABLED:+1}"
+    FP_COPILOT_ENABLED_EXPLICIT="${FP_COPILOT_ENABLED:+1}"
+    FP_AUTH_MODE_EXPLICIT="${FP_AUTH_MODE:+1}"
+    FP_SSO_PROVIDER_EXPLICIT="${FP_SSO_PROVIDER:+1}"
+}
 
 # shellcheck source=../shared/lib/common.sh
 . "${REPO_ROOT}/shared/lib/common.sh"
