@@ -12,10 +12,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/falconpulsar/falconpulsar-installer/console/internal/actions"
 	"github.com/falconpulsar/falconpulsar-installer/console/internal/auth"
 	"github.com/falconpulsar/falconpulsar-installer/console/internal/configbackup"
+	"github.com/falconpulsar/falconpulsar-installer/console/internal/databackup"
 	"github.com/spf13/cobra"
 )
 
@@ -62,6 +64,8 @@ func Root(runTUI func() error) *cobra.Command {
 		cmdLogs(),
 		cmdOpen(),
 		cmdConfig(),
+		cmdBackup(),
+		cmdRestore(),
 		cmdUpdate(),
 		cmdAbout(),
 		cmdDocs(),
@@ -366,6 +370,102 @@ func cmdConfigImport() *cobra.Command {
 // cancellable countdown). Tray apps reflect this setting in their
 // settings UI; the CLI command exists so headless / scripted setups
 // can configure it too.
+
+// ── Data backup / restore (DB consolidation phase 5) ────────────────────────
+//
+// `fp config export` carries CONFIGURATION (encrypted .fpconfig). These two
+// carry the DATA: every service's SQLite stores (snapshotted point-in-time
+// with VACUUM INTO inside the owning container — the stack keeps running),
+// the Engine's file assets, TimeSeries Core's whole data directory
+// (crash-consistent; Core replays its own WAL on restore), and the config
+// trio. Restore sets everything it replaces aside — it never deletes.
+
+func cmdBackup() *cobra.Command {
+	var skipCore bool
+	c := &cobra.Command{
+		Use:   "backup [file]",
+		Short: "Back up all FalconPulsar data to one archive (stack keeps running)",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			out := "falconpulsar-backup-" + time.Now().Format("20060102-150405") + ".tar.gz"
+			if len(args) == 1 {
+				out = args[0]
+			}
+			env := databackup.LoadEnv(actions.HomeDir())
+			fmt.Printf("Backing up to %s …\n", out)
+			man, err := databackup.Backup(context.Background(), env, out, databackup.BackupOptions{SkipCore: skipCore})
+			if err != nil {
+				return err
+			}
+			st, _ := os.Stat(out)
+			fmt.Printf("Done: %s (%.1f MB)\n", out, float64(st.Size())/1e6)
+			for _, s := range man.Services {
+				if sem := man.Semantics[s]; sem != "" {
+					fmt.Printf("  %-8s %s\n", s, sem)
+				} else {
+					fmt.Printf("  %-8s included\n", s)
+				}
+			}
+			return nil
+		},
+	}
+	c.Flags().BoolVar(&skipCore, "skip-core", false, "exclude TimeSeries Core's data directory (it is usually the largest part)")
+	return c
+}
+
+func cmdRestore() *cobra.Command {
+	var only []string
+	var yes bool
+	c := &cobra.Command{
+		Use:   "restore <file>",
+		Short: "Restore a data backup (stops the stack; replaced data is set aside, never deleted)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			env := databackup.LoadEnv(actions.HomeDir())
+			man, err := databackup.Peek(args[0])
+			if err != nil {
+				return err
+			}
+			services := man.Services
+			if len(only) > 0 {
+				services = only
+			}
+			fmt.Printf("Backup from %s (fp %s, host %s)\n", man.CreatedAt, man.FPVersion, man.Host)
+			fmt.Printf("Will restore: %s\n", strings.Join(services, ", "))
+			fmt.Println("The stack will be STOPPED during the restore. Everything replaced is set aside as *.pre-restore-*, never deleted.")
+			if !yes {
+				fmt.Print("Type 'restore' to continue: ")
+				var answer string
+				fmt.Fscanln(os.Stdin, &answer)
+				if answer != "restore" {
+					return fmt.Errorf("aborted")
+				}
+			}
+			if err := actions.Compose(context.Background(), os.Stdout, os.Stderr, "stop"); err != nil {
+				return fmt.Errorf("stopping stack: %w", err)
+			}
+			asides, err := databackup.Restore(context.Background(), env, args[0], databackup.RestoreOptions{Only: only})
+			if err != nil {
+				return fmt.Errorf("restore: %w (already-replaced items are set aside as *.pre-restore-*)", err)
+			}
+			if len(asides) > 0 {
+				fmt.Println("Set aside (delete when satisfied):")
+				for _, a := range asides {
+					fmt.Println("  " + a)
+				}
+			}
+			if err := actions.Compose(context.Background(), os.Stdout, os.Stderr, "start"); err != nil {
+				return fmt.Errorf("stack restored but failed to start: %w", err)
+			}
+			fmt.Println("Restore complete.")
+			return nil
+		},
+	}
+	c.Flags().StringSliceVar(&only, "only", nil, "restore only these services (gateway, engine, copilot, core, config)")
+	c.Flags().BoolVar(&yes, "yes", false, "skip the confirmation prompt")
+	return c
+}
+
 func cmdUpdate() *cobra.Command {
 	var asJSON bool
 	var apply bool
