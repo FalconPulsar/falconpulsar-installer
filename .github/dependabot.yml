@@ -1,0 +1,28 @@
+# Dependency vulnerability + version scanning (ISSUE-SEC-16).
+# Dependabot raises PRs for known-vulnerable / outdated deps. Minor+patch
+# bumps are grouped into a single weekly PR to limit noise; majors arrive
+# as individual PRs for deliberate review.
+version: 2
+updates:
+  - package-ecosystem: "gomod"
+    directory: "/console"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      go-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+  - package-ecosystem: "gomod"
+    directory: "/windows/fp-wrapper"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      go-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
