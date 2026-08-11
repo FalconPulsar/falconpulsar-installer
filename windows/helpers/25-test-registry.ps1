@@ -92,7 +92,7 @@ if ! docker info >/dev/null 2>&1; then
     exit 3
 fi
 $loginBlock
-REF='$regEscaped/$imgEscaped:$tagEscaped'
+REF='$regEscaped/${imgEscaped}:$tagEscaped'
 if ERR=`$(DOCKER_CLI_HINTS=false docker manifest inspect "`$REF" 2>&1 >/dev/null); then
     echo "[ok] `$REF is pullable"
     exit 0
