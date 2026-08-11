@@ -589,6 +589,26 @@ if [ -z "${FP_CONFIRM_SECRET:-}" ]; then
     log_info "generated FP_CONFIRM_SECRET (32 random bytes, hex)"
 fi
 
+# Shared secret the AI Engine uses to post an incident runbook's report into
+# a Command Center room. Same lifecycle as the two above: reuse what the
+# existing .env holds, generate once otherwise. A missing key is not fatal —
+# the Copilot simply refuses machine posts and reports stay on the timeline.
+if [ -z "${FP_CC_MACHINE_KEY:-}" ]; then
+    if [ -f "${FP_HOME}/.env" ]; then
+        FP_CC_MACHINE_KEY="$(sed -n 's/^FP_CC_MACHINE_KEY=//p' "${FP_HOME}/.env" | head -n1)"
+    fi
+fi
+if [ -z "${FP_CC_MACHINE_KEY:-}" ]; then
+    if command -v openssl >/dev/null 2>&1; then
+        FP_CC_MACHINE_KEY="$(openssl rand -hex 32)"
+    elif [ -r /dev/urandom ]; then
+        FP_CC_MACHINE_KEY="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+    else
+        die "cannot generate FP_CC_MACHINE_KEY: neither openssl nor /dev/urandom available"
+    fi
+    log_info "generated FP_CC_MACHINE_KEY (32 random bytes, hex)"
+fi
+
 # .env — note that the admin password is INTENTIONALLY not stored here.
 # It is held in shell memory and passed via the parent environment to
 # `docker compose up -d core` for the first-run init only. After that
@@ -647,6 +667,7 @@ FP_GATEWAY_CONFIG=${FP_HOME}/gateway.yaml
 FP_BRIDGE_TOKEN=${FP_BRIDGE_TOKEN}
 # HMAC secret for AI Gateway write-confirmation IDs (multi-worker).
 FP_CONFIRM_SECRET=${FP_CONFIRM_SECRET}
+FP_CC_MACHINE_KEY=${FP_CC_MACHINE_KEY}
 # Front-door HTTPS declaration — see the equivalent block in
 # linux/install.sh for the full rationale.
 FP_COOKIE_SECURE=${FP_COOKIE_SECURE:-true}

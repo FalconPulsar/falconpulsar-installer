@@ -294,6 +294,12 @@ services:
       # secret and NOT FP_API_KEY: this must have a stable lifecycle, and a
       # rotating service token would orphan every stored credential.
       FP_GATEWAY_SECRET: ${FP_GATEWAY_SECRET:-}
+      # Where the Command Center lives, and the key to speak in it. Both are
+      # required before a runbook posts its report into an incident room;
+      # with either absent the report stays on the incident timeline, which
+      # is the whole behaviour when no Copilot is deployed.
+      FP_COPILOT_URL: http://copilot:8080
+      FP_CC_MACHINE_KEY: ${FP_CC_MACHINE_KEY:-}
       # Never enable simulation mode on a production host — it trusts client role
       # headers (x-fp-role / x-fp-user) and is a full auth bypass.
       FP_SIM: ${FP_SIM:-}
@@ -345,6 +351,11 @@ services:
       FP_AI_ENGINE_PORT: "8085"
       FP_CORE_HOST: core
       FP_CORE_PORT: "7433"
+      # The door a MACHINE posts room messages through (an Engine runbook
+      # filing its first look on an incident). Unset closes the door — the
+      # server refuses every machine post rather than treating a missing
+      # secret as "allow all".
+      FP_CC_MACHINE_KEY: ${FP_CC_MACHINE_KEY:-}
     volumes:
       # Module state (SQLite) — parallel to Core FP_DATA_DIR→/data
       - "${FP_COPILOT_DATA_DIR:-${FP_DATA_DIR}/../copilot-data}:/data"
