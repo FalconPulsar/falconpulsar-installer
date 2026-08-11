@@ -99,7 +99,22 @@ class InstallerState: ObservableObject {
     // Existing install detection
     @Published var existing: ExistingInstall = ExistingInstall()
     @Published var detectingExisting = false
+    /// True once detection has actually answered.
+    ///
+    /// `existing.isEmpty` cannot carry this on its own: it is equally true
+    /// before we have looked and after we have looked and found nothing. The
+    /// page-skip logic used it anyway, so an operator who clicked Continue
+    /// faster than `du` could walk a 34GB stack directory was shown the
+    /// fresh-install path — registry, options, credentials — on a machine
+    /// with five running containers. Going Back then revealed the page,
+    /// because by then detection had finished. That asymmetry is the tell.
+    @Published var existingDetectionDone = false
     @Published var installAction: InstallAction = .fresh
+    /// Set the moment the operator picks an option on the existing-install
+    /// page. Detection now finishes AFTER that page can be on screen, so
+    /// without this the slow half could overwrite a deliberate choice —
+    /// the same class of bug as the skip it is fixing.
+    var installActionUserSet = false
     @Published var removeCachedImages = false
     @Published var freshConfirmed = false
     // True when the runner's upgrade fast-path can handle this stack
@@ -166,19 +181,18 @@ class InstallerState: ObservableObject {
             let home = NSHomeDirectory()
             let fm = FileManager.default
 
+            // ── Phase 1: what is knowable INSTANTLY ────────────────────
+            // Whether a stack exists is a filesystem question and answers in
+            // microseconds. Sizes are a `du` walk over tens of gigabytes, and
+            // the docker lists cost a daemon round-trip each. Publishing the
+            // cheap facts first is what lets the page appear before the
+            // operator can click past it; the expensive detail arrives after
+            // and only enriches what is already on screen.
             let stackDir = "\(home)/falconpulsar"
-            if fm.fileExists(atPath: stackDir) {
-                found.stackDirExists = true
-                let (sz, _) = ShellRunner.run("/usr/bin/du -sh '\(stackDir)' 2>/dev/null | /usr/bin/awk '{print $1}'")
-                found.stackDirSize = sz.trimmingCharacters(in: .whitespacesAndNewlines)
-            }
+            found.stackDirExists = fm.fileExists(atPath: stackDir)
 
             let dataDir = "\(stackDir)/data"
-            if fm.fileExists(atPath: dataDir) {
-                found.dataDirExists = true
-                let (sz, _) = ShellRunner.run("/usr/bin/du -sh '\(dataDir)' 2>/dev/null | /usr/bin/awk '{print $1}'")
-                found.dataDirSize = sz.trimmingCharacters(in: .whitespacesAndNewlines)
-            }
+            found.dataDirExists = fm.fileExists(atPath: dataDir)
 
             // Sticky AI Engine opt-in: read FP_AI_ENGINE_ENABLED from the
             // surviving .env so a reinstall defaults the checkbox to what
@@ -200,6 +214,33 @@ class InstallerState: ObservableObject {
                     found.envCopilotEnabled = (String(copLine.dropFirst(copKey.count))
                         .trimmingCharacters(in: .whitespacesAndNewlines) == "true")
                 }
+            }
+
+            // Everything the DECISION needs is now known. Publish it, so the
+            // wizard can route correctly even if the operator is fast.
+            let phase1 = found
+            DispatchQueue.main.async {
+                self?.existing = phase1
+                self?.existingDetectionDone = true
+                if phase1.stackDirExists {
+                    self?.installAction = .upgrade
+                }
+                if let sticky = phase1.envAIEngineEnabled, self?.aiEngineUserSet != true {
+                    self?.aiEngineEnabled = sticky
+                }
+                if let sticky = phase1.envCopilotEnabled, self?.copilotUserSet != true {
+                    self?.copilotEnabled = sticky
+                }
+            }
+
+            // ── Phase 2: the slow detail (sizes + docker inventory) ────────
+            if fm.fileExists(atPath: stackDir) {
+                let (sz, _) = ShellRunner.run("/usr/bin/du -sh '\(stackDir)' 2>/dev/null | /usr/bin/awk '{print $1}'")
+                found.stackDirSize = sz.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            if fm.fileExists(atPath: dataDir) {
+                let (sz, _) = ShellRunner.run("/usr/bin/du -sh '\(dataDir)' 2>/dev/null | /usr/bin/awk '{print $1}'")
+                found.dataDirSize = sz.trimmingCharacters(in: .whitespacesAndNewlines)
             }
 
             if let docker = ShellRunner.findDocker() {
@@ -236,12 +277,16 @@ class InstallerState: ObservableObject {
             DispatchQueue.main.async {
                 self?.existing = found
                 self?.detectingExisting = false
+                self?.existingDetectionDone = true
                 self?.upgradeFastPathViable = fastPathOk
-                // Default action: upgrade if stack dir exists, fresh otherwise
-                if found.stackDirExists || !found.containers.isEmpty {
+                // Default action: upgrade when anything survives. Only ever
+                // PROMOTES, and never over a choice the operator has already
+                // made — this block now runs while the page is on screen, so
+                // demoting to .fresh here could silently retarget an upgrade
+                // at a stack the operator meant to keep.
+                if self?.installActionUserSet != true,
+                   found.stackDirExists || !found.containers.isEmpty {
                     self?.installAction = .upgrade
-                } else {
-                    self?.installAction = .fresh
                 }
                 // Seed the AI Engine checkbox from the surviving .env, but
                 // never clobber a choice the user already made this session
@@ -291,9 +336,20 @@ class InstallerState: ObservableObject {
         adminPass == adminPassConfirm
     }
 
+    /// May the "Existing Installation Detected" page be skipped?
+    ///
+    /// ONLY when detection has finished AND found nothing. While it is still
+    /// running the answer is no — the page shows its own spinner, which is
+    /// the honest thing to display when we do not yet know. Skipping on an
+    /// unanswered question sent an operator with a 34GB stack down the
+    /// fresh-install path.
+    private var mayShushExistingPage: Bool {
+        existingDetectionDone && existing.isEmpty
+    }
+
     func nextPage() {
         guard let next = InstallerPage(rawValue: currentPage.rawValue + 1) else { return }
-        if next == .existing && existing.isEmpty {
+        if next == .existing && mayShushExistingPage {
             currentPage = InstallerPage(rawValue: next.rawValue + 1) ?? next
         } else {
             currentPage = next
@@ -302,7 +358,7 @@ class InstallerState: ObservableObject {
 
     func prevPage() {
         guard let prev = InstallerPage(rawValue: currentPage.rawValue - 1) else { return }
-        if prev == .existing && existing.isEmpty {
+        if prev == .existing && mayShushExistingPage {
             currentPage = InstallerPage(rawValue: prev.rawValue - 1) ?? prev
         } else {
             currentPage = prev

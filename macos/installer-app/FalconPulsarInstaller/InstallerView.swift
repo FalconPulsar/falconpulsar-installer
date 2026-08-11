@@ -847,6 +847,7 @@ struct ExistingInstallPage: View {
     private func actionRadio(_ action: InstallAction, title: String, detail: String, destructive: Bool = false) -> some View {
         Button(action: {
             state.installAction = action
+            state.installActionUserSet = true
             if action != .fresh { state.freshConfirmed = false }
         }) {
             HStack(alignment: .top, spacing: 10) {

@@ -36,6 +36,13 @@ jobs:
           go-version: '1.25'
           cache-dependency-path: console/go.sum
 
+      # The wizard's navigation rules, asserted against the real state
+      # machine before we bother building a DMG. A skipped
+      # "Existing Installation Detected" page routes an operator with a live
+      # stack into a fresh install — cheaper to catch here than in a release.
+      - name: Installer wizard navigation rules
+        run: macos/installer-app/statecheck/run.sh
+
       - name: Build DMG
         run: |
           chmod +x macos/build-dmg.sh
