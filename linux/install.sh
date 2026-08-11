@@ -759,12 +759,60 @@ fp_write_auth_policy "${FP_HOME}/auth-policy.json"
 # `sudo -u falconpulsar -g docker -H bash -c 'docker compose pull'` can
 # pull the private images. Pre-release only — once images are public
 # this can go.
+#
+# ── A CREDENTIAL HELPER IS NEVER COPIED ───────────────────────────────────
+# On Docker Desktop (Windows/WSL and macOS) root's config.json contains
+#
+#     { "auths": {}, "credsStore": "desktop.exe" }
+#
+# and NOT the secrets themselves — a credsStore means the tokens live in the
+# HOST's keychain and the file is only a pointer to it. Copying that pointer
+# to the service user hands them an instruction they cannot follow, and the
+# docker CLI then runs the helper for EVERY registry call, including an
+# anonymous pull of a public image. Inside WSL that means exec'ing a Windows
+# .exe as a Linux service user, which fails:
+#
+#     /usr/bin/docker-credential-desktop.exe: Invalid argument
+#     error getting credentials - err: exit status 1
+#     [error] docker compose pull failed after retries
+#
+# Reported from a Windows Server 2022 install of alpha.70, where the registry
+# probe two steps earlier had ALREADY succeeded anonymously — the images were
+# reachable the whole time; only the helper was broken.
+#
+# So: a config that delegates to a helper is replaced with an empty one.
+# Nothing is lost (it carried no secret), anonymous pulls of public images
+# work, and a config with INLINE `auth` tokens — a real login to a private
+# registry — is still copied verbatim.
 ROOT_DOCKER_CFG="${DOCKER_CONFIG:-/root/.docker}/config.json"
 if [ -f "$ROOT_DOCKER_CFG" ]; then
     install -d -m 0700 -o "$FP_USER" -g "$FP_USER" "${FP_HOME}/.docker"
-    install -m 0600 -o "$FP_USER" -g "$FP_USER" \
-        "$ROOT_DOCKER_CFG" "${FP_HOME}/.docker/config.json"
-    log_success "Docker Hub credentials propagated to ${FP_HOME}/.docker"
+    if grep -qE '"(credsStore|credHelpers)"' "$ROOT_DOCKER_CFG" 2>/dev/null &&
+       ! grep -q '"auth"[[:space:]]*:' "$ROOT_DOCKER_CFG" 2>/dev/null; then
+        printf '{}\n' > "${FP_HOME}/.docker/config.json"
+        chown "$FP_USER":"$FP_USER" "${FP_HOME}/.docker/config.json"
+        chmod 0600 "${FP_HOME}/.docker/config.json"
+        log_info "Docker config uses a credential helper (Docker Desktop) — not propagating it; the images pull anonymously"
+    else
+        install -m 0600 -o "$FP_USER" -g "$FP_USER" \
+            "$ROOT_DOCKER_CFG" "${FP_HOME}/.docker/config.json"
+        log_success "Docker Hub credentials propagated to ${FP_HOME}/.docker"
+    fi
+fi
+
+# The same trap on the ROOT side: the upgrade fast path pulls as root
+# (existing.sh), so root's own helper-backed config breaks that path too.
+# Point THIS PROCESS at a sanitised config dir rather than editing the
+# operator's own file — the installer must not rewrite root's docker config
+# as a side effect of installing.
+if [ -f "$ROOT_DOCKER_CFG" ] &&
+   grep -qE '"(credsStore|credHelpers)"' "$ROOT_DOCKER_CFG" 2>/dev/null &&
+   ! grep -q '"auth"[[:space:]]*:' "$ROOT_DOCKER_CFG" 2>/dev/null; then
+    FP_DOCKER_CFG_DIR="$(mktemp -d /tmp/fp-docker-cfg.XXXXXX)"
+    printf '{}\n' > "${FP_DOCKER_CFG_DIR}/config.json"
+    chmod 0600 "${FP_DOCKER_CFG_DIR}/config.json"
+    export DOCKER_CONFIG="$FP_DOCKER_CFG_DIR"
+    log_info "using a helper-free Docker config for this run (${DOCKER_CONFIG})"
 fi
 
 # Carry gateway secrets forward from a pre-existing .env (reinstall, or
