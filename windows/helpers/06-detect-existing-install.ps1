@@ -123,14 +123,14 @@ if (-not [string]::IsNullOrEmpty($Distro)) {
         # This was `wsl -d $Distro -- whoami`, which is wrong in two ways and
         # both of them bit us. It launches the distro as its DEFAULT user, so a
         # wsl.conf pointing at a since-removed user crashes WSL outright
-        # ("getpwnam failed") — precisely why 40-run stopped doing it. And it
+        # ("getpwnam failed") -- precisely why 40-run stopped doing it. And it
         # can resolve a DIFFERENT user than 40-run does (default user vs first
         # UID>=1000), so the wizard probed /home/<a>/falconpulsar while the
         # installer later probed /home/<b>/falconpulsar, and the two honestly
         # disagreed about whether an install existed.
         #
         # One question, one answer. If these two ever diverge again, the wizard
-        # offers an action the installer cannot carry out — which is exactly the
+        # offers an action the installer cannot carry out -- which is exactly the
         # failure this comment exists to prevent a third time.
         $resolveUser = 'getent passwd | while IFS=: read -r n _ u _ _ _ _; do if [ "$u" -ge 1000 ] && [ "$u" -lt 65534 ] && [ "$n" != "nobody" ]; then printf "%s\n" "$n"; break; fi; done'
         $wslUser = & wsl.exe -d $Distro -u root -- bash -c $resolveUser 2>$null
@@ -162,8 +162,8 @@ _out "WslHomeDir=`$HOME_DIR"
 # "Is there prior state?" and "can this be upgraded in place?" are different
 # questions, and conflating them is what produced a hard failure at step 5 of
 # 7: HasPrior goes yes for a leftover Program Files directory, an Inno
-# uninstall key, or merely having the images pulled — none of which is a stack
-# — while the in-place upgrade needs a real compose.yml or data/falconpulsar.toml
+# uninstall key, or merely having the images pulled -- none of which is a stack
+# -- while the in-place upgrade needs a real compose.yml or data/falconpulsar.toml
 # under the PER-USER dir. The wizard offered Upgrade, so it never collected the
 # admin credentials, and the installer then had neither a stack to upgrade nor
 # the credentials to migrate one.

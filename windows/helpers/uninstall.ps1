@@ -265,7 +265,7 @@ rm -f "`$HOME_DIR/compose.yml" 2>/dev/null
 if [ "`$PURGE" = "1" ]; then
     # Custom data dirs pointed OUTSIDE the stack home are not covered by the
     # `rm -rf` of the home in Step 3, so they would survive a full purge.
-    # Harvest them from .env BEFORE it is deleted just below — same set and
+    # Harvest them from .env BEFORE it is deleted just below -- same set and
     # same guards as linux/uninstall.sh and macos/uninstall.sh.
     HOME_ABS=`$(cd "`$HOME_DIR" 2>/dev/null && pwd -P || echo "`$HOME_DIR")
     for V in FP_DATA_DIR FP_GATEWAY_DATA_DIR FP_ENGINE_DATA_DIR FP_COPILOT_DATA_DIR; do

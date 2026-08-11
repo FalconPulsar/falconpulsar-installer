@@ -124,7 +124,7 @@ function Get-WslDistros {
         ($_ -replace "`0", '').Trim()
     } | Where-Object { $_ -ne '' }
     # ALWAYS return a real array. With zero distros the pipeline emits
-    # nothing, so a bare `return $result` hands back AutomationNull — and
+    # nothing, so a bare `return $result` hands back AutomationNull -- and
     # under `Set-StrictMode -Version Latest` a caller doing `.Count` on that
     # throws PropertyNotFoundStrict (this broke clean-server installs). The
     # leading comma prevents PowerShell from unrolling the empty array back

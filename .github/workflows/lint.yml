@@ -134,3 +134,51 @@ jobs:
           grep -q 'print_help()'         "$out/install-linux.sh"
           grep -q 'detect_mac_runtime()' "$out/install-macos.sh"
           grep -q 'run_as_fp_user()'     "$out/uninstall-linux.sh"
+
+  powershell:
+    name: powershell (parse + ASCII)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # WHY THIS JOB EXISTS
+      # A .ps1 with a syntax error shipped to a customer and failed at step 6
+      # of 7 on THEIR machine, because CI linted every bash script and never
+      # looked at the PowerShell at all.
+      - name: Parse every .ps1
+        shell: pwsh
+        run: |
+          $bad = 0
+          Get-ChildItem -Recurse -Filter *.ps1 | ForEach-Object {
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              $_.FullName, [ref]$null, [ref]$errors) | Out-Null
+            if ($errors -and $errors.Count -gt 0) {
+              $bad++
+              Write-Host "::error file=$($_.FullName)::$($errors.Count) parse error(s)"
+              $errors | ForEach-Object { Write-Host "   line $($_.Extent.StartLineNumber): $($_.Message)" }
+            }
+          }
+          if ($bad -gt 0) { exit 1 }
+          Write-Host "all .ps1 files parse"
+
+      # THE CHECK THAT WOULD ACTUALLY HAVE CAUGHT IT.
+      # The parse job above runs pwsh 7, which reads a file as UTF-8 and is
+      # perfectly happy with an em dash. The customer runs Windows PowerShell
+      # 5.1, which reads a BOM-less .ps1 as the system ANSI code page -- so a
+      # multi-byte character becomes mojibake, and inside a double-quoted
+      # string one of its bytes can terminate the string early. That is
+      # exactly how `... port $($surface.Port) - the shell will show ...`
+      # became "The string is missing the terminator".
+      #
+      # Rule: .ps1 files are ASCII-only. Simple, and mechanically checkable.
+      - name: No non-ASCII in .ps1 (Windows PowerShell 5.1 reads them as ANSI)
+        run: |
+          set -e
+          if grep -rlP '[^\x00-\x7F]' --include='*.ps1' . ; then
+            echo "::error::the .ps1 files listed above contain non-ASCII characters."
+            echo "Windows PowerShell 5.1 reads a BOM-less .ps1 as the system ANSI code page."
+            echo "Use ASCII: -- for an em dash, - for a box rule, * for a bullet."
+            exit 1
+          fi
+          echo "all .ps1 files are ASCII-only"

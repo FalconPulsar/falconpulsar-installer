@@ -78,7 +78,7 @@ try {
 # Manually validate the params we used to mark Mandatory.
 # Admin credentials are NOT required for an in-place upgrade: the wizard
 # skips the credentials page (the upgrade neither creates an admin nor
-# re-authorizes — matching the tray's Apply Now and the macOS installer),
+# re-authorizes -- matching the tray's Apply Now and the macOS installer),
 # so AdminUser/AdminPass legitimately arrive empty with -InstallAction
 # 'upgrade'. Reinstall/fresh still require them.
 foreach ($pair in @(
@@ -336,7 +336,7 @@ export FP_INVOKING_USER='$WslUser'
 # wizard no longer collects credentials for them (an upgrade neither
 # creates an admin nor destroys data), matching the tray's Apply Now and
 # the macOS installer. With no creds and no TTY the gate would otherwise
-# try an interactive prompt and abort. Reinstall/fresh do NOT set this —
+# try an interactive prompt and abort. Reinstall/fresh do NOT set this --
 # they still authorize with the admin password. FP_FORCE gates ONLY the
 # auth block (verified: its sole use in linux/ + macos/install.sh).
 export FP_FORCE=1
@@ -362,7 +362,7 @@ if ($InstallAction -eq 'upgrade' -and [string]::IsNullOrEmpty($AdminPass)) {
     # Name WHAT was looked for, WHERE, and WHICH of the two causes applies. The
     # old text put both behind one sentence with no path in it, so diagnosing a
     # user's report meant reading this file to learn what it had probed. The
-    # probe result is right here — print it.
+    # probe result is right here -- print it.
     #
     # Reaching this at all is now a wizard bug as well as a user's dead end:
     # 06-detect-existing-install.ps1 emits UpgradeableStack using this exact
@@ -394,7 +394,7 @@ if ($hasLegacyInstall) {
 if ($InstallAction -eq 'fresh') {
     Write-Info 'Fresh install -- wiping any prior FalconPulsar state inside WSL'
 
-    # ── Step 1: wait for the Docker daemon to actually be reachable ───────
+    # -- Step 1: wait for the Docker daemon to actually be reachable -------
     # 30-launch-docker-desktop.ps1 launches Docker Desktop earlier in the
     # chain, but Docker Desktop's tray icon turning green != the daemon
     # accepting connections. On a cold install we routinely see 10-30s
@@ -420,17 +420,17 @@ exit 1
         Write-Warning 'Docker daemon not reachable -- proceeding with cleanup anyway, but it may not remove existing state'
     }
 
-    # ── Step 2: actual cleanup, with explicit counts logged ──────────────
+    # -- Step 2: actual cleanup, with explicit counts logged --------------
     # Differences from the previous silent version:
-    #   • compose-first: try `docker compose down --volumes --remove-orphans`
+    #   * compose-first: try `docker compose down --volumes --remove-orphans`
     #     before manual rm, so containers are torn down with their network
     #     and named volumes in coordinated fashion.
-    #   • Each step counts what was removed and echoes the count, so the
+    #   * Each step counts what was removed and echoes the count, so the
     #     install log records `Removed N containers` instead of nothing.
-    #   • set +e is only kept around the last legacy-cleanup section
+    #   * set +e is only kept around the last legacy-cleanup section
     #     where some commands legitimately fail (e.g. userdel of a user
     #     that doesn't exist); active sections use explicit error handling.
-    #   • Added: prune the falconpulsar Compose project network even if
+    #   * Added: prune the falconpulsar Compose project network even if
     #     `docker network rm falconpulsar` doesn't match (Compose v2
     #     sometimes names the network `<project>_default`).
     $cleanScript = @"
@@ -520,13 +520,13 @@ rm -f /etc/profile.d/falconpulsar.sh 2>/dev/null
 
 # 2d. Final summary -- explicit, so the install log answers "did it actually
 # remove anything?" without the user having to read every line.
-echo "[clean] ──────────────────────────────────────────────────"
+echo "[clean] --------------------------------------------------"
 echo "[clean] Fresh-install cleanup summary:"
 echo "[clean]   containers removed: `$removed_containers"
 echo "[clean]   images removed:     `$removed_images"
 echo "[clean]   volumes removed:    `$removed_volumes"
 echo "[clean]   networks removed:   `$removed_networks"
-echo "[clean] ──────────────────────────────────────────────────"
+echo "[clean] --------------------------------------------------"
 echo '[ok] WSL state wiped -- ready for fresh install'
 "@
     $null = Invoke-WslBash -Distro $Distro -Script $cleanScript -User root
