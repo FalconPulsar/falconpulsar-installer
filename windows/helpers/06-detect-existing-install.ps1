@@ -117,15 +117,24 @@ if (-not [string]::IsNullOrEmpty($Distro)) {
     try { $null = & wsl.exe -d $Distro -u root -- true 2>$null } catch { }
 
     if ($LASTEXITCODE -eq 0) {
-        # Resolve the distro's default user so we can probe BOTH the new
-        # per-user stack dir (/home/<user>/falconpulsar) AND the legacy
-        # service-user dir (/home/falconpulsar). Either counts as "exists".
-        $wslUser = & wsl.exe -d $Distro -- whoami 2>$null
+        # Resolve the human user EXACTLY as 40-run-fp-installer.ps1 does: read
+        # /etc/passwd AS ROOT and take the first UID >= 1000.
+        #
+        # This was `wsl -d $Distro -- whoami`, which is wrong in two ways and
+        # both of them bit us. It launches the distro as its DEFAULT user, so a
+        # wsl.conf pointing at a since-removed user crashes WSL outright
+        # ("getpwnam failed") — precisely why 40-run stopped doing it. And it
+        # can resolve a DIFFERENT user than 40-run does (default user vs first
+        # UID>=1000), so the wizard probed /home/<a>/falconpulsar while the
+        # installer later probed /home/<b>/falconpulsar, and the two honestly
+        # disagreed about whether an install existed.
+        #
+        # One question, one answer. If these two ever diverge again, the wizard
+        # offers an action the installer cannot carry out — which is exactly the
+        # failure this comment exists to prevent a third time.
+        $resolveUser = 'getent passwd | while IFS=: read -r n _ u _ _ _ _; do if [ "$u" -ge 1000 ] && [ "$u" -lt 65534 ] && [ "$n" != "nobody" ]; then printf "%s\n" "$n"; break; fi; done'
+        $wslUser = & wsl.exe -d $Distro -u root -- bash -c $resolveUser 2>$null
         $wslUser = "$wslUser".Trim().Trim([char]0)
-        if ([string]::IsNullOrEmpty($wslUser) -or $wslUser -eq 'root') {
-            $wslUser = & wsl.exe -d $Distro -u root -- bash -c "getent passwd 1000 2>/dev/null | cut -d: -f1" 2>$null
-            $wslUser = "$wslUser".Trim().Trim([char]0)
-        }
         $r['WslUser'] = $wslUser
         $userHome = if ($wslUser -and $wslUser -ne 'root') { "/home/$wslUser/falconpulsar" } else { '' }
         $r['WslHomePath'] = $userHome
@@ -146,6 +155,32 @@ else
     HOME_DIR=''
 fi
 _out "WslHomeDir=`$HOME_DIR"
+
+# THE QUESTION 40-run-fp-installer.ps1 ACTUALLY ASKS, answered here with the
+# SAME test, so the wizard cannot offer an action the installer will refuse.
+#
+# "Is there prior state?" and "can this be upgraded in place?" are different
+# questions, and conflating them is what produced a hard failure at step 5 of
+# 7: HasPrior goes yes for a leftover Program Files directory, an Inno
+# uninstall key, or merely having the images pulled — none of which is a stack
+# — while the in-place upgrade needs a real compose.yml or data/falconpulsar.toml
+# under the PER-USER dir. The wizard offered Upgrade, so it never collected the
+# admin credentials, and the installer then had neither a stack to upgrade nor
+# the credentials to migrate one.
+#
+# LEGACY is called out separately because it is a third state, not a shade of
+# the other two: /home/falconpulsar CAN be brought forward, but only by a
+# migration, which needs the credentials the upgrade flow deliberately skips.
+if [ -n "`$USER_HOME" ] && { [ -f "`$USER_HOME/compose.yml" ] || [ -f "`$USER_HOME/data/falconpulsar.toml" ]; }; then
+    _out 'UpgradeableStack=yes'
+    _out 'LegacyLayout=no'
+elif [ -f /home/falconpulsar/compose.yml ] || [ -f /home/falconpulsar/data/falconpulsar.toml ]; then
+    _out 'UpgradeableStack=no'
+    _out 'LegacyLayout=yes'
+else
+    _out 'UpgradeableStack=no'
+    _out 'LegacyLayout=no'
+fi
 
 if [ -n "`$HOME_DIR" ]; then
     [ -d "`$HOME_DIR" ]               && _out 'WslHome=yes'       || _out 'WslHome=no'

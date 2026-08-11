@@ -356,6 +356,21 @@ var
   ExistingRemoveImagesCheck: TNewCheckBox;
   ExistingDetectionDone: Boolean;
   ExistingHasPrior: Boolean;
+  // Can this machine actually be upgraded IN PLACE? NOT the same question as
+  // ExistingHasPrior, and the difference is why an upgrade could fail at step
+  // 5 of 7: HasPrior goes true for a leftover Program Files directory, an Inno
+  // uninstall key, or merely having the images pulled — while an in-place
+  // upgrade needs a real compose.yml / data/falconpulsar.toml under the
+  // per-user stack dir. Offering Upgrade on the weaker evidence meant the
+  // wizard skipped collecting admin credentials (upgrades genuinely do not
+  // need them) and the installer then had neither a stack to upgrade nor the
+  // credentials to migrate one. Written by 06-detect-existing-install.ps1
+  // using the SAME test 40-run-fp-installer.ps1 applies.
+  ExistingUpgradeable: Boolean;
+  // A legacy /home/falconpulsar stack: real and preservable, but only by a
+  // MIGRATION, which needs the credentials the upgrade flow skips. A third
+  // state, not a shade of the other two.
+  ExistingLegacyLayout: Boolean;
   ExistingHasData: Boolean;
   ExistingHasContainers: Boolean;
   ExistingHasImages: Boolean;
@@ -1494,6 +1509,8 @@ var
 begin
   ExistingDetectionDone := False;
   ExistingHasPrior      := False;
+  ExistingUpgradeable   := False;
+  ExistingLegacyLayout  := False;
   ExistingHasData       := False;
   ExistingHasContainers := False;
   ExistingHasImages     := False;
@@ -1534,6 +1551,12 @@ begin
 
   ExistingDetectionDone := True;
   ExistingHasPrior      := (SentinelGet(Content, 'HasPrior') = 'yes');
+  // Absence reads as NOT upgradeable, deliberately. If the WSL probe could not
+  // run, we do not know there is a stack — and the safe unknown is the one that
+  // collects credentials, because Reinstall works with or without a stack while
+  // Upgrade fails hard without one.
+  ExistingUpgradeable   := (SentinelGet(Content, 'UpgradeableStack') = 'yes');
+  ExistingLegacyLayout  := (SentinelGet(Content, 'LegacyLayout') = 'yes');
   ExistingHasData       := (SentinelGet(Content, 'WslData')  = 'yes');
   ExistingHasContainers := (StrToIntDef(SentinelGet(Content, 'Containers'), 0) > 0);
   ExistingHasImages     := (StrToIntDef(SentinelGet(Content, 'Images'),     0) > 0);
@@ -1608,10 +1631,18 @@ begin
   else
     LogInfo('Existing .env: Command Center not enabled (or no .env found)');
 
-  if ExistingHasPrior then
-    LogInfo('Existing-install detection complete: prior state found')
+  // Say WHICH of the three states, not just "prior state found". The old line
+  // was true and useless: it read the same whether there was a live stack to
+  // upgrade or a single stale registry key, which is exactly the distinction
+  // the install then failed on.
+  if not ExistingHasPrior then
+    LogInfo('Existing-install detection complete: clean machine')
+  else if ExistingUpgradeable then
+    LogInfo('Existing-install detection complete: upgradeable stack found (in-place upgrade available)')
+  else if ExistingLegacyLayout then
+    LogInfo('Existing-install detection complete: LEGACY stack at /home/falconpulsar — needs migration, not an in-place upgrade')
   else
-    LogInfo('Existing-install detection complete: clean machine');
+    LogInfo('Existing-install detection complete: leftovers only (no stack to upgrade) — Upgrade will be offered as unavailable');
 
   // Keep legacy IsUpgrade flag in sync so other code paths stay correct.
   IsUpgrade := ExistingHasPrior;
@@ -1757,6 +1788,39 @@ begin
   Y := Y + InvH + ScaleY(6);
 
   Gap := ScaleY(4);
+
+  // Only offer Upgrade when an in-place upgrade can actually succeed.
+  //
+  // The wizard used to offer it whenever ANY prior state was found -- a
+  // leftover Program Files directory, an uninstall key, even just the images
+  // being present. Choosing it then skipped the credential pages (an upgrade
+  // neither creates an admin nor destroys data, so it genuinely does not need
+  // them), and step 5 of 7 discovered there was no stack to upgrade and no
+  // credentials to migrate one. The install died after the user had waited
+  // through the long part, with a message telling them to start again.
+  //
+  // An option that cannot succeed must not be offered. When there is residue
+  // but no upgradeable stack, Reinstall (keep data) is the honest default: it
+  // preserves the database, collects what a migration needs, and works whether
+  // or not a stack turns out to be there.
+  ExistingUpgradeRadio.Enabled := ExistingUpgradeable;
+  if not ExistingUpgradeable then
+  begin
+    if ExistingLegacyLayout then
+      ExistingUpgradeRadio.Caption :=
+        'Upgrade in place -- unavailable: this is an older layout that must be migrated'
+    else
+      ExistingUpgradeRadio.Caption :=
+        'Upgrade in place -- unavailable: no stack found to upgrade (only leftovers)';
+    // Never leave the disabled option selected: Inno keeps the check state of
+    // a disabled radio, and the install action is read from it later.
+    if ExistingUpgradeRadio.Checked then
+    begin
+      ExistingUpgradeRadio.Checked   := False;
+      ExistingReinstallRadio.Checked := True;
+    end;
+  end;
+
   ExistingUpgradeRadio.Top   := Y;   Y := Y + ExistingUpgradeRadio.Height   + Gap;
   ExistingReinstallRadio.Top := Y;   Y := Y + ExistingReinstallRadio.Height + Gap;
   ExistingFreshRadio.Top     := Y;   Y := Y + ExistingFreshRadio.Height     + Gap;

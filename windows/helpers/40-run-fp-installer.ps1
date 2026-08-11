@@ -359,10 +359,23 @@ bash /opt/falconpulsar-installer/linux/install.sh --user '$WslUser' --mode docke
 # longer collects for upgrades -- fail with directions instead of running a
 # credential-less full install.
 if ($InstallAction -eq 'upgrade' -and [string]::IsNullOrEmpty($AdminPass)) {
-    Stop-WithError ("This installation needs a full migration rather than an in-place upgrade " +
-        "(legacy layout, or the existing stack could not be found). Re-run the installer and " +
-        "choose 'Reinstall (keep data)' -- that flow collects the admin credentials the " +
-        "migration requires.")
+    # Name WHAT was looked for, WHERE, and WHICH of the two causes applies. The
+    # old text put both behind one sentence with no path in it, so diagnosing a
+    # user's report meant reading this file to learn what it had probed. The
+    # probe result is right here — print it.
+    #
+    # Reaching this at all is now a wizard bug as well as a user's dead end:
+    # 06-detect-existing-install.ps1 emits UpgradeableStack using this exact
+    # test, and the wizard disables Upgrade unless it is yes. If this fires,
+    # the two answers have diverged again.
+    $whyText = if ($hasLegacyInstall) {
+        'a legacy stack was found at /home/falconpulsar, which can only be brought forward by a migration'
+    } else {
+        "no stack was found at $WslHome (looked for compose.yml and data/falconpulsar.toml), nor at /home/falconpulsar"
+    }
+    Stop-WithError ("This installation needs a full migration rather than an in-place upgrade: " +
+        "$whyText. Re-run the installer and choose 'Reinstall (keep data)' -- that flow collects " +
+        "the admin credentials a migration requires, and preserves your database.")
 }
 if ($hasLegacyInstall) {
     Write-Info 'Legacy (service-user) install detected -- will migrate to per-user layout'
