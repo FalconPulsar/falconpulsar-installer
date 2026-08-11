@@ -224,8 +224,25 @@ detect_os() {
 # Used by install.sh and existing.sh's upgrade fast-path so a transient
 # network flap doesn't abort the install and force the user to start over.
 # fp_pull_docker_config
-#   Print a DOCKER_CONFIG directory that is safe to pull with, or nothing when
-#   the ambient configuration is already fine.
+#   Print a DOCKER_CONFIG directory that is safe to pull with.
+#
+# ── UNCONDITIONAL, AFTER THREE FAILED ATTEMPTS AT BEING CLEVER ────────────
+# This used to look for a credsStore and override only when it found one.
+# That failed on the reporting machine for a reason worth writing down: the
+# detection runs HERE, as root, and inspects root's view — but the pull runs
+# as the SERVICE USER via `sudo -u <user> -H`, which reads THAT user's
+# config. The file that breaks the pull was never the file being inspected.
+# The alpha.72 log proved it the same way alpha.71's did: the "helper-free
+# config" line never printed, so the detector had found nothing while the
+# pull was still dying on `docker-credential-desktop.exe`.
+#
+# So the detection is gone. The images this installer pulls are PUBLIC — the
+# registry probe two steps earlier proves it anonymously on every run — and a
+# pull that needs no credentials is strictly safer with a config that offers
+# none. There is exactly ONE case worth preserving: a config carrying an
+# INLINE `auth` token, i.e. a real `docker login` to a private registry.
+#
+# Set FP_KEEP_DOCKER_CREDS=1 to opt out entirely and use the ambient config.
 #
 # ── WHY THIS EXISTS, AND WHY THE FIRST ATTEMPT MISSED ─────────────────────
 # On Docker Desktop the config.json the CLI reads contains
@@ -254,6 +271,7 @@ detect_os() {
 # login to a private registry, and dropping it to fix a lookup would trade one
 # failure for a worse one.
 fp_pull_docker_config() {
+    [ "${FP_KEEP_DOCKER_CREDS:-0}" = "1" ] && return 0
     local candidate found=''
     # Same order the docker CLI resolves in: explicit DOCKER_CONFIG, the
     # invoking user's home, then root's (this runs under sudo).
@@ -263,10 +281,11 @@ fp_pull_docker_config() {
         found="${candidate}/config.json"
         break
     done
-    # No config at all is already the good case: anonymous pulls just work.
-    [ -n "$found" ] || return 0
-    grep -qE '"(credsStore|credHelpers)"' "$found" 2>/dev/null || return 0
-    grep -q '"auth"[[:space:]]*:' "$found" 2>/dev/null && return 0
+    # An INLINE `auth` token is a real login to a private registry. Keep the
+    # ambient config in that one case, and only that one.
+    if [ -n "$found" ] && grep -q '"auth"[[:space:]]*:' "$found" 2>/dev/null; then
+        return 0
+    fi
     local dir
     dir="$(mktemp -d /tmp/fp-dockercfg.XXXXXX)" || return 0
     printf '{}\n' > "${dir}/config.json"
@@ -288,9 +307,15 @@ fp_compose_pull_with_retry() {
     # failure three times is exactly what the failing logs were full of.
     local cfg_dir cfg_prefix=''
     cfg_dir="$(fp_pull_docker_config)"
+    # Logged on BOTH branches, deliberately. Twice now a fix has shipped, run,
+    # and been invisible in the log because it only spoke when it acted — so
+    # "did it run?" and "what did it decide?" could not be told apart from a
+    # user's report. A line that always prints answers both.
     if [ -n "$cfg_dir" ]; then
         cfg_prefix="DOCKER_CONFIG='${cfg_dir}' "
-        log_info "docker config delegates to a credential helper that cannot run here — pulling with a helper-free config (${cfg_dir})"
+        log_info "pulling with a helper-free docker config (${cfg_dir}) — the images are public and a credential helper cannot run for the service user"
+    else
+        log_info "pulling with the ambient docker config (an inline registry login was found, or FP_KEEP_DOCKER_CREDS=1)"
     fi
     while [ "$attempt" -lt "$attempts" ]; do
         attempt=$((attempt + 1))
