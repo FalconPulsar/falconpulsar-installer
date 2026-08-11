@@ -1470,21 +1470,38 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         view.addSubview(title)
 
         // ── Version pill ──
-        let verBg = NSView(frame: NSRect(x: (w - 150) / 2, y: h - 260, width: 150, height: 26))
-        verBg.wantsLayer = true
-        verBg.layer?.backgroundColor = NSColor(white: 1, alpha: 0.1).cgColor
-        verBg.layer?.cornerRadius = 13
-        view.addSubview(verBg)
+        //
+        // Sized to its text, never to a constant. It used to be a hardcoded
+        // 150pt: fine at "v0.1.4", and by "QuickDock  v0.1.4-alpha.67" the
+        // label was ~187pt, so the pill's edges peeked out from BEHIND the
+        // middle of the words and read as a stray shadow. A version string
+        // only ever changes length, so the container has to measure it —
+        // that also holds when 1.0 drops the "-alpha.NN" and it gets shorter.
 
         // Pull our own version from Info.plist (CFBundleShortVersionString).
         // build-dmg.sh writes it from FP_VERSION at build time, so a CI build
         // off tag v0.1.4-alpha.1 lands here as "0.1.4-alpha.1". Falls back to
         // "dev" only when running an unbundled debug build.
         let appVersion = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "dev"
-        let verLabel = NSTextField(labelWithString: "Installer  v\(appVersion)")
+        // "QuickDock", not "Installer". This window belongs to the menu-bar
+        // app; the installer is a DIFFERENT app that also exists ("FalconPulsar
+        // Installer.app"), so the old label named the wrong one. The number is
+        // still the distribution version — QuickDock ships from the same
+        // VERSION file, so it is equally this app's version.
+        let verFont = NSFont.monospacedSystemFont(ofSize: 12, weight: .medium)
+        let verString = "QuickDock  v\(appVersion)"
+        let verTextW = (verString as NSString).size(withAttributes: [.font: verFont]).width
+        let pillW = ceil(verTextW) + 28   // 14pt of breathing room each side
+        let verBg = NSView(frame: NSRect(x: (w - pillW) / 2, y: h - 260, width: pillW, height: 26))
+        verBg.wantsLayer = true
+        verBg.layer?.backgroundColor = NSColor(white: 1, alpha: 0.1).cgColor
+        verBg.layer?.cornerRadius = 13
+        view.addSubview(verBg)
+
+        let verLabel = NSTextField(labelWithString: verString)
         verLabel.frame = NSRect(x: 0, y: h - 260, width: w, height: 26)
         verLabel.alignment = .center
-        verLabel.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .medium)
+        verLabel.font = verFont
         verLabel.textColor = NSColor(white: 0.8, alpha: 1)
         view.addSubview(verLabel)
 
@@ -1559,7 +1576,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             // no overflow.
             let verText = NSTextField(labelWithString: ver)
             verText.frame = NSRect(x: cx + 22, y: cy, width: 200, height: 18)
-            verText.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+            // Shrink to fit rather than truncate. The comment above budgets
+            // ~22 characters at 11pt; Core reports a `git describe` string
+            // that is longer, and the column silently cut the tail — which is
+            // the half that carries the build id a support request needs.
+            // Losing a point of size is always better than losing the SHA.
+            verText.font = fittedMonoFont(for: ver, width: 200, base: 11, floor: 8.5)
             verText.textColor = NSColor(white: 0.9, alpha: 1)
             view.addSubview(verText)
         }
@@ -1647,8 +1669,31 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             if revision.isEmpty { return version }
             // Don't print the rev twice if version IS the digest fallback
             if version == revision { return version }
+            // Nor when a `git describe` version already ENDS in it
+            // (v0.1.4-alpha.89-5-g61ec2ad): appending "(61ec2ad)" repeats
+            // the same seven characters, and the repetition is exactly what
+            // overflowed this column and truncated the Core row.
+            if version.contains(revision) { return version }
             return "\(version) (\(revision))"
         }
+    }
+
+    /// The largest monospaced size at which `text` still fits `width`.
+    ///
+    /// Steps down by half-points to `floor`, then gives up and returns the
+    /// floor — at which point truncation is unavoidable and a smaller number
+    /// is still more readable than an ellipsis.
+    private func fittedMonoFont(for text: String, width: CGFloat,
+                                base: CGFloat, floor: CGFloat) -> NSFont {
+        var size = base
+        while size > floor {
+            let font = NSFont.monospacedSystemFont(ofSize: size, weight: .regular)
+            if (text as NSString).size(withAttributes: [.font: font]).width <= width {
+                return font
+            }
+            size -= 0.5
+        }
+        return NSFont.monospacedSystemFont(ofSize: floor, weight: .regular)
     }
 
     private func getContainerInfo(_ name: String) -> ContainerInfo {

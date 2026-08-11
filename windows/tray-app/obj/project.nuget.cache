@@ -1,8 +1,8 @@
 {
   "version": 2,
-  "dgSpecHash": "UN3nAj4K0mU=",
+  "dgSpecHash": "6U99KDQU+Qs=",
   "success": true,
-  "projectFilePath": "/Users/icterusicterus/dev/falconpulsar-workspace-new/falconpulsar-installer/windows/tray-app/FalconPulsarTray.csproj",
+  "projectFilePath": "/Users/icterusicterus/dev/falconpulsar-workspace/falconpulsar-installer/windows/tray-app/FalconPulsarTray.csproj",
   "expectedPackageFiles": [
     "/Users/icterusicterus/.nuget/packages/microsoft.net.illink.tasks/8.0.29/microsoft.net.illink.tasks.8.0.29.nupkg.sha512",
     "/Users/icterusicterus/.nuget/packages/microsoft.netcore.app.ref/8.0.29/microsoft.netcore.app.ref.8.0.29.nupkg.sha512",

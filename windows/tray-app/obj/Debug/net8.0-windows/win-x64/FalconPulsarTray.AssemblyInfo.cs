@@ -14,7 +14,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyDescriptionAttribute("FalconPulsar system tray manager")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("0.1.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("0.1.0+c276fdf7f3d86b6e252044554b819b39d8b809d2")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("0.1.0+26c4f523e018411818ded3023143ab40258f0bcb")]
 [assembly: System.Reflection.AssemblyProductAttribute("FalconPulsar")]
 [assembly: System.Reflection.AssemblyTitleAttribute("FalconPulsarTray")]
 [assembly: System.Reflection.AssemblyVersionAttribute("0.1.0.0")]

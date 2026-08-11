@@ -257,6 +257,13 @@ func (c ContainerInfo) DisplayString() string {
 		// Don't print the rev twice when version IS the digest fallback.
 		return c.Version
 	}
+	if strings.Contains(c.Version, c.Revision) {
+		// A `git describe` version already ENDS in the revision
+		// (v0.1.4-alpha.89-5-g61ec2ad), so appending "(61ec2ad)" says the
+		// same thing twice — and the repetition is what pushed the Core
+		// row past the About window's version column and truncated it.
+		return c.Version
+	}
 	return fmt.Sprintf("%s (%s)", c.Version, c.Revision)
 }
 

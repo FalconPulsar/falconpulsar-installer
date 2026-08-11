@@ -1,17 +1,17 @@
 {
   "format": 1,
   "restore": {
-    "/Users/icterusicterus/dev/falconpulsar-workspace-new/falconpulsar-installer/windows/tray-app/FalconPulsarTray.csproj": {}
+    "/Users/icterusicterus/dev/falconpulsar-workspace/falconpulsar-installer/windows/tray-app/FalconPulsarTray.csproj": {}
   },
   "projects": {
-    "/Users/icterusicterus/dev/falconpulsar-workspace-new/falconpulsar-installer/windows/tray-app/FalconPulsarTray.csproj": {
+    "/Users/icterusicterus/dev/falconpulsar-workspace/falconpulsar-installer/windows/tray-app/FalconPulsarTray.csproj": {
       "version": "0.1.0",
       "restore": {
-        "projectUniqueName": "/Users/icterusicterus/dev/falconpulsar-workspace-new/falconpulsar-installer/windows/tray-app/FalconPulsarTray.csproj",
+        "projectUniqueName": "/Users/icterusicterus/dev/falconpulsar-workspace/falconpulsar-installer/windows/tray-app/FalconPulsarTray.csproj",
         "projectName": "FalconPulsarTray",
-        "projectPath": "/Users/icterusicterus/dev/falconpulsar-workspace-new/falconpulsar-installer/windows/tray-app/FalconPulsarTray.csproj",
+        "projectPath": "/Users/icterusicterus/dev/falconpulsar-workspace/falconpulsar-installer/windows/tray-app/FalconPulsarTray.csproj",
         "packagesPath": "/Users/icterusicterus/.nuget/packages/",
-        "outputPath": "/Users/icterusicterus/dev/falconpulsar-workspace-new/falconpulsar-installer/windows/tray-app/obj/",
+        "outputPath": "/Users/icterusicterus/dev/falconpulsar-workspace/falconpulsar-installer/windows/tray-app/obj/",
         "projectStyle": "PackageReference",
         "configFilePaths": [
           "/Users/icterusicterus/.nuget/NuGet/NuGet.Config"

@@ -1601,27 +1601,40 @@ namespace FalconPulsar.Tray
             });
 
             // Version pill
+            //
+            // "QuickDock", matching macOS: this window belongs to the tray
+            // app, not to the installer. The number is still the distribution
+            // version — the tray ships from the same VERSION file.
+            //
+            // The pill MEASURES its text rather than assuming a width. At a
+            // fixed 150px the longer label would sit wider than its own
+            // container and the panel edges would show through the middle of
+            // the words, which is exactly how the macOS one looked wrong.
+            var verFont = new Font("Consolas", 10);
+            var verText = $"QuickDock  v{TrayProductVersion}";
+            int verTextW = TextRenderer.MeasureText(verText, verFont).Width;
+            int pillW = verTextW + 28;   // 14px of breathing room each side
             var verPanel = new Panel
             {
-                Size = new Size(150, 26),
-                Location = new Point(195, 215),
+                Size = new Size(pillW, 26),
+                Location = new Point((540 - pillW) / 2, 215),
                 BackColor = Color.FromArgb(30, 255, 255, 255)
             };
             verPanel.Paint += (s, e) =>
             {
                 e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
                 using var brush = new SolidBrush(Color.FromArgb(25, 255, 255, 255));
-                e.Graphics.FillRectangle(brush, 0, 0, 150, 26);
+                e.Graphics.FillRectangle(brush, 0, 0, pillW, 26);
             };
             panel.Controls.Add(verPanel);
             verPanel.Controls.Add(new Label
             {
-                Text = $"v{TrayProductVersion}",   // full semver; fits the pill, matches macOS
-                Font = new Font("Consolas", 10),
+                Text = verText,
+                Font = verFont,
                 ForeColor = Color.FromArgb(200, 200, 200),
                 BackColor = Color.Transparent,
                 AutoSize = false,
-                Size = new Size(150, 26),
+                Size = new Size(pillW, 26),
                 TextAlign = ContentAlignment.MiddleCenter
             });
 
@@ -1895,6 +1908,10 @@ namespace FalconPulsar.Tray
                     if (Version == "n/a") return "n/a";
                     if (string.IsNullOrEmpty(Revision)) return Version;
                     if (Version == Revision) return Version;  // digest fallback
+                    // A `git describe` version already ends in the revision
+                    // (v0.1.4-alpha.89-5-g61ec2ad); appending "(61ec2ad)"
+                    // repeats it and overflows the version column.
+                    if (Version.Contains(Revision)) return Version;
                     return $"{Version} ({Revision})";
                 }
             }
