@@ -366,6 +366,10 @@ var
   // need them) and the installer then had neither a stack to upgrade nor the
   // credentials to migrate one. Written by 06-detect-existing-install.ps1
   // using the SAME test 40-run-fp-installer.ps1 applies.
+  // Notes from ADVISORY steps that did not complete. Non-empty means the
+  // install succeeded but something optional did not -- shown once at the
+  // end, never as a failure. See the block around steps 6 and 7.
+  AdvisoryNotes: String;
   ExistingUpgradeable: Boolean;
   // A legacy /home/falconpulsar stack: real and preservable, but only by a
   // MIGRATION, which needs the credentials the upgrade flow skips. A third
@@ -443,6 +447,14 @@ begin
   begin
     StepLabels[Index].Caption := '[--] ' + StepNames[Index] + ' (skipped)';
     StepLabels[Index].Font.Color := clGray;
+    StepLabels[Index].Font.Style := [];
+  end
+  else if Status = 'warn' then
+  begin
+    // An ADVISORY step that did not complete. Not a failed install: the
+    // product is already on the machine by the time these run.
+    StepLabels[Index].Caption := '[!] ' + StepNames[Index] + ' -- skipped, see notes';
+    StepLabels[Index].Font.Color := $000080;   // dark yellow/olive, not red
     StepLabels[Index].Font.Style := [];
   end;
   WizardForm.Refresh();
@@ -970,22 +982,69 @@ begin
     UpdateStep(4, 'done');
     LogInfo('Step 5/7: PASSED');
 
-    // Step 6: Verify installation health
+    (*
+      STEPS 6 AND 7 ARE ADVISORY, AND MUST NOT FAIL THE INSTALL.
+      ---------------------------------------------------------------------
+      By this point FalconPulsar IS INSTALLED AND RUNNING: step 5 ran the
+      bash installer, which pulls the images, starts the stack, health-gates
+      core and the gateway, and prints "FalconPulsar is up and running".
+      Neither of the steps below installs anything -- one re-checks what has
+      already been checked, the other makes Start Menu shortcuts.
+
+      They used to Abort. A customer therefore saw
+
+          "FalconPulsar install failed at: Verifying installation"
+
+      on a machine where all five containers were running and the Web UI was
+      serving, because 45-verify-health.ps1 had a syntax error. The product
+      was fine; the report was wrong; and a person who believed it would
+      uninstall a working system, or re-run and hit the same wall.
+
+      The rule this encodes: NEVER REPORT A FAILURE THE PRODUCT DID NOT HAVE.
+      An advisory step that cannot complete is a note at the end, with the
+      URL and the one command to check for yourself -- not a red dialog and
+      an aborted install.
+    *)
+
+    // Step 6: Verify installation health (advisory)
     UpdateStep(5, 'current');
     LogStep('Step 6/7: Verifying installation');
-    if not RunHelper('45-verify-health.ps1', DistroArg,
-        'Verifying FalconPulsar containers are running...') then begin UpdateStep(5, 'fail'); Abort; end;
-    UpdateStep(5, 'done');
-    LogInfo('Step 6/7: PASSED');
+    if RunHelper('45-verify-health.ps1', DistroArg,
+        'Verifying FalconPulsar containers are running...') then
+    begin
+      UpdateStep(5, 'done');
+      LogInfo('Step 6/7: PASSED');
+    end
+    else
+    begin
+      UpdateStep(5, 'warn');
+      LogWarn('Step 6/7: the health check did not complete. This does NOT mean the install failed -- ' +
+              'step 5 already started the stack and health-gated it. Verify with: ' +
+              'wsl -d ' + Distro + ' -- docker ps');
+      AdvisoryNotes := AdvisoryNotes +
+        '  * The post-install health check could not complete.' + #13#10 +
+        '    FalconPulsar was installed and started by the previous step.' + #13#10 +
+        '    Check it yourself:  wsl -d ' + Distro + ' -- docker ps' + #13#10;
+    end;
 
-    // Step 7: Start Menu shortcuts
+    // Step 7: Start Menu shortcuts (advisory)
     UpdateStep(6, 'current');
     LogStep('Step 7/7: Start Menu shortcuts');
-    if not RunHelper('50-register-shortcuts.ps1',
+    if RunHelper('50-register-shortcuts.ps1',
         DistroArg + ' ' + AppDirArg,
-        'Registering Start Menu shortcuts...') then begin UpdateStep(6, 'fail'); Abort; end;
-    UpdateStep(6, 'done');
-    LogInfo('Step 7/7: PASSED');
+        'Registering Start Menu shortcuts...') then
+    begin
+      UpdateStep(6, 'done');
+      LogInfo('Step 7/7: PASSED');
+    end
+    else
+    begin
+      UpdateStep(6, 'warn');
+      LogWarn('Step 7/7: Start Menu shortcuts were not created. FalconPulsar itself is unaffected.');
+      AdvisoryNotes := AdvisoryNotes +
+        '  * Start Menu shortcuts were not created.' + #13#10 +
+        '    Open FalconPulsar in a browser instead:  http://localhost:8080' + #13#10;
+    end;
 
     // Write tray app config with the selected distro name
     SaveStringToFile(ExpandConstant('{app}\tray-config.txt'), Distro, False);
@@ -994,6 +1053,22 @@ begin
     LogStep('Installation completed successfully');
     LogInfo('Web UI: http://localhost:8080');
     LogInfo('Log file: ' + FpLogFile);
+
+    // Say it once, plainly, at the moment the person is reading the screen.
+    // An advisory step that did not complete is worth a sentence -- and the
+    // sentence must not imply the install failed, because it did not.
+    if AdvisoryNotes <> '' then
+    begin
+      LogWarn('Installed successfully, with notes (see the dialog).');
+      MsgBox(
+        'FalconPulsar is installed.' + #13#10 + #13#10 +
+        'Open it at:  http://localhost:8080' + #13#10 +
+        'Sign in with the administrator account and password you chose.' + #13#10 + #13#10 +
+        'Two things did not finish. Neither affects FalconPulsar itself:' + #13#10 + #13#10 +
+        AdvisoryNotes + #13#10 +
+        'Full log: ' + FpLogFile,
+        mbInformation, MB_OK);
+    end;
   end;
 end;
 
