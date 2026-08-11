@@ -223,12 +223,75 @@ detect_os() {
 #
 # Used by install.sh and existing.sh's upgrade fast-path so a transient
 # network flap doesn't abort the install and force the user to start over.
+# fp_pull_docker_config
+#   Print a DOCKER_CONFIG directory that is safe to pull with, or nothing when
+#   the ambient configuration is already fine.
+#
+# ── WHY THIS EXISTS, AND WHY THE FIRST ATTEMPT MISSED ─────────────────────
+# On Docker Desktop the config.json the CLI reads contains
+#
+#     { "auths": {}, "credsStore": "desktop.exe" }
+#
+# which is a POINTER TO THE HOST'S KEYCHAIN, not a credential. The CLI runs
+# that helper for every registry call — including an anonymous pull of a
+# PUBLIC image — and inside WSL that means exec'ing a Windows .exe as a Linux
+# service user:
+#
+#     /usr/bin/docker-credential-desktop.exe: Invalid argument
+#     error getting credentials - err: exit status 1
+#
+# An earlier attempt sanitised the config where it was COPIED from root to the
+# service user. It fixed nothing, and the log proved it by printing none of
+# its new lines: on the reporting machine root had NO config.json, so the
+# copy — and the sanitiser guarding it — never ran at all. The offending file
+# was Docker Desktop's own, written by its WSL integration somewhere the copy
+# never looked.
+#
+# The lesson is the fix: do not chase WHERE the bad config lives. Override
+# what the pull READS, at the point of use.
+#
+# A config carrying an INLINE `auth` token is left alone — that is a real
+# login to a private registry, and dropping it to fix a lookup would trade one
+# failure for a worse one.
+fp_pull_docker_config() {
+    local candidate found=''
+    # Same order the docker CLI resolves in: explicit DOCKER_CONFIG, the
+    # invoking user's home, then root's (this runs under sudo).
+    for candidate in "${DOCKER_CONFIG:-}" "${HOME:-}/.docker" /root/.docker; do
+        [ -n "$candidate" ] || continue
+        [ -f "${candidate}/config.json" ] || continue
+        found="${candidate}/config.json"
+        break
+    done
+    # No config at all is already the good case: anonymous pulls just work.
+    [ -n "$found" ] || return 0
+    grep -qE '"(credsStore|credHelpers)"' "$found" 2>/dev/null || return 0
+    grep -q '"auth"[[:space:]]*:' "$found" 2>/dev/null && return 0
+    local dir
+    dir="$(mktemp -d /tmp/fp-dockercfg.XXXXXX)" || return 0
+    printf '{}\n' > "${dir}/config.json"
+    # World-readable on purpose: the pull runs as the SERVICE user, who cannot
+    # read a 0700 directory owned by root. A file containing `{}` has nothing
+    # to protect.
+    chmod 0755 "$dir"
+    chmod 0644 "${dir}/config.json"
+    printf '%s\n' "$dir"
+}
+
 fp_compose_pull_with_retry() {
     local home="$1"
     local attempts="${2:-3}"
     local run_as="${3:-}"
     local attempt=0
     local rc
+    # Decided ONCE, outside the retry loop. Retrying an identical credential
+    # failure three times is exactly what the failing logs were full of.
+    local cfg_dir cfg_prefix=''
+    cfg_dir="$(fp_pull_docker_config)"
+    if [ -n "$cfg_dir" ]; then
+        cfg_prefix="DOCKER_CONFIG='${cfg_dir}' "
+        log_info "docker config delegates to a credential helper that cannot run here — pulling with a helper-free config (${cfg_dir})"
+    fi
     while [ "$attempt" -lt "$attempts" ]; do
         attempt=$((attempt + 1))
         # `rc=0; ( ... ) || rc=$?` keeps a failed attempt from tripping
@@ -237,9 +300,12 @@ fp_compose_pull_with_retry() {
         # the retry loop ever gets a second attempt.
         rc=0
         if [ -n "$run_as" ]; then
-            ( sudo -u "$run_as" -g docker -H bash -c "cd '${home}' && docker compose pull" ) || rc=$?
+            # DOCKER_CONFIG goes INSIDE the command string deliberately: sudo's
+            # env_reset drops it from the environment, so exporting it in the
+            # caller would never reach the pull.
+            ( sudo -u "$run_as" -g docker -H bash -c "cd '${home}' && ${cfg_prefix}docker compose pull" ) || rc=$?
         else
-            ( cd "$home" && docker compose pull ) || rc=$?
+            ( cd "$home" && env ${cfg_dir:+DOCKER_CONFIG="$cfg_dir"} docker compose pull ) || rc=$?
         fi
         if [ "$rc" = 0 ]; then
             return 0
