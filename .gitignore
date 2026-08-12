@@ -14,6 +14,24 @@ windows/assets/header.bmp
 windows/assets/welcome.bmp
 windows/assets/falcon.ico
 
+# .NET build output for the Windows tray app.
+#
+# These were TRACKED until now -- 24 files of stale Debug artifacts (DLLs,
+# PDBs, MSBuild caches, generated AssemblyInfo.cs). Nothing consumed them:
+# installer.iss:164 packages "tray-app\publish\FalconPulsarTray.exe", which
+# release.yml produces with `dotnet publish -o windows/tray-app/publish`
+# from source. They only dirtied the working tree of anyone who ran a local
+# build, and invited a stale binary into a diff.
+#
+# Scoped to this project rather than a bare `bin/` / `obj/` so nothing else
+# in the repo can be swept up by accident -- Go's console/internal/ is meant
+# to ship, and a repo-wide rule is one rename away from hiding real source.
+windows/tray-app/bin/
+windows/tray-app/obj/
+# The publish dir CI writes the tray into. The *.exe rule above covers the
+# binary itself; this covers the .dll/.json that land beside it.
+windows/tray-app/publish/
+
 # macOS build output
 macos/pkg/output/
 macos/pkg/staging/
