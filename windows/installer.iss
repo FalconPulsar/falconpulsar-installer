@@ -1696,8 +1696,14 @@ begin
   // Remember where and in what we looked, so a negative result can say so.
   ExistingProbedPath   := WslStackPath;
   ExistingProbedDistro := SentinelGet(Content, 'Distro');
+  // owner= is the account that actually owns the directory we FOUND, which
+  // can differ from user= (the one resolved from /etc/passwd). When those two
+  // disagree, the wizard and the installer are looking at different places --
+  // the failure mode this probe exists to prevent -- so it goes in the log
+  // whether or not anything looks wrong.
   LogInfo('Existing-install probe: distro=' + ExistingProbedDistro
         + ' user=' + SentinelGet(Content, 'WslUser')
+        + ' owner=' + SentinelGet(Content, 'WslHomeOwner')
         + ' path=' + WslStackPath
         + ' compose=' + SentinelGet(Content, 'WslCompose')
         + ' upgradeable=' + SentinelGet(Content, 'UpgradeableStack'));

@@ -139,8 +139,35 @@ if (-not [string]::IsNullOrEmpty($Distro)) {
         # One question, one answer. If these two ever diverge again, the wizard
         # offers an action the installer cannot carry out -- which is exactly the
         # failure this comment exists to prevent a third time.
-        $resolveUser = 'getent passwd | while IFS=: read -r n _ u _ _ _ _; do if [ "$u" -ge 1000 ] && [ "$u" -lt 65534 ] && [ "$n" != "nobody" ]; then printf "%s\n" "$n"; break; fi; done'
-        $wslUser = & wsl.exe -d $Distro -u root -- bash -c $resolveUser 2>$null
+        # Byte-for-byte the script 40-run-fp-installer.ps1:149 uses, run the
+        # same way: written to a FILE and executed as `bash <file>`.
+        #
+        # It used to be a `bash -c '<one-liner>'`, and that was the whole
+        # defect. PowerShell mangles the embedded double quotes on the way to
+        # wsl.exe -- the very failure the probe fifty lines below documents
+        # ("wsl.exe ... bash -c <multi-line> mangles them", which produced
+        # `bash: line 1: set: +`). bash then got a broken script, printed
+        # nothing, and $wslUser came back EMPTY.
+        #
+        # Empty means $userHome is empty, which means the probe falls all the
+        # way through to /home/falconpulsar -- so a perfectly good stack at
+        # /home/fpuser/falconpulsar was reported as "no compose.yml in
+        # /home/falconpulsar" and Upgrade in place was greyed out.
+        #
+        # The comment above says these two helpers must answer one question
+        # one way. They did not, because only one of them had been converted
+        # to the file-based form.
+        $resolveUserScript = @'
+getent passwd | while IFS=: read -r name _ uid _ _ _ _; do
+    if [ "$uid" -ge 1000 ] && [ "$uid" -lt 65534 ] && [ "$name" != "nobody" ]; then
+        printf '%s\n' "$name"; break
+    fi
+done
+'@
+        $resolveFile = Join-Path $env:TEMP 'fp-detect-resolve-user.sh'
+        [System.IO.File]::WriteAllText($resolveFile, ($resolveUserScript -replace "`r", ''), (New-Object System.Text.UTF8Encoding $false))
+        $wslUser = & wsl.exe -d $Distro -u root -- bash (ConvertTo-WslPath $resolveFile) 2>$null
+        Remove-Item $resolveFile -ErrorAction SilentlyContinue
         # Strip EVERY NUL, not just the ends.
         #
         # This was .Trim([char]0), which only removes leading/trailing ones.
@@ -164,19 +191,36 @@ if (-not [string]::IsNullOrEmpty($Distro)) {
 set +e
 _out() { printf '%s\n' "`$1"; }
 USER_HOME='$userHome'
-# Pick whichever stack dir exists (user's > legacy). Both get checked.
+
+# LOOK FOR THE STACK, don't just look where a resolved user's stack WOULD be.
+#
+# USER_HOME is derived from a username resolved on the Windows side, and that
+# resolution has now failed in two different ways (a `bash -c` whose quotes
+# PowerShell ate, and before that a `whoami` that answered about a different
+# user than the installer used). Each time, the derived path was wrong and a
+# real stack was reported as absent.
+#
+# Scanning /home/*/falconpulsar for a compose.yml asks the question directly
+# and cannot be wrong about the username, because it never needs one. The
+# resolved USER_HOME is still preferred when it holds a stack -- that keeps
+# the answer stable on a machine with more than one -- but it is no longer
+# the only thing consulted.
+HOME_DIR=''
 if [ -n "`$USER_HOME" ] && [ -f "`$USER_HOME/compose.yml" ]; then
     HOME_DIR="`$USER_HOME"
-elif [ -f /home/falconpulsar/compose.yml ]; then
-    HOME_DIR=/home/falconpulsar
-elif [ -n "`$USER_HOME" ] && [ -d "`$USER_HOME" ]; then
-    HOME_DIR="`$USER_HOME"
-elif [ -d /home/falconpulsar ]; then
-    HOME_DIR=/home/falconpulsar
 else
-    HOME_DIR=''
+    for _d in /home/*/falconpulsar; do
+        if [ -f "`$_d/compose.yml" ]; then HOME_DIR="`$_d"; break; fi
+    done
 fi
+# Legacy service-user layout, then bare directories with no compose.yml.
+[ -z "`$HOME_DIR" ] && [ -f /home/falconpulsar/compose.yml ] && HOME_DIR=/home/falconpulsar
+[ -z "`$HOME_DIR" ] && [ -n "`$USER_HOME" ] && [ -d "`$USER_HOME" ] && HOME_DIR="`$USER_HOME"
+[ -z "`$HOME_DIR" ] && [ -d /home/falconpulsar ] && HOME_DIR=/home/falconpulsar
 _out "WslHomeDir=`$HOME_DIR"
+# The owner of whatever we actually found, so the log can show when it
+# disagrees with the user resolution above rather than hiding it.
+[ -n "`$HOME_DIR" ] && _out "WslHomeOwner=`$(stat -c '%U' "`$HOME_DIR" 2>/dev/null)"
 
 # THE QUESTION 40-run-fp-installer.ps1 ACTUALLY ASKS, answered here with the
 # SAME test, so the wizard cannot offer an action the installer will refuse.
@@ -193,7 +237,12 @@ _out "WslHomeDir=`$HOME_DIR"
 # LEGACY is called out separately because it is a third state, not a shade of
 # the other two: /home/falconpulsar CAN be brought forward, but only by a
 # migration, which needs the credentials the upgrade flow deliberately skips.
-if [ -n "`$USER_HOME" ] && { [ -f "`$USER_HOME/compose.yml" ] || [ -f "`$USER_HOME/data/falconpulsar.toml" ]; }; then
+#
+# Asked of HOME_DIR -- what the scan above actually FOUND -- not of the
+# derived USER_HOME. Those differ exactly when the username resolution is
+# wrong, which is the case that greyed out Upgrade on a working install.
+if [ -n "`$HOME_DIR" ] && [ "`$HOME_DIR" != /home/falconpulsar ] \
+   && { [ -f "`$HOME_DIR/compose.yml" ] || [ -f "`$HOME_DIR/data/falconpulsar.toml" ]; }; then
     _out 'UpgradeableStack=yes'
     _out 'LegacyLayout=no'
 elif [ -f /home/falconpulsar/compose.yml ] || [ -f /home/falconpulsar/data/falconpulsar.toml ]; then
