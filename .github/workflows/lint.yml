@@ -55,6 +55,7 @@ jobs:
             macos/install.sh \
             macos/uninstall.sh \
             scripts/sync-version.sh \
+            scripts/sync-icons.sh \
             shared/lib/common.sh \
             shared/lib/checks.sh \
             shared/lib/prompts.sh \
@@ -108,6 +109,45 @@ jobs:
         # --check exits non-zero if any site has drifted, so a forgotten
         # version bump can never reach main.
         run: scripts/sync-version.sh --check
+
+  macos-swift:
+    name: macOS apps compile
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Compile the menu-bar app exactly as build-dmg.sh does
+        # WHY THIS JOB EXISTS
+        #
+        # The DMG build step in release.yml is continue-on-error, because
+        # signing and notarization depend on Apple and can fail for reasons
+        # outside this repo. The side effect is that ANY failure in that step
+        # is invisible: the job still reports success, the release still
+        # publishes, and the only signal is a ::warning:: annotation nobody
+        # reads on a green run.
+        #
+        # alpha.79 shipped with no macOS DMG that way. The cause was not
+        # notarization at all -- it was `cannot find 'IconRenderer' in scope`,
+        # because build-dmg.sh compiled a hand-written list of .swift files
+        # and two new ones were not on it. `swift build` kept passing locally
+        # the whole time, since Package.swift globs the directory.
+        #
+        # So: compile it here, on every push, with no continue-on-error and
+        # no Apple secrets involved. A compile error is entirely ours and
+        # must be loud; notarization failing is not and stays best-effort.
+        run: |
+          set -euo pipefail
+          cd macos/menu-bar-app
+          swiftc FalconPulsar/*.swift \
+            -o /tmp/FalconPulsarMenuBar \
+            -framework AppKit -framework UserNotifications -O
+          echo "menu-bar app compiled: $(ls -lh /tmp/FalconPulsarMenuBar | awk '{print $5}')"
+
+      - name: Compile the installer app
+        run: |
+          set -euo pipefail
+          cd macos/installer-app
+          swift build -c release
 
   icon-sync:
     name: icon sites match icons.def

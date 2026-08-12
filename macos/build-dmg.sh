@@ -207,12 +207,27 @@ log "compiling installer-app"
 ( cd macos/installer-app && swift build -c release >/dev/null )
 
 log "compiling menu-bar-app"
+# EVERY .swift under FalconPulsar/, not a hand-maintained list.
+#
+# The list used to be explicit, and adding IconRenderer.swift + Icons.g.swift
+# without extending it broke the DMG build with "cannot find 'IconRenderer'
+# in scope" -- while `swift build` kept working locally, because Package.swift
+# globs the directory. Two build paths with different ideas of what the module
+# contains, and only the one nobody runs locally was authoritative.
+#
+# Worse, the failure was nearly invisible: the DMG step is continue-on-error,
+# so the job still reported success and the release published without a DMG.
+#
+# Globbing removes the class. -print0/xargs is unnecessary here (no spaces in
+# these names) but `set -euo pipefail` is on, so a glob that matches nothing
+# must not silently produce an empty list -- hence the count check.
+MENU_BAR_SOURCES=(macos/menu-bar-app/FalconPulsar/*.swift)
+if [ "${#MENU_BAR_SOURCES[@]}" -lt 4 ]; then
+    die "expected at least 4 menu-bar sources, found ${#MENU_BAR_SOURCES[@]} — is the path right?"
+fi
 ( cd macos/menu-bar-app \
   && mkdir -p .build \
-  && swiftc FalconPulsar/main.swift \
-            FalconPulsar/AppDelegate.swift \
-            FalconPulsar/Logo.swift \
-            FalconPulsar/ConfigBackup.swift \
+  && swiftc FalconPulsar/*.swift \
        -o .build/FalconPulsarMenuBar \
        -framework AppKit -framework UserNotifications -O )
 

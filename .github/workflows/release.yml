@@ -402,7 +402,7 @@ jobs:
           if ls dist/FalconPulsar-Setup*.dmg >/dev/null 2>&1; then
             echo "DMG built, signed and notarized."
           else
-            echo "::warning title=macOS DMG not produced::Signing/notarization failed — the release publishes WITHOUT the DMG. Most common cause: a pending Apple Developer agreement (HTTP 403 from the notary service). See the 'Build signed + notarized DMG' step log. macOS users can still install via install-macos.sh."
+            echo "::warning title=macOS DMG not produced::build-dmg.sh failed — the release publishes WITHOUT the DMG. Read the 'Build signed + notarized DMG' step log for the REAL cause; do not assume notarization. A Swift compile error and an Apple 403 both land here and look identical from outside, and alpha.79 shipped DMG-less on a compile error while this very message blamed notarization. The 'macOS apps compile' lint job now catches the compile case before a tag. macOS users can still install via install-macos.sh."
           fi
 
       - name: Cleanup signing materials
