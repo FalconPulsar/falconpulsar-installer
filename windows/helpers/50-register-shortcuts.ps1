@@ -36,14 +36,11 @@ $sentinel = Join-Path $env:TEMP 'falconpulsar-distro.txt'
 if (Test-Path $sentinel) {
     $Distro = (Get-Content $sentinel -Raw).Trim()
 } else {
-    # No sentinel -- try to find a compatible distro
-    $compatibleDistros = @('Ubuntu-24.04', 'Ubuntu-22.04', 'Ubuntu', 'Debian')
-    foreach ($candidate in $compatibleDistros) {
-        if (Test-WslDistroPresent -Name $candidate) {
-            $Distro = $candidate
-            break
-        }
-    }
+    # No sentinel -- ask each registered distro what it IS (os-release)
+    # instead of matching its WSL registration name against a hardcoded
+    # list. See Test-DistroSupported in lib.ps1.
+    $supported = @(Get-SupportedWslDistros)
+    if ($supported.Count -gt 0) { $Distro = $supported[0] }
 }
 
 # Shortcuts are cosmetic -- wrap everything in try/catch so a permission

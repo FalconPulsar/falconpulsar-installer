@@ -55,14 +55,20 @@ if ([string]::IsNullOrEmpty($Distro)) {
         $listRaw = & wsl.exe -l -q 2>$null
         $list = ($listRaw -join "`n") -replace "`0", '' -replace "`r", ''
         $names = $list -split "`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }
-        foreach ($cand in @('Ubuntu-24.04', 'Ubuntu-22.04', 'Ubuntu', 'Debian')) {
-            foreach ($n in $names) {
-                if ($n -ieq $cand) { $Distro = $n; break }
-            }
-            if ($Distro) { break }
+
+        # This helper runs FIRST -- before the user has chosen a distro -- so
+        # it cannot ask about one by name. It enumerates what is registered
+        # and asks each one what it IS (os-release), which is strictly better
+        # than the name list that used to live here: that list matched only
+        # Ubuntu/Debian, so an existing FalconPulsar inside Fedora, Rocky,
+        # AlmaLinux, openSUSE Leap or any renamed/imported rootfs was invisible
+        # to upgrade detection and the install proceeded as if it were fresh.
+        foreach ($n in @($names)) {
+            if ((Test-DistroSupported -Name $n).Supported) { $Distro = $n; break }
         }
+
         if (-not $Distro -and @($names).Count -ge 1) {
-            # No preferred match -- take first entry. @() guards the
+            # Nothing passed the check -- take the first entry. @() guards the
             # zero-distro case (empty split/filter yields null; .Count on it
             # throws under Set-StrictMode).
             $Distro = @($names)[0]

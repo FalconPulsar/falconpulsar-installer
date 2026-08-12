@@ -245,10 +245,19 @@ services:
     networks:
       - falconpulsar
 
-  # ── AI Engine (OPTIONAL) — author / simulate / deploy agents ───────────
-  # Opt-in only: gated behind the "engine" compose profile, so a default
-  # install never starts it. The installer sets FP_AI_ENGINE_ENABLED=true →
-  # adds "engine" to COMPOSE_PROFILES when the user chooses to install it.
+  # ── AI Engine (STANDARD) — author / simulate / deploy agents ───────────
+  # Installed with every stack: no compose profile, no opt-out.
+  #
+  # This header used to read "OPTIONAL / opt-in only, gated behind the engine
+  # compose profile, so a default install never starts it" — contradicting
+  # the "no compose profile" note eleven lines below, and outliving the
+  # change that made the engine standard. Stale comments like that are why
+  # the tray apps kept gating a mandatory service behind an opt-in flag long
+  # after the flag stopped meaning anything.
+  #
+  # FP_AI_ENGINE_ENABLED survives only as a health-check hint
+  # (FP_ENGINE_REQUIRED below, default true). The installers force it to
+  # "true" and deliberately do not carry a stale "false" forward.
   #
   # IMPORTANT: like Core and the Gateway, its config + agent state live in the
   # SHARED main folder (~/falconpulsar/ai-engine-data) via the bind mount

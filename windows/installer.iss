@@ -227,10 +227,25 @@ Name: "cookiesecure"; \
 ; 40-run-fp-installer.ps1 as -Copilot true|false, which exports
 ; FP_COPILOT_ENABLED into the bash installer's env file. (AI Engine is no
 ; longer optional -- it installs by default with the rest of the stack.)
+; Checked by DEFAULT, matching macOS and Linux.
+;
+; This box used to carry `Flags: unchecked`, and that single flag was the
+; reason a Windows install came up without a Command Center while a macOS
+; install of the same version came up with one. It is not a case of the
+; container failing to start: an unchecked box makes the wizard pass
+; `-Copilot false`, 40-run-fp-installer.ps1 exports FP_COPILOT_ENABLED=false
+; ALWAYS (never leaves it unset), that sets FP_COPILOT_ENABLED_EXPLICIT=1,
+; and prompt_copilot then faithfully honours the explicit "false"
+; (shared/lib/prompts.sh:380-382). The service was never installed.
+;
+; The other platforms never take that branch: linux/install.sh:173 and
+; macos/install.sh:410 both read FP_COPILOT_ENABLED="${FP_COPILOT_ENABLED:-true}"
+; from an UNSET variable, so they default it on -- which is what the
+; function's own header comment says the product does ("Installed by
+; default", prompts.sh:371). Windows was the odd one out.
 Name: "copilot"; \
-    Description: "Install the optional Command Center (ops workspace — adds one container; can be enabled later)"; \
-    GroupDescription: "Optional components:"; \
-    Flags: unchecked
+    Description: "Install the Command Center (ops workspace — adds one container; can be removed later)"; \
+    GroupDescription: "Optional components:"
 
 [Run]
 ; Open the Web UI in the default browser at the end (postinstall checkbox).
@@ -261,10 +276,11 @@ Root: HKCU; Subkey: "SOFTWARE\Microsoft\Windows\CurrentVersion\Run"; \
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{commonprograms}\FalconPulsar"
-; tray-config.txt is written post-install via SaveStringToFile (see
-; CurStepChanged), so it is NOT logged by [Files] and would otherwise be left
-; behind. Remove it explicitly.
+; tray-config.txt and tray-home.txt are written post-install via
+; SaveStringToFile (see CurStepChanged), so they are NOT logged by [Files] and
+; would otherwise be left behind. Remove them explicitly.
 Type: files; Name: "{app}\tray-config.txt"
+Type: files; Name: "{app}\tray-home.txt"
 ; Force-remove the installer-placed subdirectories. {app}\helpers in particular
 ; is left behind by the default cleanup because the uninstaller runs
 ; helpers\uninstall.ps1 from inside it; these entries are processed AFTER that
@@ -806,6 +822,8 @@ var
   DockerExePath: String;
   DockerCheckRC: Integer;
   DockerLive: Boolean;
+  // AnsiString, not String: LoadStringFromFile takes `var S: AnsiString`.
+  WslHome: AnsiString;
 begin
   if CurStep = ssPostInstall then
   begin
@@ -1049,6 +1067,31 @@ begin
     // Write tray app config with the selected distro name
     SaveStringToFile(ExpandConstant('{app}\tray-config.txt'), Distro, False);
     LogInfo('Tray config written: ' + Distro);
+
+    // ...and the stack home beside it. 40-run-fp-installer.ps1 resolved this
+    // and left it in %TEMP%, which is the wrong place for state the tray
+    // needs at every login: we run ELEVATED, so that is the admin's %TEMP%
+    // and not the interactive user's, and Storage Sense empties it anyway.
+    //
+    // Without a durable copy the tray re-probes at login -- before WSL is
+    // up -- times out, and falls back to the legacy /home/falconpulsar for
+    // the whole session. It then reads no .env at all, so the AI Engine and
+    // Command Center appear absent while their containers are running fine,
+    // and `docker compose -f` names a file that does not exist.
+    WslHome := '';
+    if LoadStringFromFile(ExpandConstant('{%TEMP}\falconpulsar-home.txt'), WslHome) then
+    begin
+      WslHome := Trim(WslHome);
+      if (WslHome <> '') and (Copy(WslHome, 1, 1) = '/') then
+      begin
+        SaveStringToFile(ExpandConstant('{app}\tray-home.txt'), WslHome, False);
+        LogInfo('Tray home written: ' + WslHome);
+      end
+      else
+        LogWarn('Stack home sentinel was unusable ("' + WslHome + '"); the tray will probe WSL for it.');
+    end
+    else
+      LogWarn('No stack home sentinel found; the tray will probe WSL for it.');
 
     LogStep('Installation completed successfully');
     LogInfo('Web UI: http://localhost:8080');
@@ -2413,35 +2456,50 @@ begin
         Exit;
       end;
       InstallAction := 'fresh';
-      // Fresh install = clean slate. Force both tasks back to their safe
-      // defaults: re-check cookiesecure so a user who unchecked it on a
-      // prior install doesn't silently inherit "HTTP-only", and de-select
-      // copilot (opt-in, default unchecked) so a prior opt-in isn't
-      // silently inherited either. The `checkedonce`/persisted task state
-      // would otherwise pre-fill both boxes here. WizardSelectTasks uses
-      // /MERGETASKS syntax (a leading ! de-selects); tasks not named in
-      // the call are unaffected.
-      WizardSelectTasks('cookiesecure,!copilot');
+      // Fresh install = clean slate. Force both tasks back to their
+      // defaults, because persisted task state would otherwise pre-fill
+      // these boxes from whatever the previous install chose.
+      //
+      // Both are now re-CHECKED: cookiesecure so a user who unchecked it on
+      // a prior install doesn't silently inherit "HTTP-only", and copilot
+      // because a fresh Windows install should land on the same stack a
+      // fresh macOS or Linux install does. This line previously read
+      // '!copilot', which de-selected it and was the second half of the
+      // Windows-only missing-Command-Center bug: even after the Tasks page
+      // default was right, a fresh install would have turned it back off.
+      //
+      // WizardSelectTasks uses /MERGETASKS syntax (a leading ! de-selects);
+      // tasks not named in the call are unaffected.
+      WizardSelectTasks('cookiesecure,copilot');
     end
     else if ExistingReinstallRadio.Checked then
     begin
       InstallAction := 'reinstall';
-      // Sticky Command Center opt-in: pre-check the task when the existing
-      // install's .env recorded FP_COPILOT_ENABLED=true, so the Tasks
-      // page opens reflecting the real installed state.
+      // Sticky Command Center choice: the Tasks page must open reflecting
+      // the real installed state, so drive the box in BOTH directions from
+      // the surviving .env. It used to only ever select, which was harmless
+      // while the default was unchecked; now that the default is checked,
+      // a one-way select would silently re-enable the Command Center for
+      // someone who had deliberately removed it.
       if CopilotFromEnv then
-        WizardSelectTasks('copilot');
+        WizardSelectTasks('copilot')
+      else
+        WizardSelectTasks('!copilot');
     end
     else
     begin
       InstallAction := 'upgrade';
-      // Same stickiness on upgrade -- keeps the checkbox honest. The
+      // Same stickiness on upgrade -- keeps the checkbox honest, in both
+      // directions for the same reason as the reinstall branch above. The
       // upgrade fast-path itself carries FP_COPILOT_ENABLED forward in
       // the stack's surviving .env regardless (40-run-fp-installer.ps1
       // deliberately does not export it on that path), so the Command
-      // Center choice is never re-asked or clobbered by an upgrade.
+      // Center choice is never re-asked or clobbered by an upgrade -- the
+      // box here is a readout of the .env, not an instruction to it.
       if CopilotFromEnv then
-        WizardSelectTasks('copilot');
+        WizardSelectTasks('copilot')
+      else
+        WizardSelectTasks('!copilot');
     end;
     LogInfo('User chose install action: ' + InstallAction);
   end;

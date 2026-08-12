@@ -154,6 +154,127 @@ function Get-WslDistroVersion {
     return $null
 }
 
+# -- Distro compatibility ----------------------------------------------------
+
+# Compare two dotted version strings. Returns $true when $Have >= $Want.
+# Mirrors version_ge() in shared/lib/checks.sh: compares numerically,
+# component by component, treating a missing component as 0 ("12" >= "12.0").
+function Test-VersionAtLeast {
+    param(
+        [Parameter(Mandatory)] [AllowEmptyString()] [string] $Have,
+        [Parameter(Mandatory)] [string] $Want
+    )
+    if ([string]::IsNullOrWhiteSpace($Have)) { return $false }
+    $h = @($Have.Trim() -split '\.')
+    $w = @($Want -split '\.')
+    for ($i = 0; $i -lt [Math]::Max($h.Count, $w.Count); $i++) {
+        $hp = 0; $wp = 0
+        if ($i -lt $h.Count) { [void][int]::TryParse($h[$i], [ref] $hp) }
+        if ($i -lt $w.Count) { [void][int]::TryParse($w[$i], [ref] $wp) }
+        if ($hp -gt $wp) { return $true }
+        if ($hp -lt $wp) { return $false }
+    }
+    return $true   # equal
+}
+
+# Ask a registered WSL distro what it actually IS, by reading its
+# /etc/os-release, and decide support with the SAME rule the bash installer
+# applies in check_os() (shared/lib/checks.sh).
+#
+# This replaces the hardcoded name lists these helpers used to carry
+# (@('Ubuntu-24.04','Ubuntu-22.04','Ubuntu','Debian')). Matching on the WSL
+# registration NAME was wrong twice over: it rejected supported distros whose
+# name it had never heard of -- Fedora, openSUSE Leap, Rocky, AlmaLinux, any
+# imported or renamed rootfs -- and it accepted a distro called "Ubuntu" that
+# might be 20.04, which check_os() refuses. The name is a label the user
+# chose; os-release is what the system is.
+#
+# Returns a hashtable:
+#   Supported  [bool]    passes the same gate as check_os()
+#   Id         [string]  os-release ID (e.g. 'ubuntu')
+#   Version    [string]  os-release VERSION_ID (e.g. '24.04')
+#   Like       [string]  os-release ID_LIKE
+#   BestEffort [bool]    unlisted ID accepted via ID_LIKE
+#   Reason     [string]  human-readable explanation, always set
+function Test-DistroSupported {
+    param([Parameter(Mandatory)] [string] $Name)
+
+    $result = @{
+        Supported = $false; Id = ''; Version = ''; Like = ''
+        BestEffort = $false; Reason = ''
+    }
+
+    if (-not (Test-WslDistroPresent -Name $Name)) {
+        $result.Reason = "distro '$Name' is not registered with WSL"
+        return $result
+    }
+
+    # Single-line probe, no temp file: this runs in the detection path
+    # before the install has staged anything into the distro.
+    $probe = '. /etc/os-release 2>/dev/null && printf "%s|%s|%s" "$ID" "$VERSION_ID" "$ID_LIKE"'
+    try {
+        $raw = & wsl.exe -d $Name -- sh -c $probe 2>$null
+    } catch {
+        $result.Reason = "could not run a shell inside '$Name': $($_.Exception.Message)"
+        return $result
+    }
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($raw)) {
+        $result.Reason = "could not read /etc/os-release inside '$Name'"
+        return $result
+    }
+
+    # wsl.exe emits UTF-16-ish output; strip NULs and any BOM.
+    $clean = (($raw -join '') -replace "`0", '').Trim().TrimStart([char]0xFEFF)
+    $parts = $clean -split '\|'
+    $result.Id      = if ($parts.Count -ge 1) { $parts[0].Trim().Trim('"') } else { '' }
+    $result.Version = if ($parts.Count -ge 2) { $parts[1].Trim().Trim('"') } else { '' }
+    $result.Like    = if ($parts.Count -ge 3) { $parts[2].Trim().Trim('"') } else { '' }
+
+    if ($result.Id -eq '') {
+        $result.Reason = "'$Name' reported no os-release ID"
+        return $result
+    }
+
+    # Same table, same floors, same order as check_os().
+    switch -Regex ($result.Id) {
+        '^ubuntu$'                  { $result.Supported = Test-VersionAtLeast $result.Version '22.04'; break }
+        '^debian$'                  { $result.Supported = Test-VersionAtLeast $result.Version '12';    break }
+        '^(rhel|rocky|almalinux)$'  { $result.Supported = Test-VersionAtLeast $result.Version '9';     break }
+        '^fedora$'                  { $result.Supported = Test-VersionAtLeast $result.Version '41';    break }
+        '^opensuse-leap$'           { $result.Supported = Test-VersionAtLeast $result.Version '15.6';  break }
+        default {
+            # Derivatives: accept best-effort on ID_LIKE, as check_os() does.
+            if ($result.Like -match 'debian|ubuntu|rhel|fedora') {
+                $result.Supported  = $true
+                $result.BestEffort = $true
+            }
+        }
+    }
+
+    if ($result.Supported) {
+        $result.Reason = if ($result.BestEffort) {
+            "$($result.Id) $($result.Version) is not officially supported but looks $($result.Like)-derived; continuing best-effort"
+        } else {
+            "$($result.Id) $($result.Version) is supported"
+        }
+    } else {
+        $result.Reason = "$($result.Id) $($result.Version) is not supported (see REQUIREMENTS.md)"
+    }
+    return $result
+}
+
+# Every registered distro that passes Test-DistroSupported, in `wsl -l -q`
+# order. Used by the detection helpers that run BEFORE the user has picked a
+# distro and so cannot ask about one by name -- they enumerate and probe
+# instead of guessing at names.
+function Get-SupportedWslDistros {
+    $out = @()
+    foreach ($d in (Get-WslDistros)) {
+        if ((Test-DistroSupported -Name $d).Supported) { $out += $d }
+    }
+    return $out
+}
+
 # -- Bash invocation ---------------------------------------------------------
 
 # Invoke-WslBash <distro> <bash-script-string>

@@ -103,21 +103,16 @@ if (Test-Path $sentinel) {
     $Distro = (Get-Content $sentinel -Raw).Trim()
     Write-Info "Using distro from sentinel: $Distro"
 } else {
-    # No sentinel -- query WSL for a compatible distro
+    # No sentinel -- ask each registered distro what it IS (os-release)
+    # instead of matching its WSL registration name against a hardcoded
+    # list. See Test-DistroSupported in lib.ps1.
     Write-Info "No sentinel file -- checking for compatible WSL distros"
-    $compatibleDistros = @('Ubuntu-24.04', 'Ubuntu-22.04', 'Ubuntu', 'Debian')
-    $found = $false
-    foreach ($candidate in $compatibleDistros) {
-        if (Test-WslDistroPresent -Name $candidate) {
-            $Distro = $candidate
-            $found = $true
-            Write-Info "Found compatible distro: $Distro"
-            break
-        }
-    }
-    if (-not $found) {
+    $supported = @(Get-SupportedWslDistros)
+    if ($supported.Count -eq 0) {
         Stop-WithError "No compatible WSL distro found and no sentinel file. Run the installer from the beginning."
     }
+    $Distro = $supported[0]
+    Write-Info "Found compatible distro: $Distro"
 }
 
 if (-not (Test-WslDistroPresent -Name $Distro)) {

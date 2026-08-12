@@ -28,15 +28,6 @@ $ErrorActionPreference = 'Stop'
 
 Write-Step "Ensuring WSL distro: $Distro"
 
-# Anything in this list will satisfy the requirement -- they're all
-# supported per REQUIREMENTS.md and the bash installer will work fine
-# inside any of them.
-$compatibleDistros = @(
-    'Ubuntu-24.04', 'Ubuntu-22.04', 'Ubuntu',
-    'Debian',
-    'Rocky', 'AlmaLinux', 'rhel'
-)
-
 $existing = Get-WslDistros
 # @() guards the zero-distro case: under Set-StrictMode a bare .Count on a
 # null/AutomationNull return throws PropertyNotFoundStrict (broke clean
@@ -61,16 +52,26 @@ if ($existing -contains $Distro) {
     exit 0
 }
 
-# A different but compatible distro? Use it.
-foreach ($candidate in $compatibleDistros) {
-    if ($existing -contains $candidate) {
-        Write-Info "Using already-installed compatible distro: $candidate"
-        Write-Output "[ok] Using existing distro $candidate"
-        # Re-export the chosen distro name to a sentinel file so 30/40 can
-        # pick it up.
-        Set-Content -Path (Join-Path $env:TEMP 'falconpulsar-distro.txt') -Value $candidate -NoNewline
-        exit 0
-    }
+# A different but compatible distro? Use it -- rather than downloading a
+# second one the user did not ask for.
+#
+# "Compatible" is decided by reading each distro's /etc/os-release and
+# applying the same rule as check_os() in shared/lib/checks.sh, NOT by
+# matching WSL registration names. The name list this replaced was wrong in
+# both directions: it did not know Fedora or openSUSE Leap (so a perfectly
+# good Fedora distro was ignored and Ubuntu downloaded beside it), and it
+# accepted anything registered as plain "Ubuntu" -- including 20.04, which
+# the bash installer then refused several minutes into the run.
+foreach ($candidate in @($existing)) {
+    $check = Test-DistroSupported -Name $candidate
+    if (-not $check.Supported) { continue }
+    Write-Info "Using already-installed compatible distro: $candidate ($($check.Reason))"
+    if ($check.BestEffort) { Write-Warn $check.Reason }
+    Write-Output "[ok] Using existing distro $candidate"
+    # Re-export the chosen distro name to a sentinel file so 30/40 can
+    # pick it up.
+    Set-Content -Path (Join-Path $env:TEMP 'falconpulsar-distro.txt') -Value $candidate -NoNewline
+    exit 0
 }
 
 # Nothing compatible -- install the requested one.

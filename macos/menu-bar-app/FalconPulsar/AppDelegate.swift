@@ -85,10 +85,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // build-dmg.sh stamps from FP_VERSION at build time — same source
         // showAbout() uses, so the two displays can't drift.
         let appVersion = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "dev"
-        let header = NSMenuItem(title: "FalconPulsar v\(appVersion)", action: nil, keyEquivalent: "")
+        // "QuickDock", not "FalconPulsar". The number is this menu-bar app's
+        // own build, and calling it the product's version was a false claim:
+        // the About window below can simultaneously report Core at alpha.89,
+        // Web UI at alpha.157 and the AI Engine at alpha.65, so the header
+        // named no component the user is running. showAbout() already labels
+        // this same number "QuickDock" — the header now agrees with it.
+        let headerTitle = "QuickDock v\(appVersion)"
+        let header = NSMenuItem(title: headerTitle, action: nil, keyEquivalent: "")
         header.isEnabled = false
         header.attributedTitle = NSAttributedString(
-            string: "FalconPulsar v\(appVersion)",
+            string: headerTitle,
             attributes: [.font: NSFont.boldSystemFont(ofSize: 13)]
         )
         menu.addItem(header)
@@ -280,8 +287,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // .env takes effect on the next poll without an app restart. Hidden
         // items stay in the menu's items array, keeping the hardcoded
         // indices below stable.
-        let engineOn = engineEnabled
-        let copilotOn = copilotEnabled
+        // Opted in, OR actually up — a running service is never hidden
+        // because its .env could not be read. Mirrors TrayApp.cs.
+        let engineOn = engineEnabled || engineRunning
+        let copilotOn = copilotEnabled || copilotRunning
         menu.item(at: 6)?.isHidden = !engineOn     // AI Engine status row
         menu.item(at: 7)?.isHidden = !copilotOn    // Command Center status row
         menu.item(at: 10)?.isHidden = !engineOn    // Open AI Engine
@@ -502,8 +511,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 self.coreRunning = self.isContainerRunning("falconpulsar-core")
                 self.uiRunning = self.isContainerRunning("falconpulsar-ui")
                 self.gatewayRunning = self.isContainerRunning("falconpulsar-ai-gateway")
-                self.engineRunning = engineExpected && self.isContainerRunning("falconpulsar-ai-engine")
-                self.copilotRunning = copilotExpected && self.isContainerRunning("falconpulsar-copilot")
+                // Probed REGARDLESS of the .env flag: the flag decides what
+                // to SHOW, the container decides what is TRUE. Gating the
+                // probe on the flag means an unreadable .env renders a
+                // healthy container as a red X — the app accusing a running
+                // service of being down. Mirrors TrayApp.cs on Windows.
+                self.engineRunning = self.isContainerRunning("falconpulsar-ai-engine")
+                self.copilotRunning = self.isContainerRunning("falconpulsar-copilot")
                 self.apiHealthy = self.isAPIHealthy()
             } else {
                 self.coreRunning = false
@@ -590,9 +604,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var enginePort: String { envValue("FP_ENGINE_PORT") ?? "8085" }
     private var copilotPort: String { envValue("FP_COPILOT_PORT") ?? "8090" }
 
-    /// Optional AI Engine flag (compose profile "engine"). Absent/false on
-    /// most installs; trim + case-insensitive so hand-edited values like
-    /// "True " still count as enabled.
+    /// AI Engine flag. NOT an opt-out any more — the engine is a standard
+    /// stack service with no compose profile, and both installers force this
+    /// to "true". Read it to decide what to SHOW, never to decide whether the
+    /// service is real: `engineRunning` is probed from the container itself,
+    /// so an unreadable .env can no longer render a healthy engine as down.
+    /// Trim + case-insensitive so hand-edited "True " still counts.
     private var engineEnabled: Bool {
         (envValue("FP_AI_ENGINE_ENABLED") ?? "")
             .trimmingCharacters(in: .whitespaces).lowercased() == "true"
@@ -1524,7 +1541,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             ("AI Capabilities", gwInfo.displayString, gatewayRunning),
             ("AI Engine", engInfo.displayString, engineRunning)
         ]
-        if copilotEnabled {
+        // Opted in, OR actually up. A running Command Center must not be
+        // omitted from the grid because its .env could not be read.
+        if copilotEnabled || copilotRunning {
             components.append(("Command Center",
                 getContainerInfo("falconpulsar-copilot").displayString, copilotRunning))
         }

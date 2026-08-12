@@ -32,7 +32,9 @@ namespace FalconPulsar.Tray
         private readonly System.Windows.Forms.Timer _pollTimer;
         private readonly HttpClient _http;
         private readonly string _distro;
-        private readonly string _composePath;
+        // Not readonly: re-pointed by ApplyWslHome when the stack home is
+        // re-resolved. A compose command against a stale path silently fails.
+        private string _composePath;
 
         private StackStatus _status = StackStatus.Unknown;
         private bool _dockerDaemonUp;
@@ -73,27 +75,28 @@ namespace FalconPulsar.Tray
         private bool _updateAvailable;
         private string _updateAvailableVersion = "";
 
-        // WSL stack location, resolved once at tray startup. The installer
-        // writes `falconpulsar-home.txt` next to the distro sentinel; if
-        // that's missing we probe the distro's default user (`whoami`) and
-        // compute /home/<user>/falconpulsar. As a last resort we fall back
-        // to the legacy /home/falconpulsar path so a legacy install still
-        // works until the user reinstalls.
-        private readonly string _wslHome;
-        private readonly string _wslHomeUnc;
+        // WSL stack location. Resolution is RETRIED until it is confirmed,
+        // because the tray launches at Windows login — before WSL is up.
+        // The first attempt then times out probing the distro and falls
+        // through to the legacy /home/falconpulsar path, and a value cached
+        // at that moment is wrong for the rest of the session: .env reads
+        // return null (so the AI Engine and Command Center look absent even
+        // while their containers run) and every `docker compose -f` command
+        // points at a file that isn't there.
+        private string _wslHome;
+        private string _wslHomeUnc;
+
+        // Set once the resolved path has been CONFIRMED to hold the stack's
+        // .env. Until then EnsureWslHome re-resolves on each poll, so the
+        // tray heals itself as soon as WSL comes up instead of needing a
+        // restart. Rate-limited because probing spawns wsl.exe.
+        private bool _wslHomeConfirmed;
+        private DateTime _lastHomeProbe = DateTime.MinValue;
 
         public TrayApp()
         {
             _distro = ReadDistroName();
-            _wslHome = ReadWslHome(_distro);
-            // Convert /home/<user>/falconpulsar to \\wsl.localhost\<distro>\home\<user>\falconpulsar
-            _wslHomeUnc = $@"\\wsl.localhost\{_distro}" + _wslHome.Replace('/', '\\');
-            _composePath = _wslHome + "/compose.yml";
-
-            // Config Backup must export/import the real stack files inside
-            // WSL — the same directory the Config Files menu opens — not the
-            // legacy %USERPROFILE%\falconpulsar mirror.
-            ConfigBackup.FalconPulsarHomeDir = _wslHomeUnc;
+            ApplyWslHome(ReadWslHome(_distro));
 
             _http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
 
@@ -127,19 +130,48 @@ namespace FalconPulsar.Tray
         private static readonly System.Text.RegularExpressions.Regex _distroNameRe =
             new(@"^[A-Za-z0-9_.-]+$");
 
+        // Our own install directory — {app} in installer.iss, which is where
+        // the installer writes the durable tray-config.txt / tray-home.txt.
+        // Preferred over a hardcoded %ProgramFiles%\FalconPulsar so a custom
+        // install location still finds its own state.
+        private static string AppDir => AppContext.BaseDirectory;
+
+        // Durable state the installer wrote next to us, falling back to the
+        // legacy %ProgramFiles%\FalconPulsar location for installs made
+        // before {app} was honoured. Returns null when neither exists.
+        private static string ReadDurableState(string filename)
+        {
+            foreach (var dir in new[]
+                     {
+                         AppDir,
+                         Path.Combine(
+                             Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+                             "FalconPulsar"),
+                     })
+            {
+                try
+                {
+                    var path = Path.Combine(dir, filename);
+                    if (!File.Exists(path)) continue;
+                    var text = File.ReadAllText(path).Trim();
+                    if (text.Length > 0) return text;
+                }
+                catch { }
+            }
+            return null;
+        }
+
         private string ReadDistroName()
         {
-            // Try config file first (written by installer)
-            var configPath = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
-                "FalconPulsar", "tray-config.txt");
-            if (File.Exists(configPath))
-            {
-                var distro = File.ReadAllText(configPath).Trim();
-                if (IsValidDistroName(distro)) return distro;
-            }
+            // Durable config written by the installer at install time.
+            var config = ReadDurableState("tray-config.txt");
+            if (config != null && IsValidDistroName(config)) return config;
 
-            // Try sentinel file
+            // %TEMP% sentinel. Only a fallback: the installer runs ELEVATED,
+            // so it writes the admin's %TEMP%, while the tray runs as the
+            // interactive user with a different one — and %TEMP% is purged
+            // by Storage Sense regardless. Present only right after an
+            // install in the same session.
             var sentinel = Path.Combine(Path.GetTempPath(), "falconpulsar-distro.txt");
             if (File.Exists(sentinel))
             {
@@ -158,7 +190,14 @@ namespace FalconPulsar.Tray
 
         private static string ReadWslHome(string distro)
         {
-            // 1. Sentinel written by the installer at %TEMP%\falconpulsar-home.txt.
+            // 1. Durable tray-home.txt the installer wrote beside us. This is
+            //    the counterpart to tray-config.txt: without it the home path
+            //    was the ONLY piece of install state with no home outside
+            //    %TEMP%, and it went missing on the first cleanup or reboot.
+            var durable = ReadDurableState("tray-home.txt");
+            if (durable != null && durable.StartsWith("/")) return durable;
+
+            // 2. Sentinel written by the installer at %TEMP%\falconpulsar-home.txt.
             var sentinel = Path.Combine(Path.GetTempPath(), "falconpulsar-home.txt");
             if (File.Exists(sentinel))
             {
@@ -167,7 +206,7 @@ namespace FalconPulsar.Tray
                     return home;
             }
 
-            // 2. Ask the distro for the default user's $HOME.
+            // 3. Ask the distro for the default user's $HOME.
             try
             {
                 var psi = new ProcessStartInfo
@@ -190,8 +229,49 @@ namespace FalconPulsar.Tray
             }
             catch { }
 
-            // 3. Legacy service-user path as a last resort.
+            // 4. Legacy service-user path as a last resort.
             return "/home/falconpulsar";
+        }
+
+        // Point every WSL-path-derived field at `home` and remember whether
+        // the stack's .env is actually there. Called from the constructor and
+        // again from EnsureWslHome until it lands.
+        private void ApplyWslHome(string home)
+        {
+            _wslHome = home;
+            // /home/<user>/falconpulsar -> \\wsl.localhost\<distro>\home\<user>\falconpulsar
+            _wslHomeUnc = $@"\\wsl.localhost\{_distro}" + home.Replace('/', '\\');
+            _composePath = home + "/compose.yml";
+
+            // Config Backup must export/import the real stack files inside
+            // WSL — the same directory the Config Files menu opens — not the
+            // legacy %USERPROFILE%\falconpulsar mirror.
+            ConfigBackup.FalconPulsarHomeDir = _wslHomeUnc;
+
+            try { _wslHomeConfirmed = File.Exists(Path.Combine(_wslHomeUnc, ".env")); }
+            catch { _wslHomeConfirmed = false; }
+        }
+
+        // Re-resolve the stack home until the .env is found there.
+        //
+        // The tray starts at Windows login, and WSL is not up yet: the probe
+        // in ReadWslHome times out after 3s and returns the legacy path.
+        // Docker Desktop then starts WSL a few seconds later and the
+        // containers come up — so `docker ps` (which goes through wsl.exe
+        // and the distro NAME, durable in tray-config.txt) reports every
+        // service healthy, while every .env read still points at the wrong
+        // directory. That combination is what made a fully working install
+        // show four green rows, a red X on the AI Engine and no Command
+        // Center at all.
+        //
+        // Retrying costs one wsl.exe probe every 15s until it lands, then
+        // nothing.
+        private void EnsureWslHome()
+        {
+            if (_wslHomeConfirmed) return;
+            if ((DateTime.UtcNow - _lastHomeProbe).TotalSeconds < 15) return;
+            _lastHomeProbe = DateTime.UtcNow;
+            ApplyWslHome(ReadWslHome(_distro));
         }
 
         // Reads one value out of the stack's .env inside WSL, via the same
@@ -232,16 +312,21 @@ namespace FalconPulsar.Tray
         private string EnginePort => EnvValue("FP_ENGINE_PORT") ?? "8085";
         private string CopilotPort => EnvValue("FP_COPILOT_PORT") ?? "8090";
 
-        // Optional AI Engine service (compose profile "engine"). The
-        // installer writes FP_AI_ENGINE_ENABLED=true into .env when the
-        // user opts in; absent/false on most installs. Trim + case-
-        // insensitive so a hand-edited "True" still counts.
+        // AI Engine flag. NOT an opt-out any more — the engine is a standard
+        // stack service with no compose profile, and both installers force
+        // this to "true". Read it to decide what to SHOW, never to decide
+        // whether the service is real: _engineRunning is probed from the
+        // container itself, so an unreadable .env can no longer render a
+        // healthy engine as down. Trim + case-insensitive so a hand-edited
+        // "True" still counts.
         private bool EngineEnabled =>
             string.Equals(EnvValue("FP_AI_ENGINE_ENABLED")?.Trim(), "true",
                 StringComparison.OrdinalIgnoreCase);
 
-        // Optional Command Center service (compose profile "copilot"). The
-        // installer writes FP_COPILOT_ENABLED=true when the user opts in.
+        // Command Center flag (compose profile "copilot"). Installed by
+        // default on every platform — the Windows wizard's task box is
+        // checked to match, so this is an opt-OUT, not an opt-in. Same rule
+        // as above: it governs display, not truth.
         private bool CopilotEnabled =>
             string.Equals(EnvValue("FP_COPILOT_ENABLED")?.Trim(), "true",
                 StringComparison.OrdinalIgnoreCase);
@@ -283,11 +368,21 @@ namespace FalconPulsar.Tray
         {
             var menu = new ContextMenuStrip();
 
-            // Header — full semver (matches the macOS menu-bar header). Use
-            // TrayProductVersion, not AssemblyVersion: the latter is the numeric
-            // System.Version (0.1.4) which cannot carry the -alpha.NN suffix, so
-            // it rendered as "FalconPulsar v0.1.4" with the pre-release dropped.
-            var header = new ToolStripMenuItem($"FalconPulsar v{TrayProductVersion}")
+            // Header — "QuickDock", not "FalconPulsar", and this is a
+            // correctness fix rather than a naming preference.
+            //
+            // The number here is QuickDock's own build. Labelling it
+            // "FalconPulsar v0.1.4-alpha.75" claims it is the version of the
+            // product, and it is not: the same About window can show Core at
+            // alpha.89, Web UI at alpha.157 and the AI Engine at alpha.65.
+            // The header named no running component. The About window already
+            // labels this exact number "QuickDock" (see ShowAbout) — one
+            // number wearing two names was the actual bug.
+            //
+            // Use TrayProductVersion, not AssemblyVersion: the latter is the
+            // numeric System.Version (0.1.4) which cannot carry the -alpha.NN
+            // suffix, so it rendered with the pre-release dropped.
+            var header = new ToolStripMenuItem($"QuickDock v{TrayProductVersion}")
             { Enabled = false };
             header.Font = new Font(header.Font, FontStyle.Bold);
             menu.Items.Add(header);
@@ -456,6 +551,11 @@ namespace FalconPulsar.Tray
             // FalconPulsar has a problem when Docker Desktop is just off.
             _dockerDaemonUp = await IsDockerDaemonRunning();
 
+            // Before any .env read: make sure we are reading the right .env.
+            // At login the stack home resolves to the legacy path because WSL
+            // is still starting; this re-resolves until it lands.
+            EnsureWslHome();
+
             // Re-read the AI Engine opt-in each poll (cheap .env read) so
             // enabling/disabling it takes effect without restarting the tray.
             _engineEnabled = EngineEnabled;
@@ -471,8 +571,14 @@ namespace FalconPulsar.Tray
                 _coreRunning = await IsContainerRunning("falconpulsar-core");
                 _uiRunning = await IsContainerRunning("falconpulsar-ui");
                 _gatewayRunning = await IsContainerRunning("falconpulsar-ai-gateway");
-                _engineRunning = _engineEnabled && await IsContainerRunning("falconpulsar-ai-engine");
-                _copilotRunning = _copilotEnabled && await IsContainerRunning("falconpulsar-copilot");
+                // Probe these two REGARDLESS of the .env flag, so the flag
+                // decides what to SHOW and the container decides what is
+                // TRUE. Previously an unreadable .env made `_engineEnabled`
+                // false, which short-circuited the probe and rendered a
+                // perfectly healthy container as a red X in the About box —
+                // the tray accusing a running service of being down.
+                _engineRunning = await IsContainerRunning("falconpulsar-ai-engine");
+                _copilotRunning = await IsContainerRunning("falconpulsar-copilot");
                 _apiHealthy = await IsApiHealthy();
             }
             else
@@ -574,13 +680,19 @@ namespace FalconPulsar.Tray
             // hand-edited outside the tray).
             _autoUpdateCheckItem.Checked = _updateCheckAutoEnabled;
 
-            // AI Engine row + "Open AI Engine" only show on engine-enabled
-            // installs; re-toggled every pass so .env edits apply without
-            // restarting the tray.
-            _engineItem.Visible = _engineEnabled;
-            _openEngineItem.Visible = _engineEnabled;
-            _copilotItem.Visible = _copilotEnabled;
-            _openCopilotItem.Visible = _copilotEnabled;
+            // AI Engine and Command Center rows show when the install opted
+            // in OR when the container is actually up. Re-toggled every pass
+            // so .env edits apply without restarting the tray.
+            //
+            // The "or actually up" half matters: a service that is genuinely
+            // running must never be hidden because its .env could not be
+            // read. Keeping the flag as the only input is what removed "Open
+            // AI Engine" and "Open Command Center" from the Windows menu
+            // while both services were running normally.
+            _engineItem.Visible = _engineEnabled || _engineRunning;
+            _openEngineItem.Visible = _engineEnabled || _engineRunning;
+            _copilotItem.Visible = _copilotEnabled || _copilotRunning;
+            _openCopilotItem.Visible = _copilotEnabled || _copilotRunning;
 
             // Update menu items. When Docker daemon is down, show a single
             // "Docker Desktop not running" item instead of N red dots —
@@ -1542,6 +1654,73 @@ namespace FalconPulsar.Tray
             return bmp;
         }
 
+        // --- Dark window caption -------------------------------------------
+        //
+        // A WinForms title bar is painted by the OS, not by us, so a dark
+        // client area gets a bright caption bolted on top — which is exactly
+        // how the About window looked next to the macOS one, where the window
+        // is .fullSizeContentView with a hidden title.
+        //
+        // The alternative (FormBorderStyle.None plus a hand-rolled caption)
+        // buys an exact colour match at the cost of window snap, the system
+        // menu, and the accessibility affordances that come with a real
+        // caption. Not worth it for an About box. DWM attributes keep every
+        // one of those and still fix the colour:
+        //
+        //   DWMWA_USE_IMMERSIVE_DARK_MODE (20) — Windows 10 1809+ (17763).
+        //       Dark caption. Attribute 19 on 18985 and older.
+        //   DWMWA_CAPTION_COLOR (35)          — Windows 11 (22000+) only.
+        //       Exact colour, so the caption disappears into the gradient.
+        //
+        // Unsupported attributes return a failure HRESULT and change nothing,
+        // so this degrades quietly: Windows 11 gets the exact navy, Windows 10
+        // and Server 2022 get a dark caption, anything older keeps the light
+        // one. Nothing throws.
+        private const int DWMWA_USE_IMMERSIVE_DARK_MODE_LEGACY = 19;
+        private const int DWMWA_USE_IMMERSIVE_DARK_MODE = 20;
+        private const int DWMWA_CAPTION_COLOR = 35;
+
+        [System.Runtime.InteropServices.DllImport("dwmapi.dll", PreserveSig = true)]
+        private static extern int DwmSetWindowAttribute(
+            IntPtr hwnd, int attr, ref int attrValue, int attrSize);
+
+        private static void ApplyDarkCaption(Form form, Color caption)
+        {
+            void Apply()
+            {
+                try
+                {
+                    int on = 1;
+                    // Try the modern attribute first; fall back to the
+                    // pre-19H1 numbering when it isn't recognised.
+                    if (DwmSetWindowAttribute(form.Handle,
+                            DWMWA_USE_IMMERSIVE_DARK_MODE, ref on, sizeof(int)) != 0)
+                    {
+                        on = 1;
+                        DwmSetWindowAttribute(form.Handle,
+                            DWMWA_USE_IMMERSIVE_DARK_MODE_LEGACY, ref on, sizeof(int));
+                    }
+
+                    // COLORREF is 0x00BBGGRR — byte order is the reverse of
+                    // the ARGB literal it comes from.
+                    int colorRef = caption.R | (caption.G << 8) | (caption.B << 16);
+                    DwmSetWindowAttribute(form.Handle,
+                        DWMWA_CAPTION_COLOR, ref colorRef, sizeof(int));
+                }
+                catch
+                {
+                    // dwmapi is present on every version we support, but a
+                    // missing export must never cost the user their About box.
+                }
+            }
+
+            // The window handle has to exist before DWM will accept an
+            // attribute for it, and it must be re-applied after a handle
+            // recreation (theme change, DPI move).
+            if (form.IsHandleCreated) Apply();
+            form.HandleCreated += (s, e) => Apply();
+        }
+
         private void ShowAbout()
         {
             var aboutForm = new Form
@@ -1554,6 +1733,9 @@ namespace FalconPulsar.Tray
                 MinimizeBox = false,
                 BackColor = Color.FromArgb(8, 18, 36)
             };
+            // Same navy the gradient ends on, so on Windows 11 the caption
+            // reads as part of the panel rather than a lid on top of it.
+            ApplyDarkCaption(aboutForm, Color.FromArgb(8, 18, 36));
 
             // Gradient panel
             var panel = new Panel
@@ -1656,7 +1838,9 @@ namespace FalconPulsar.Tray
             var engInfo = coreInfo;
             var copInfo = coreInfo;
             var composeVer = "…";
-            bool copilot = CopilotEnabled;
+            // Opted in, OR actually up. A running Command Center must not be
+            // omitted from the About grid because its .env could not be read.
+            bool copilot = CopilotEnabled || _copilotRunning;
             try
             {
                 ContainerInfo c = default, u = default, g = default, e = default, cp = default;
