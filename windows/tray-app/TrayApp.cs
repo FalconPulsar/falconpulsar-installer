@@ -437,6 +437,16 @@ namespace FalconPulsar.Tray
             _startItem.Image = CreateGlyphIcon("\uE768", Color.FromArgb(70, 70, 70));  // Play
             _stopItem = new ToolStripMenuItem("Stop Stack", null,
                 async (s, e) => await RunComposeCommand("down"));
+            // Deliberately still a DRAWN square, not a font glyph.
+            //
+            // Play (E768) and Refresh (E72C) either side of it come from
+            // Segoe MDL2 Assets, and matching them with E71A would be the
+            // tidy thing to do -- but the note on CreateSquareIcon below
+            // records that MDL2 has no clean filled square, and that finding
+            // was made on Windows, where this actually renders. A glyph that
+            // resolves to a blank box would cost Stop its icon entirely,
+            // which is worse than the inconsistency it would fix. Sized to
+            // sit on the same optical centre as its neighbours.
             _stopItem.Image = CreateSquareIcon(Color.FromArgb(70, 70, 70));  // Stop (drawn square)
             _restartItem = new ToolStripMenuItem("Restart Stack", null,
                 async (s, e) => await RunComposeCommand("restart"));
@@ -462,7 +472,11 @@ namespace FalconPulsar.Tray
             // applies anything by itself (no popups, no downloads).
             _updateAvailableItem = new ToolStripMenuItem("Update available", null,
                 async (s, e) => await CheckForUpdatesAsync());
-            _updateAvailableItem.Image = CreateGlyphIcon("\uE74A", Color.FromArgb(243, 140, 25));  // Up arrow, warm orange
+            // Blue, matching macOS (.systemBlue on arrow.up.circle.fill).
+            // This was warm orange -- the same hue as the lightbulb further
+            // down the menu, so on Windows an available update read as a
+            // warning. An update being available is information, not a fault.
+            _updateAvailableItem.Image = CreateGlyphIcon("\uE74A", Color.FromArgb(0, 120, 212));  // Up arrow, Fluent blue
             _updateAvailableItem.Visible = false;
             menu.Items.Add(_updateAvailableItem);
 
@@ -520,7 +534,7 @@ namespace FalconPulsar.Tray
             menu.Items.Add(_autoStartItem);
 
             menu.Items.Add(new ToolStripMenuItem("Documentation", null,
-                (s, e) => Process.Start(new ProcessStartInfo("https://falconpulsar.com/docs")
+                (s, e) => Process.Start(new ProcessStartInfo("https://docs.falconpulsar.com/")
                 { UseShellExecute = true })));
 
             var requestFeature = new ToolStripMenuItem("Request a Feature...", null,
@@ -1388,22 +1402,49 @@ namespace FalconPulsar.Tray
         {
             var enable = !_updateCheckAutoEnabled;
             var val = enable ? "true" : "false";
+
+            // This toggle could only ever LOOK like it did nothing. The
+            // setting lives in the stack .env, every poll re-reads it, and
+            // UpdateUI reassigns .Checked from that read — so if the write
+            // lands somewhere the read doesn't look, or there's no .env at
+            // all, the tick appears and is silently removed a second later
+            // with no error anywhere. Confirm we're pointed at the real .env
+            // before writing, rather than writing into the void.
+            EnsureWslHome();
+            if (!_wslHomeConfirmed)
+            {
+                ShowNotification("Setting not saved",
+                    "Can't reach the stack's .env yet (looked in " + _wslHome
+                    + "). Start the stack, then try again.",
+                    ToolTipIcon.Warning);
+                return;
+            }
+
             // Replace-or-append one-liner. The tail -c1 test appends a
             // newline first when the file doesn't end in one, so we never
             // glue onto someone's last line.
+            //
+            // The missing-file case now EXITS rather than falling through to
+            // the append: `>>` would otherwise create a file holding nothing
+            // but this one key, which is not a stack .env, and every other
+            // setting would then read as absent.
             var script =
                 "f='" + _wslHome + "/.env'\n" +
-                "if [ -f \"$f\" ] && grep -q '^FP_UPDATE_CHECK_AUTO=' \"$f\"; then\n" +
+                "if [ ! -f \"$f\" ]; then echo \"no .env at $f\" >&2; exit 3; fi\n" +
+                "if grep -q '^FP_UPDATE_CHECK_AUTO=' \"$f\"; then\n" +
                 "  sed -i 's/^FP_UPDATE_CHECK_AUTO=.*/FP_UPDATE_CHECK_AUTO=" + val + "/' \"$f\"\n" +
                 "else\n" +
-                "  if [ -f \"$f\" ] && [ -s \"$f\" ] && [ -n \"$(tail -c1 \"$f\")\" ]; then printf '\\n' >> \"$f\"; fi\n" +
+                "  if [ -s \"$f\" ] && [ -n \"$(tail -c1 \"$f\")\" ]; then printf '\\n' >> \"$f\"; fi\n" +
                 "  printf 'FP_UPDATE_CHECK_AUTO=" + val + "\\n' >> \"$f\"\n" +
-                "fi\n";
-            var (rc, _) = await RunWslBashCaptureAsync(script);
+                "fi\n" +
+                // Echo back what the file NOW says. A zero exit from sed means
+                // sed ran, not that the value changed.
+                "grep '^FP_UPDATE_CHECK_AUTO=' \"$f\" | tail -n1\n";
+            var (rc, output) = await RunWslBashCaptureAsync(script);
             if (rc != 0)
             {
-                ShowNotification("Settings not saved",
-                    "Couldn't update FP_UPDATE_CHECK_AUTO in the stack .env.",
+                ShowNotification("Setting not saved",
+                    "Couldn't write FP_UPDATE_CHECK_AUTO to " + _wslHome + "/.env.",
                     ToolTipIcon.Warning);
                 return;
             }
@@ -1413,6 +1454,17 @@ namespace FalconPulsar.Tray
             _updateCheckAutoEnabled = UpdateCheckAutoEnabled;
             _autoUpdateCheckItem.Checked = _updateCheckAutoEnabled;
             EnsureAutoUpdateTimers();
+
+            // Write reported success, read-back disagrees. This is the exact
+            // case that used to be completely silent, and the one a user
+            // reports as "I select it and it doesn't stay checked".
+            if (_updateCheckAutoEnabled != enable)
+            {
+                ShowNotification("Setting not saved",
+                    "Wrote " + val + " but the .env still reads "
+                    + (string.IsNullOrWhiteSpace(output) ? "nothing" : output.Trim()) + ".",
+                    ToolTipIcon.Warning);
+            }
         }
 
         // Profile flags for every compose invocation. --profile ai: legacy
@@ -1949,7 +2001,7 @@ namespace FalconPulsar.Tray
             int gridRows = (names.Length + 1) / 2;
             int linksY = gridY + gridRows * rowH + 15;
             var linkData = new[] {
-                ("Documentation", "https://falconpulsar.com/docs"),
+                ("Documentation", "https://docs.falconpulsar.com/"),
                 ("Release Notes", "https://github.com/FalconPulsar/falconpulsar-installer/releases"),
                 ("License", "https://github.com/FalconPulsar/falconpulsar-installer/blob/main/LICENSE")
             };

@@ -206,7 +206,7 @@ The installer ends when the stack is up and healthchecks pass. You can:
 
 - Open **http://localhost:8080** — the FalconPulsar Web UI
 - Run **`fp status`** in any terminal — local stack health
-- See **[falconpulsar.com/docs](https://falconpulsar.com/docs)** — how to
+- See **[docs.falconpulsar.com](https://docs.falconpulsar.com/)** — how to
   use the product
 
 ## Uninstall

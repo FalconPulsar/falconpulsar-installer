@@ -112,6 +112,23 @@ function Test-WslWorking {
 # -- Distro helpers ----------------------------------------------------------
 
 # `wsl --list --quiet` outputs UTF-16 by default. Decode + trim each line.
+# Docker Desktop registers its own WSL distros. They are plumbing, never a
+# place FalconPulsar is or could be installed, and letting them through the
+# enumeration causes real damage:
+#
+#   docker-desktop       Alpine-based; a probe runs but finds no stack, so
+#                        picking it makes the wizard report "no stack found
+#                        to upgrade" on a machine that HAS one.
+#   docker-desktop-data  a data-only rootfs with no shell at all -- running
+#                        `wsl -d docker-desktop-data -- sh` hangs or errors.
+#
+# Excluded centrally so every caller (detection, install, the compatibility
+# check) is protected, rather than each one remembering.
+function Test-IsDockerDesktopDistro {
+    param([Parameter(Mandatory)] [AllowEmptyString()] [string] $Name)
+    return $Name -match '^docker-desktop(-data)?$'
+}
+
 function Get-WslDistros {
     if (-not (Test-WslWorking)) { return @() }
 
@@ -122,7 +139,7 @@ function Get-WslDistros {
     $result = $output | ForEach-Object {
         # Strip null bytes that the UTF-16 -> ASCII reinterpretation can leave.
         ($_ -replace "`0", '').Trim()
-    } | Where-Object { $_ -ne '' }
+    } | Where-Object { $_ -ne '' -and -not (Test-IsDockerDesktopDistro $_) }
     # ALWAYS return a real array. With zero distros the pipeline emits
     # nothing, so a bare `return $result` hands back AutomationNull -- and
     # under `Set-StrictMode -Version Latest` a caller doing `.Count` on that

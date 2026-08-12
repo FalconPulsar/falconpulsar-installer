@@ -54,7 +54,8 @@ if ([string]::IsNullOrEmpty($Distro)) {
     try {
         $listRaw = & wsl.exe -l -q 2>$null
         $list = ($listRaw -join "`n") -replace "`0", '' -replace "`r", ''
-        $names = $list -split "`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }
+        $names = $list -split "`n" | ForEach-Object { $_.Trim() } |
+                 Where-Object { $_ -ne '' -and -not (Test-IsDockerDesktopDistro $_) }
 
         # This helper runs FIRST -- before the user has chosen a distro -- so
         # it cannot ask about one by name. It enumerates what is registered
@@ -140,7 +141,22 @@ if (-not [string]::IsNullOrEmpty($Distro)) {
         # failure this comment exists to prevent a third time.
         $resolveUser = 'getent passwd | while IFS=: read -r n _ u _ _ _ _; do if [ "$u" -ge 1000 ] && [ "$u" -lt 65534 ] && [ "$n" != "nobody" ]; then printf "%s\n" "$n"; break; fi; done'
         $wslUser = & wsl.exe -d $Distro -u root -- bash -c $resolveUser 2>$null
-        $wslUser = "$wslUser".Trim().Trim([char]0)
+        # Strip EVERY NUL, not just the ends.
+        #
+        # This was .Trim([char]0), which only removes leading/trailing ones.
+        # wsl.exe emits UTF-16LE on some Windows builds; read as ANSI that
+        # turns "pedro" into "p\0e\0d\0r\0o\0", and trimming the ends leaves
+        # "p\0e\0d\0r\0o" -- a name that matches no user on the system. The
+        # probe then tested /home/p<NUL>e<NUL>.../falconpulsar, found nothing,
+        # and reported "no stack found to upgrade" on a machine with a
+        # perfectly good stack. Containers and images still counted, because
+        # those come from `docker` and never touch this path -- which is why
+        # the dialog could show 4 running containers and no upgradeable stack
+        # in the same breath.
+        #
+        # Get-WslDistros in lib.ps1 has always used the -replace form; this
+        # site was the one that got the incomplete version.
+        $wslUser = ("$wslUser" -replace "`0", '').Trim()
         $r['WslUser'] = $wslUser
         $userHome = if ($wslUser -and $wslUser -ne 'root') { "/home/$wslUser/falconpulsar" } else { '' }
         $r['WslHomePath'] = $userHome
@@ -235,7 +251,11 @@ fi
             $lines = & wsl.exe -d $Distro -u root -- bash $probeWsl 2>$null
             Remove-Item $probeFile -ErrorAction SilentlyContinue
             foreach ($line in $lines) {
-                if ($line -match '^([A-Za-z]+)=(.*)$') {
+                # Same NUL treatment as the user resolution above: the key
+                # pattern is [A-Za-z]+, so a single interior NUL makes a line
+                # silently unparseable and the fact it carried simply absent.
+                $clean = ("$line" -replace "`0", '').Trim()
+                if ($clean -match '^([A-Za-z]+)=(.*)$') {
                     $r[$matches[1]] = $matches[2]
                 }
             }

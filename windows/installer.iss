@@ -153,7 +153,6 @@ Source: "helpers\lib.ps1";                                                      
 Source: "helpers\00-check-prereqs.ps1";                     DestDir: "{app}\helpers";        Flags: ignoreversion
 Source: "helpers\10-enable-wsl.ps1";                        DestDir: "{app}\helpers";        Flags: ignoreversion
 Source: "helpers\20-install-distro.ps1";                    DestDir: "{app}\helpers";        Flags: ignoreversion
-Source: "helpers\25-test-registry.ps1";                     DestDir: "{app}\helpers";        Flags: ignoreversion
 Source: "helpers\30-configure-distro.ps1";                  DestDir: "{app}\helpers";        Flags: ignoreversion
 Source: "helpers\40-run-fp-installer.ps1";                  DestDir: "{app}\helpers";        Flags: ignoreversion
 Source: "helpers\45-verify-health.ps1";                     DestDir: "{app}\helpers";        Flags: ignoreversion
@@ -395,6 +394,13 @@ var
   ExistingHasContainers: Boolean;
   ExistingHasImages: Boolean;
   ExistingInventoryText: String;
+  // The path the WSL probe actually looked in, and the distro it looked in.
+  // "No stack found" is only actionable if the person can see WHERE we
+  // looked -- a wrong distro or a wrong user resolves to a directory that
+  // was never going to contain anything, and the old wording made that
+  // indistinguishable from a genuinely empty machine.
+  ExistingProbedPath: String;
+  ExistingProbedDistro: String;
 
   // Sticky Command Center opt-in: True when the existing-install scan found
   // FP_COPILOT_ENABLED=true in the surviving WSL .env. Drives the
@@ -1686,6 +1692,15 @@ begin
   ExistingInventoryText := '';
   WslStackPath := SentinelGet(Content, 'WslHomeDir');
   if WslStackPath = '' then WslStackPath := '/home/falconpulsar';
+
+  // Remember where and in what we looked, so a negative result can say so.
+  ExistingProbedPath   := WslStackPath;
+  ExistingProbedDistro := SentinelGet(Content, 'Distro');
+  LogInfo('Existing-install probe: distro=' + ExistingProbedDistro
+        + ' user=' + SentinelGet(Content, 'WslUser')
+        + ' path=' + WslStackPath
+        + ' compose=' + SentinelGet(Content, 'WslCompose')
+        + ' upgradeable=' + SentinelGet(Content, 'UpgradeableStack'));
   if SentinelGet(Content, 'WslHome') = 'yes' then
   begin
     ExistingInventoryText := ExistingInventoryText + '  * WSL stack directory: ' + WslStackPath;
@@ -1927,9 +1942,17 @@ begin
     if ExistingLegacyLayout then
       ExistingUpgradeRadio.Caption :=
         'Upgrade in place -- unavailable: this is an older layout that must be migrated'
+    else if ExistingProbedPath <> '' then
+      // Name the directory. "No stack found" alone is unfalsifiable from the
+      // user's side -- it looks identical whether the machine is genuinely
+      // clean or whether we probed the wrong distro or the wrong user's home.
+      // With the path on screen, a wrong answer is immediately obvious to the
+      // one person who knows where their stack lives.
+      ExistingUpgradeRadio.Caption :=
+        'Upgrade in place -- unavailable: no compose.yml in ' + ExistingProbedPath
     else
       ExistingUpgradeRadio.Caption :=
-        'Upgrade in place -- unavailable: no stack found to upgrade (only leftovers)';
+        'Upgrade in place -- unavailable: the WSL probe could not run';
     // Never leave the disabled option selected: Inno keeps the check state of
     // a disabled radio, and the install action is read from it later.
     if ExistingUpgradeRadio.Checked then

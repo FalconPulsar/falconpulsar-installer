@@ -31,7 +31,6 @@ in [ARCHITECTURE.md](../ARCHITECTURE.md#powershell-helpers-execution-order)):
 | 06 | `06-detect-existing-install.ps1` | Detect a prior FalconPulsar install (populates the Existing-Install wizard page) |
 | 10 | `10-enable-wsl.ps1` | Enables WSL2 + VirtualMachinePlatform features |
 | 20 | `20-install-distro.ps1` | Installs Ubuntu 24.04 (or reuses an existing compatible distro) |
-| 25 | `25-test-registry.ps1` | Registry probe from the Container Registry wizard page (Test Connection button) |
 | 30 | `30-configure-distro.ps1` | Sets `systemd=true` in `/etc/wsl.conf` |
 | 40 | `40-run-fp-installer.ps1` | Resolves the WSL default user, stages + runs the bash installer inside the distro |
 | 45 | `45-verify-health.ps1` | Post-install container + REST API health probe |
@@ -167,8 +166,9 @@ requires the **Windows Subsystem for Linux Update Package**, which
 The user needs read access to the private `falconpulsar/*` registry
 repos. The Windows installer's **Container Registry** wizard page
 collects a registry URL + optional username / password and its
-**Test Connection** button runs `25-test-registry.ps1` to probe
-access before committing to the install.
+**Test Connection** button probes access before committing to the
+install. That probe lives inline in `installer.iss`
+(`RegistryTestClick`), not in a helper script.
 
 If the installer gets past that page and still fails deeper in the
 WSL handoff:

@@ -103,7 +103,7 @@ func buildSections() []menuSection {
 			{label: "Keyboard shortcuts", accel: "F1", action: func(a *App) { a.showHelp() }},
 			{label: "About FalconPulsar", action: func(a *App) { a.showAbout() }},
 			{label: "Documentation", action: func(a *App) {
-				_ = actions.OpenURL("https://falconpulsar.com/docs")
+				_ = actions.OpenURL("https://docs.falconpulsar.com/")
 			}},
 			{label: "Request a feature", action: func(a *App) {
 				_ = actions.OpenURL("https://falconpulsar.com/roadmap#request-form")
@@ -882,7 +882,7 @@ func (a *App) showHelp() {
 			"  fp config inspect <file>\n" +
 			"  fp update [--apply|--json]\n" +
 			"  fp update mode [manual|auto]\n\n" +
-			"  https://falconpulsar.com/docs\n\n" +
+			"  https://docs.falconpulsar.com/\n\n" +
 			"[#6B7280]Press Esc or Enter to close.[-]")
 	tv.SetInputCapture(func(ev *tcell.EventKey) *tcell.EventKey {
 		if ev.Key() == tcell.KeyEscape || ev.Key() == tcell.KeyEnter {
@@ -1108,7 +1108,7 @@ func (a *App) showAbout() {
 			"  REST API        %s\n"+
 			"  AI Gateway      %s\n\n"+
 			"Website:          https://falconpulsar.com\n"+
-			"Docs:             https://falconpulsar.com/docs\n"+
+			"Docs:             https://docs.falconpulsar.com/\n"+
 			"Roadmap:          https://falconpulsar.com/roadmap\n\n"+
 			"(c) 2026 FalconPulsar Contributors — GNU AGPL v3\n\n"+
 			"[#6B7280]Press Esc or Enter to close.[-]",

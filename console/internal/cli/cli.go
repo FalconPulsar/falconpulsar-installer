@@ -637,7 +637,7 @@ func cmdAbout() *cobra.Command {
 			fmt.Println()
 
 			fmt.Println("Website:          https://falconpulsar.com")
-			fmt.Println("Docs:             https://falconpulsar.com/docs")
+			fmt.Println("Docs:             https://docs.falconpulsar.com/")
 			fmt.Println("Roadmap:          https://falconpulsar.com/roadmap")
 			fmt.Println("(c) 2026 FalconPulsar Contributors — GNU AGPL v3")
 			return nil
@@ -650,7 +650,7 @@ func cmdDocs() *cobra.Command {
 		Use:   "docs",
 		Short: "Open the documentation site",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return actions.OpenURL("https://falconpulsar.com/docs")
+			return actions.OpenURL("https://docs.falconpulsar.com/")
 		},
 	}
 }

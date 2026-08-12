@@ -5,7 +5,7 @@
 # =============================================================================
 #  fp CLI installer
 # -----------------------------------------------------------------------------
-#  Downloads the `fp` Go binary (https://falconpulsar.com/docs/fp) into the
+#  Downloads the `fp` Go binary (https://docs.falconpulsar.com/) into the
 #  stack's own bin/ directory so everything stays under ~/falconpulsar/.
 #
 #  Exposes:

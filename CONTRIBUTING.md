@@ -202,7 +202,6 @@ Windows installer. Full details in
 | `06-detect-existing-install.ps1` | Detect prior FalconPulsar state (WSL stack dir, containers, images, Windows mirror) so the Existing-Install wizard page can offer Upgrade / Reinstall / Fresh |
 | `10-enable-wsl.ps1` | Enable WSL + VM Platform features, update kernel |
 | `20-install-distro.ps1` | Install Ubuntu-24.04, write `falconpulsar-distro.txt` sentinel |
-| `25-test-registry.ps1` | Test Docker registry reachability + credentials from inside WSL |
 | `30-configure-distro.ps1` | Write `systemd=true` to `/etc/wsl.conf` |
 | `40-run-fp-installer.ps1` | Resolve the WSL default user, stage `linux/` + `shared/` into WSL, run `linux/install.sh` |
 | `45-verify-health.ps1` | Post-install probe — container status, REST API reachability, report problems |

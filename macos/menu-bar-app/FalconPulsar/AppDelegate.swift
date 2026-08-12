@@ -1264,7 +1264,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func openDocumentation() {
-        NSWorkspace.shared.open(URL(string: "https://falconpulsar.com/docs")!)
+        NSWorkspace.shared.open(URL(string: "https://docs.falconpulsar.com/")!)
     }
 
     @objc func openRequestFeature() {
@@ -1612,7 +1612,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // too. Bottom of last row = gridY - rowH; links sit ~37px below.
         let linksY = (gridY - 2 * rowH) - 37
         let linkData: [(String, String)] = [
-            ("Documentation", "https://falconpulsar.com/docs"),
+            ("Documentation", "https://docs.falconpulsar.com/"),
             ("Release Notes", "https://github.com/FalconPulsar/falconpulsar-installer/releases"),
             ("License", "https://github.com/FalconPulsar/falconpulsar-installer/blob/main/LICENSE")
         ]
@@ -1656,7 +1656,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private let aboutLinks = [
-        "https://falconpulsar.com/docs",
+        "https://docs.falconpulsar.com/",
         "https://github.com/FalconPulsar/falconpulsar-installer/releases",
         "https://github.com/FalconPulsar/falconpulsar-installer/blob/main/LICENSE"
     ]

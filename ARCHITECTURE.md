@@ -263,7 +263,6 @@ FalconPulsar-Setup.exe
               ├── powershell.exe → helpers/00-check-prereqs.ps1
               ├── powershell.exe → helpers/10-enable-wsl.ps1 (conditional)
               ├── powershell.exe → helpers/20-install-distro.ps1 (conditional)
-              ├── powershell.exe → helpers/25-test-registry.ps1
               ├── powershell.exe → helpers/30-configure-distro.ps1
               ├── powershell.exe → helpers/40-run-fp-installer.ps1
               │     ├── resolves the WSL default user (whoami inside distro)
@@ -300,7 +299,10 @@ Post-install, the user interacts with the stack through:
    `admin`) + password + confirm. Minimum 10 characters.
 4. **Container Registry** — custom page: registry URL (default
    `falconpulsar`), optional username / password, and a **Test Connection**
-   button that runs `25-test-registry.ps1` inside WSL before allowing Next.
+   button. The probe is implemented INLINE in `installer.iss`
+   (`RegistryTestClick`), not in a helper script: it re-detects Docker
+   Desktop live on each click and runs `docker manifest inspect` through
+   `docker.exe` when Desktop is responsive, falling back to `wsl.exe`.
 5. **Existing Install** (conditional) — custom page shown only when
    `06-detect-existing-install.ps1` reports a prior stack. Radio group:
    Upgrade in place / Reinstall (keep data) / Fresh install. Dynamic
@@ -343,7 +345,6 @@ helpers.
 | `06-detect-existing-install.ps1` | Run in `InitializeSetup`. Probes for a prior FalconPulsar install on both the per-user stack dir and the legacy `/home/falconpulsar` service-user dir. Counts containers / images / volumes / networks. Writes `%TEMP%\falconpulsar-existing.txt` for the Pascal code to read into the Existing-Install wizard page. |
 | `10-enable-wsl.ps1` | Enable `Microsoft-Windows-Subsystem-Linux` + `VirtualMachinePlatform` Windows features, `wsl --update` the kernel, exit code 2 if reboot required. |
 | `20-install-distro.ps1` | `wsl --install -d Ubuntu-24.04 --no-launch` if distro not registered; write distro name to `%TEMP%\falconpulsar-distro.txt` (sentinel used by later helpers). |
-| `25-test-registry.ps1` | Run by the wizard's Registry page Test Connection button. `docker manifest inspect` against `$FP_REGISTRY/core:$FP_VERSION` inside WSL; classifies the result as OK / auth-needed / other-error and reports back to the Pascal code for display. |
 | `30-configure-distro.ps1` | Write `systemd=true` to `/etc/wsl.conf` inside the distro, `wsl --terminate` to pick up the change. |
 | `40-run-fp-installer.ps1` | The core handoff. Resolves the WSL default user (`whoami` inside the distro, falling back to UID 1000), writes `%TEMP%\falconpulsar-home.txt` + `falconpulsar-user.txt` sentinels, stages `linux/` + `shared/` into `/opt/falconpulsar-installer` inside WSL (avoids 9p mount issues). On `fresh`: wipes any prior WSL state (containers, images, volumes, legacy `/home/falconpulsar`, stale systemd linger). Runs `bash install.sh --user '<wsl-user>' --mode docker --yes` with credentials passed via a temp env file (never argv). Installs the Linux `fp` binary at `$WslHome/bin/fp`. Pre-flight port-conflict detection on the Windows side before handoff. |
 | `45-verify-health.ps1` | Post-install: probe that the expected containers are running and the REST API responds. Reports the stack URL and, on failure, the relevant log locations. |
