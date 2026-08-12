@@ -421,9 +421,46 @@ namespace FalconPulsar.Tray
         private static string TrayProductVersion =>
             NormalizeVersion(Application.ProductVersion);
 
+        /// <summary>
+        /// The colour for plain menu icons, chosen against the CURRENT system theme.
+        ///
+        /// These icons were previously drawn at a fixed Color.FromArgb(70, 70, 70). That is a
+        /// dark grey: legible on a light context menu, all but invisible on a dark one, which
+        /// is what Windows renders when the app theme is dark. macOS had the same class of bug
+        /// from the other direction — it baked NSColor.labelColor into a bitmap at menu-build
+        /// time, so the colour was frozen to whichever appearance happened to be active then.
+        ///
+        /// Read per menu build, so switching theme and reopening the menu picks up the change.
+        /// AppsUseLightTheme is the app/menu surface; SystemUsesLightTheme governs the taskbar
+        /// and tray, which is a different surface and the wrong key for this.
+        /// </summary>
+        private static Color MenuIconColor
+        {
+            get
+            {
+                try
+                {
+                    using var key = Registry.CurrentUser.OpenSubKey(
+                        @"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
+                    // Absent key means a very old build or a locked-down policy: light is the
+                    // safer assumption, matching the historical hardcoded dark grey.
+                    var v = key?.GetValue("AppsUseLightTheme");
+                    bool light = v is not int i || i != 0;
+                    return light
+                        ? Color.FromArgb(70, 70, 70)      // dark grey on a light menu
+                        : Color.FromArgb(222, 222, 222);  // light grey on a dark menu
+                }
+                catch
+                {
+                    return Color.FromArgb(70, 70, 70);
+                }
+            }
+        }
+
         private ContextMenuStrip BuildMenu()
         {
             var menu = new ContextMenuStrip();
+            var iconColor = MenuIconColor;
 
             // Header — "QuickDock", not "FalconPulsar", and this is a
             // correctness fix rather than a naming preference.
@@ -470,14 +507,14 @@ namespace FalconPulsar.Tray
             var openUi = new ToolStripMenuItem("Open FalconPulsar", null,
                 (s, e) => OpenWebUI());
             openUi.Font = new Font(openUi.Font, FontStyle.Bold);
-            openUi.Image = IconRenderer.Render("globe", Color.FromArgb(70, 70, 70));  // Globe
+            openUi.Image = IconRenderer.Render("globe", iconColor);  // Globe
             menu.Items.Add(openUi);
 
             // Optional AI Engine UI — hidden unless FP_AI_ENGINE_ENABLED=true
             // in .env; visibility is re-evaluated on every poll in UpdateUI.
             _openEngineItem = new ToolStripMenuItem("Open AI Engine", null,
                 (s, e) => OpenAiEngine());
-            _openEngineItem.Image = IconRenderer.Render("agents", Color.FromArgb(70, 70, 70));  // Agent flow graph
+            _openEngineItem.Image = IconRenderer.Render("agents", iconColor);  // Agent flow graph
             _openEngineItem.Visible = false;
             menu.Items.Add(_openEngineItem);
 
@@ -485,13 +522,13 @@ namespace FalconPulsar.Tray
             // in .env; visibility is re-evaluated on every poll in UpdateUI.
             _openCopilotItem = new ToolStripMenuItem("Open Command Center", null,
                 (s, e) => OpenCopilot());
-            _openCopilotItem.Image = IconRenderer.Render("grid", Color.FromArgb(70, 70, 70));  // Home
+            _openCopilotItem.Image = IconRenderer.Render("grid", iconColor);  // Home
             _openCopilotItem.Visible = false;
             menu.Items.Add(_openCopilotItem);
 
             _startItem = new ToolStripMenuItem("Start Stack", null,
                 async (s, e) => await RunComposeCommand("up -d"));
-            _startItem.Image = IconRenderer.Render("play", Color.FromArgb(70, 70, 70));  // Play
+            _startItem.Image = IconRenderer.Render("play", iconColor);  // Play
             _stopItem = new ToolStripMenuItem("Stop Stack", null,
                 async (s, e) => await RunComposeCommand("down"));
             // Stop is a real shape in the shared set now. It used to be a
@@ -499,10 +536,10 @@ namespace FalconPulsar.Tray
             // square -- the reason it sat visibly heavier than the Play and
             // Refresh glyphs either side of it. Owning the geometry settles
             // that: all three come from the same file, at the same weight.
-            _stopItem.Image = IconRenderer.Render("stop", Color.FromArgb(70, 70, 70));  // Stop (drawn square)
+            _stopItem.Image = IconRenderer.Render("stop", iconColor);  // Stop (drawn square)
             _restartItem = new ToolStripMenuItem("Restart Stack", null,
                 async (s, e) => await RunComposeCommand("restart"));
-            _restartItem.Image = IconRenderer.Render("refresh", Color.FromArgb(70, 70, 70));  // Refresh
+            _restartItem.Image = IconRenderer.Render("refresh", iconColor);  // Refresh
             menu.Items.Add(_startItem);
             menu.Items.Add(_stopItem);
             menu.Items.Add(_restartItem);
@@ -515,7 +552,7 @@ namespace FalconPulsar.Tray
             // --apply` so the operator can watch progress.
             var checkUpdates = new ToolStripMenuItem("Check for Updates...", null,
                 async (s, e) => await CheckForUpdatesAsync());
-            checkUpdates.Image = IconRenderer.Render("download", Color.FromArgb(70, 70, 70));  // Download
+            checkUpdates.Image = IconRenderer.Render("download", iconColor);  // Download
             menu.Items.Add(checkUpdates);
 
             // Passive indicator row \u2014 hidden until an automatic background

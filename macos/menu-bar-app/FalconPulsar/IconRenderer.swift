@@ -42,70 +42,84 @@ enum IconRenderer {
                        size: CGFloat = 14,
                        knockout: NSColor = .clear) -> NSImage
     {
-        let image = NSImage(size: NSSize(width: size, height: size))
         guard let subpaths = Icons.all[name] else {
             // Unknown name is a build-time mistake — the caller passes a
             // literal. A blank image is survivable; a crash on menu build is
             // not. Mirrors the same decision in IconRenderer.cs.
-            return image
+            return NSImage(size: NSSize(width: size, height: size))
         }
 
-        image.lockFocus()
-        defer { image.unlockFocus() }
+        // DRAW LAZILY, NOT NOW. The previous version used lockFocus(), which
+        // rasterises immediately — at menu-BUILD time. `color` is normally
+        // NSColor.labelColor, a dynamic colour that resolves against whatever
+        // appearance happens to be current at the moment it is drawn. Baking it
+        // into a bitmap froze one resolution forever, so a menu built under one
+        // appearance and shown under another displayed near-invisible icons.
+        // These icons also live inside NSTextAttachments, and attachment images
+        // are composited verbatim — isTemplate tinting never rescues them.
+        //
+        // NSImage(size:flipped:drawingHandler:) re-runs this block on every
+        // draw, so labelColor resolves against the appearance the menu is
+        // actually being rendered in, each time it is rendered.
+        let image = NSImage(size: NSSize(width: size, height: size), flipped: false) { _ in
+            guard let ctx = NSGraphicsContext.current else { return true }
+            ctx.imageInterpolation = .high
+            ctx.shouldAntialias = true
 
-        guard let ctx = NSGraphicsContext.current else { return image }
-        ctx.imageInterpolation = .high
-        ctx.shouldAntialias = true
+            // icons.def is authored y-DOWN (SVG / GDI+ convention). AppKit's
+            // default is y-up, so flip once here. The Windows renderer needs no
+            // equivalent — this is the single place the two differ, and it is why
+            // the same path data produces the same picture on both.
+            let flip = NSAffineTransform()
+            flip.translateX(by: 0, yBy: size)
+            flip.scaleX(by: 1, yBy: -1)
+            flip.concat()
 
-        // icons.def is authored y-DOWN (SVG / GDI+ convention). AppKit's
-        // default is y-up, so flip once here. The Windows renderer needs no
-        // equivalent — this is the single place the two differ, and it is why
-        // the same path data produces the same picture on both.
-        let flip = NSAffineTransform()
-        flip.translateX(by: 0, yBy: size)
-        flip.scaleX(by: 1, yBy: -1)
-        flip.concat()
+            let scale = size / 24.0
 
-        let scale = size / 24.0
+            for sp in subpaths {
+                let path = buildPath(sp.data)
+                let xf = NSAffineTransform()
+                xf.scale(by: scale)
+                path.transform(using: xf as AffineTransform)
+                path.lineCapStyle = .round
+                path.lineJoinStyle = .round
+                path.windingRule = .nonZero
 
-        for sp in subpaths {
-            let path = buildPath(sp.data)
-            let xf = NSAffineTransform()
-            xf.scale(by: scale)
-            path.transform(using: xf as AffineTransform)
-            path.lineCapStyle = .round
-            path.lineJoinStyle = .round
-            path.windingRule = .nonZero
-
-            switch sp.mode.first {
-            case "F":
-                color.setFill()
-                path.fill()
-            case "K":
-                if knockout == .clear {
-                    // Punch through instead of painting over: menus are
-                    // translucent, so a solid fill would read as a grey plate
-                    // sitting inside the disc.
-                    NSGraphicsContext.current?.compositingOperation = .destinationOut
-                    NSColor.black.setFill()
+                switch sp.mode.first {
+                case "F":
+                    color.setFill()
                     path.fill()
-                    NSGraphicsContext.current?.compositingOperation = .sourceOver
-                } else {
-                    knockout.setFill()
-                    path.fill()
+                case "K":
+                    if knockout == .clear {
+                        // Punch through instead of painting over: menus are
+                        // translucent, so a solid fill would read as a grey plate
+                        // sitting inside the disc.
+                        NSGraphicsContext.current?.compositingOperation = .destinationOut
+                        NSColor.black.setFill()
+                        path.fill()
+                        NSGraphicsContext.current?.compositingOperation = .sourceOver
+                    } else {
+                        knockout.setFill()
+                        path.fill()
+                    }
+                case "S":
+                    let w = CGFloat(Double(sp.mode.dropFirst()) ?? 2.0)
+                    color.setStroke()
+                    path.lineWidth = w * scale
+                    path.stroke()
+                default:
+                    break
                 }
-            case "S":
-                let w = CGFloat(Double(sp.mode.dropFirst()) ?? 2.0)
-                color.setStroke()
-                path.lineWidth = w * scale
-                path.stroke()
-            default:
-                break
             }
+            return true
         }
 
         // Menu icons follow the menu's own text colour (and invert correctly
-        // when a row is highlighted) only if they are templates.
+        // when a row is highlighted) only if they are templates. This still
+        // matters for the call sites that use NSMenuItem.image; the ones that
+        // embed the icon in an NSTextAttachment rely on the lazy redraw above,
+        // because AppKit does not apply template tinting to attachments.
         image.isTemplate = true
         return image
     }
