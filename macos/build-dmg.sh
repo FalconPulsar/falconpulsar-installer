@@ -67,7 +67,6 @@ INSTALLER_ENTITLEMENTS="$REPO_ROOT/macos/installer-app/Entitlements.plist"
 MB_ENTITLEMENTS="$REPO_ROOT/macos/menu-bar-app/Entitlements.plist"
 DMG_STAGING="dist/dmg-staging"
 DMG_OUTPUT="dist/FalconPulsar-Setup.dmg"
-ICONSET_TMP="/tmp/FalconPulsar.iconset"
 ICNS_TMP="/tmp/AppIcon.icns"
 LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
 
@@ -271,7 +270,12 @@ png_to_icns() {
   cp "$iconset/icon_1024x1024.png" "$iconset/icon_512x512@2x.png"
   rm -f "$iconset/icon_64x64.png" "$iconset/icon_1024x1024.png"
   # iconutil requires the dir name to end in .iconset
-  local iconset_named="${iconset%/*}/$(basename "$iconset").iconset"
+  #
+  # Declared and assigned separately (SC2155): `local x="$(cmd)"` returns
+  # local's exit status, not the command's, so a failing basename would pass
+  # silently even under `set -e`.
+  local iconset_named
+  iconset_named="${iconset%/*}/$(basename "$iconset").iconset"
   mv "$iconset" "$iconset_named"
   iconutil -c icns "$iconset_named" -o "$out_icns"
   rm -rf "$iconset_named"

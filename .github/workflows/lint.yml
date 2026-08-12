@@ -45,15 +45,29 @@ jobs:
           # -x: follow source statements
           # -P: search path for sourced files
           # -e SC1091: don't fail on "can't follow non-constant source"
+          #
+          # EVERY tracked *.sh is listed. The list is hand-maintained, and an
+          # audit found four scripts that had quietly never been checked --
+          # including macos/build-dmg.sh, whose hand-written Swift file list
+          # shipped v0.1.4-alpha.79 with no DMG at all, and
+          # .github/scripts/bundle.sh, which produces the published
+          # curl-pipe installers.
+          #
+          # Adding one here is easy to forget, so `shellcheck coverage` below
+          # fails when a tracked .sh is missing from this list.
           shellcheck \
             -x \
             -P shared/lib \
             -e SC1091 \
+            .github/scripts/bundle.sh \
             linux/install.sh \
             linux/uninstall.sh \
             linux/bootstrap.sh \
             macos/install.sh \
             macos/uninstall.sh \
+            macos/build-dmg.sh \
+            macos/pkg/build-pkg.sh \
+            macos/installer-app/statecheck/run.sh \
             scripts/sync-version.sh \
             scripts/sync-icons.sh \
             shared/lib/common.sh \
@@ -64,6 +78,27 @@ jobs:
             shared/lib/auth.sh \
             shared/lib/fpcli.sh \
             shared/lib/existing.sh
+
+      - name: shellcheck coverage
+        # The list above is hand-maintained, which is exactly how four
+        # scripts ended up never being linted. This makes the omission
+        # mechanical instead of a matter of remembering: any tracked .sh not
+        # named above fails the job with its own path.
+        run: |
+          set -euo pipefail
+          missing=0
+          while IFS= read -r f; do
+            if ! grep -qF "            $f \\" .github/workflows/lint.yml \
+               && ! grep -qF "            $f" .github/workflows/lint.yml; then
+              echo "::error file=$f::$f is not in the shellcheck list in .github/workflows/lint.yml"
+              missing=1
+            fi
+          done < <(git ls-files '*.sh')
+          if [ "$missing" -ne 0 ]; then
+            echo "Add the file(s) above to the shellcheck step, or delete them."
+            exit 1
+          fi
+          echo "every tracked .sh is in the shellcheck list ($(git ls-files '*.sh' | wc -l | tr -d ' ') files)"
 
   embedded-bash:
     name: embedded WSL bash (in PowerShell)

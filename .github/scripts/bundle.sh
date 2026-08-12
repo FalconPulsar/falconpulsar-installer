@@ -2,6 +2,18 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 FalconPulsar Contributors
 
+# shellcheck disable=SC2016
+# ^ "Expressions don't expand in single quotes" is INVERTED for this file.
+#   This script GENERATES another script: the single-quoted
+#   `${__FP_BUNDLE_DIR}` and the quoted heredoc delimiters must survive as
+#   LITERAL text so the generated bundle expands them at ITS runtime. Doing
+#   what SC2016 asks would bake the build machine's paths into every
+#   published installer.
+#
+#   File-scope rather than per-line: all eight hits are the same deliberate
+#   pattern, and a pragma above each printf would bury the very strings it
+#   annotates.
+
 # =============================================================================
 # bundle.sh — produce a single self-contained install/uninstall script.
 #
