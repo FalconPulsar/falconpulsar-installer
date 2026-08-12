@@ -20,19 +20,18 @@ not redistributed as a library.
 
 | Module | Version | License |
 |---|---|---|
-| github.com/gdamore/encoding | v1.0.0 | Apache-2.0 |
-| github.com/gdamore/tcell/v2 | v2.7.4 | Apache-2.0 |
-| github.com/lucasb-eyer/go-colorful | v1.2.0 | MIT |
-| github.com/mattn/go-runewidth | v0.0.15 | MIT |
-| github.com/rivo/tview | v0.0.0-20240818110301-fd649dbf1223 | MIT |
+| github.com/gdamore/encoding | v1.0.1 | Apache-2.0 |
+| github.com/gdamore/tcell/v2 | v2.13.10 | Apache-2.0 |
+| github.com/inconshreveable/mousetrap (Windows only) | v1.1.0 | Apache-2.0 |
+| github.com/lucasb-eyer/go-colorful | v1.3.0 | MIT |
+| github.com/rivo/tview | v0.42.0 | MIT |
 | github.com/rivo/uniseg | v0.4.7 | MIT |
-| github.com/spf13/cobra | v1.8.1 | Apache-2.0 |
-| github.com/spf13/pflag | v1.0.5 | BSD-3-Clause |
-| golang.org/x/crypto | v0.26.0 | BSD-3-Clause |
-| golang.org/x/sys | v0.23.0 | BSD-3-Clause |
-| golang.org/x/term | v0.23.0 | BSD-3-Clause |
-| golang.org/x/text | v0.17.0 | BSD-3-Clause |
-
+| github.com/spf13/cobra | v1.10.2 | Apache-2.0 |
+| github.com/spf13/pflag | v1.0.9 | BSD-3-Clause |
+| golang.org/x/crypto | v0.54.0 | BSD-3-Clause |
+| golang.org/x/sys | v0.47.0 | BSD-3-Clause |
+| golang.org/x/term | v0.45.0 | BSD-3-Clause |
+| golang.org/x/text | v0.40.0 | BSD-3-Clause |
 The full text of each license is available in the corresponding module's source
 repository and in your local Go module cache
 (`$(go env GOMODCACHE)/<module>@<version>/LICENSE`). The Apache-2.0, MIT, and

@@ -184,6 +184,43 @@ jobs:
           cd macos/installer-app
           swift build -c release
 
+  notices-match-binary:
+    name: THIRD_PARTY_NOTICES matches the linked binary
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: console/go.mod
+
+      - name: Every linked module is listed, and nothing listed is unlinked
+        # THIRD_PARTY_NOTICES.md drifted badly -- every version stale, one
+        # module (mattn/go-runewidth) listed but linked on NO platform, and
+        # one (inconshreveable/mousetrap) linked on Windows and absent from
+        # the file. It drifted because nothing checked it.
+        #
+        # The union across BUILD TARGETS matters: mousetrap is a Windows-only
+        # dependency of cobra, so a check that built one platform would have
+        # kept missing it. Attribution has to cover what we actually ship.
+        run: |
+          set -euo pipefail
+          cd console
+          : > /tmp/linked.txt
+          for t in linux/amd64 linux/arm64 windows/amd64 darwin/arm64; do
+            GOOS=${t%/*} GOARCH=${t#*/} go build -o /tmp/fp-probe ./cmd/fp
+            go version -m /tmp/fp-probe | awk '$1=="dep"{print $2}' >> /tmp/linked.txt
+          done
+          sort -u /tmp/linked.txt > /tmp/linked-sorted.txt
+          grep -oE '^\| [^ |]+' ../THIRD_PARTY_NOTICES.md | sed 's/^| //' \
+            | grep '^github\.com\|^golang\.org' | sort -u > /tmp/listed.txt
+          if ! diff -u /tmp/listed.txt /tmp/linked-sorted.txt; then
+            echo "::error::THIRD_PARTY_NOTICES.md does not match the linked modules."
+            echo "  '-' = listed but not linked (remove it)"
+            echo "  '+' = linked but not listed (add it -- this is the attribution failure)"
+            exit 1
+          fi
+          echo "notices match the linked set ($(wc -l < /tmp/linked-sorted.txt) modules)"
+
   icon-sync:
     name: icon sites match icons.def
     runs-on: ubuntu-latest
