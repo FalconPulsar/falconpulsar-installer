@@ -323,6 +323,12 @@ if fp_has_existing_install; then
         fi
     fi
 
+    # BEFORE the fast-path, because the fast-path runs `compose up -d` and
+    # then exits — it never reaches the stack-directory step below. An
+    # upgrade over a stack whose bind sources Docker had auto-created would
+    # otherwise pull new images, restart, and come back just as broken.
+    fp_repair_bind_sources "$FP_HOME"
+
     # Fast-path: if the user picked Upgrade and the stack dir is intact,
     # skip everything else and just pull+recreate.
     if fp_try_upgrade_fastpath "$FP_HOME"; then
@@ -487,28 +493,14 @@ if [ "${FP_COPILOT_ENABLED:-false}" = "true" ]; then
     mkdir -p "$FP_COPILOT_DATA_DIR"
     log_info "Command Center data dir: ${FP_COPILOT_DATA_DIR}"
 fi
-# The FILE bind mounts need the mirror-image guard.
-#
-# When `docker compose up` runs and a bind-mount SOURCE is missing, Docker
-# creates it as a DIRECTORY whatever the destination is. compose.yml mounts
-# three config files by path (nginx.conf:153, gateway.yaml:184,
-# auth-policy.json:372), so one `compose up` before the installer writes them
-# — a menu-bar Start Stack, an `fp update --apply`, an install that died
-# early — leaves a directory that makes EVERY later start fail with
-# "not a directory: Are you trying to mount a directory onto a file". It is
-# self-perpetuating, so remove it explicitly.
-#
-# Only a DIRECTORY is removed: an operator's hand-edited gateway.yaml is a
-# file and is left exactly alone. Mirrors linux/install.sh.
-for _fp_cfg in "${FP_HOME}/nginx.conf" \
-               "${FP_GATEWAY_CONFIG:-${FP_HOME}/gateway.yaml}" \
-               "${FP_HOME}/auth-policy.json"; do
-    if [ -d "$_fp_cfg" ]; then
-        log_warn "$(basename "$_fp_cfg") exists as a DIRECTORY (Docker created it for a missing bind mount) — removing"
-        rm -rf "$_fp_cfg"
-    fi
-done
-unset _fp_cfg
+# Repair anything Docker auto-created as a bind-mount source before it is
+# mounted again. See fp_repair_bind_sources in shared/lib/common.sh for the
+# full reasoning: a missing bind source becomes a ROOT-OWNED DIRECTORY
+# whatever the destination is, which crash-loops the engine on
+# "EACCES mkdir /data/db" and fails every mount of auth-policy.json with
+# "not a directory". One shared implementation, both platforms.
+fp_repair_bind_sources "$FP_HOME"
+
 
 # Stack config files in FP_HOME (gateway.yaml pattern), not inside module data.
 fp_write_auth_policy "${FP_HOME}/auth-policy.json"

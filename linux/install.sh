@@ -437,6 +437,13 @@ if fp_has_existing_install; then
         fi
     fi
 
+    # BEFORE the fast-path, because the fast-path runs `compose up -d` and
+    # then exits — it never reaches the installer's data-dir block below.
+    # An upgrade over a stack whose bind sources Docker had auto-created
+    # (root-owned dir, or a directory where auth-policy.json belongs) would
+    # otherwise pull new images, restart, and come back just as broken.
+    fp_repair_bind_sources "$FP_HOME"
+
     if fp_try_upgrade_fastpath "$FP_HOME"; then
         log_success "Upgrade complete."
         fp_install_cli "$FP_HOME" "${FP_VERSION:-0.1.0}"
@@ -763,55 +770,20 @@ fi
 # same way, and `install -d` is happy because a directory is what it wanted.
 #
 # So repair explicitly rather than assuming a clean slate.
-fp_repair_bind_source_dir() {
-    local path="$1" label="$2"
-    if [ -e "$path" ] && [ ! -d "$path" ]; then
-        log_warn "${label}: ${path} exists but is not a directory — replacing it"
-        rm -f "$path"
-    fi
-    install -d -m 0750 -o "$FP_USER" -g "$FP_USER" "$path"
-    # Re-assert ownership even when it already existed: Docker's version is
-    # root:root, and `install -d` on an existing directory does NOT chown it.
-    chown "$FP_USER":"$FP_USER" "$path" 2>/dev/null || true
-}
 
-# Data dirs — same pattern for every module:
-#   install -d -m 0750 -o $FP_USER  under $FP_HOME
-#   absolute path written to .env
-#   compose bind-mounts that path → /data (or /app/data for gateway)
-fp_repair_bind_source_dir "$FP_DATA_DIR"         "core data"
-fp_repair_bind_source_dir "$FP_GATEWAY_DATA_DIR" "gateway data"
-# The AI Engine is a standard service now, but keep the flag test so a stack
-# that genuinely disabled it does not get a stray directory.
-#
-# `if` rather than the `[ test ] && cmd` this replaced: under `set -e` an
-# AND-list whose test fails returns non-zero as a whole statement and aborts
-# the install. Harmless today because the engine flag is forced true upstream,
-# but it is a landmine for whoever makes it optional again.
-if [ "$FP_AI_ENGINE_ENABLED" = "true" ]; then
-    fp_repair_bind_source_dir "$FP_ENGINE_DATA_DIR" "AI Engine data"
-fi
+# Data dirs — one absolute path per module, written to .env, bind-mounted by
+# compose to /data (or /app/data for the gateway).
 FP_COPILOT_DATA_DIR="${FP_COPILOT_DATA_DIR:-${FP_HOME}/copilot-data}"
 if [ "${FP_COPILOT_ENABLED:-false}" = "true" ]; then
-  fp_repair_bind_source_dir "$FP_COPILOT_DATA_DIR" "Command Center data"
-  log_info "Command Center data dir: ${FP_COPILOT_DATA_DIR}"
+    log_info "Command Center data dir: ${FP_COPILOT_DATA_DIR}"
 fi
 
-# The FILE bind mounts get the mirror-image treatment. compose.yml mounts
-# three config files by path (nginx.conf:153, gateway.yaml:184,
-# auth-policy.json:372); for any of them that Docker turned into a directory,
-# the directory has to go before the file can be written. Only a DIRECTORY is
-# removed — an operator's hand-edited gateway.yaml is a file and is left
-# exactly alone.
-for _fp_cfg in "${FP_HOME}/nginx.conf" \
-               "${FP_GATEWAY_CONFIG:-${FP_HOME}/gateway.yaml}" \
-               "${FP_HOME}/auth-policy.json"; do
-    if [ -d "$_fp_cfg" ]; then
-        log_warn "$(basename "$_fp_cfg") exists as a DIRECTORY (Docker created it for a missing bind mount) — removing"
-        rm -rf "$_fp_cfg"
-    fi
-done
-unset _fp_cfg
+# One call, shared with the upgrade fast-path (shared/lib/common.sh): creates
+# each data dir, replaces anything Docker left that is not a directory, and
+# RE-ASSERTS ownership -- `install -d` does not chown a directory that already
+# exists, which is why Docker's root:root survived every re-install.
+fp_repair_bind_sources "$FP_HOME"
+
 
 # Stack-level config files live in FP_HOME (like gateway.yaml), not inside module data.
 fp_write_auth_policy "${FP_HOME}/auth-policy.json"

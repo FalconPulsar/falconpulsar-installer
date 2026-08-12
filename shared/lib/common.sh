@@ -376,3 +376,74 @@ fp_rotate_log() {
     fi
     chmod 0600 "$path" 2>/dev/null || true
 }
+
+# fp_repair_bind_sources <home>
+#
+# Undo what Docker does to MISSING bind-mount sources, before anything mounts
+# them again.
+#
+# When `docker compose up` meets a bind mount whose SOURCE does not exist, it
+# creates the source — always as a ROOT-OWNED DIRECTORY, regardless of what
+# the destination is. One behaviour, two failures:
+#
+#   ai-engine crash-looping on
+#       Error: EACCES: permission denied, mkdir '/data/db'
+#     because ${FP_ENGINE_DATA_DIR} was created root:root while the container
+#     runs as ${FP_UID}:${FP_GID}.
+#
+#   every service failing to start on
+#       dst=/config/auth-policy.json ... not a directory: Are you trying to
+#       mount a directory onto a file (or vice-versa)?
+#     because auth-policy.json is mounted AS A FILE (compose.yml:372) but did
+#     not exist, so Docker made a directory of that name.
+#
+# It only takes one `compose up` before the installer writes those paths: a
+# tray "Start Stack", an `fp update --apply`, or an install that died early.
+# And it is self-perpetuating — `install -d` is perfectly happy with an
+# existing directory, so re-running never repaired it.
+#
+# Lives here rather than in linux/install.sh because BOTH paths need it and
+# only one of them used to have it: the upgrade fast-path pulls and runs
+# `compose up -d` then `exit 0`s long before the installer's data-dir block.
+# An upgrade over a broken stack would otherwise have stayed broken.
+#
+# Reads FP_USER, FP_DATA_DIR, FP_GATEWAY_DATA_DIR, FP_ENGINE_DATA_DIR,
+# FP_COPILOT_DATA_DIR and FP_GATEWAY_CONFIG from the environment; each is
+# skipped when unset. Best-effort throughout: never abort an install for it.
+fp_repair_bind_sources() {
+    local home="${1:-$FP_HOME}"
+    [ -n "$home" ] || return 0
+
+    local d f owner="${FP_USER:-}"
+
+    # Directory sources: replace a non-directory, then RE-ASSERT ownership.
+    # `install -d` does not chown an existing directory, which is exactly why
+    # Docker's root:root survived every re-install.
+    for d in "${FP_DATA_DIR:-}" \
+             "${FP_GATEWAY_DATA_DIR:-}" \
+             "${FP_ENGINE_DATA_DIR:-}" \
+             "${FP_COPILOT_DATA_DIR:-}"; do
+        [ -n "$d" ] || continue
+        if [ -e "$d" ] && [ ! -d "$d" ]; then
+            log_warn "bind source ${d} is not a directory — replacing it"
+            rm -f "$d" 2>/dev/null || true
+        fi
+        [ -d "$d" ] || mkdir -p "$d" 2>/dev/null || true
+        if [ -n "$owner" ] && [ -d "$d" ]; then
+            chown -R "${owner}:${owner}" "$d" 2>/dev/null || true
+            chmod 0750 "$d" 2>/dev/null || true
+        fi
+    done
+
+    # File sources: a Docker-made DIRECTORY of that name has to go before the
+    # file can be written. ONLY a directory is removed — an operator's
+    # hand-edited gateway.yaml is a file and is left exactly alone.
+    for f in "${home}/nginx.conf" \
+             "${FP_GATEWAY_CONFIG:-${home}/gateway.yaml}" \
+             "${home}/auth-policy.json"; do
+        if [ -d "$f" ]; then
+            log_warn "$(basename "$f") exists as a DIRECTORY (Docker created it for a missing bind mount) — removing"
+            rm -rf "$f" 2>/dev/null || true
+        fi
+    done
+}
