@@ -247,8 +247,12 @@ namespace FalconPulsar.Tray
             // legacy %USERPROFILE%\falconpulsar mirror.
             ConfigBackup.FalconPulsarHomeDir = _wslHomeUnc;
 
-            try { _wslHomeConfirmed = File.Exists(Path.Combine(_wslHomeUnc, ".env")); }
-            catch { _wslHomeConfirmed = false; }
+            // Confirmation is NOT a File.Exists() over UNC. \\wsl.localhost
+            // only answers while the distro is running, and WSL2 stops one
+            // after a few seconds idle — so a UNC miss says nothing about
+            // whether the path is right. RefreshEnvAsync sets this once it has
+            // actually parsed the file, by whichever channel worked.
+            _wslHomeConfirmed = false;
         }
 
         // Re-resolve the stack home until the .env is found there.
@@ -273,34 +277,88 @@ namespace FalconPulsar.Tray
             ApplyWslHome(ReadWslHome(_distro));
         }
 
-        // Reads one value out of the stack's .env inside WSL, via the same
-        // resolved \\wsl.localhost UNC path the Config Files menu uses.
-        // Returns null when the file or key is missing. Last occurrence
-        // wins, matching docker compose's own env-file semantics, so a
-        // hand-appended override behaves the same here and in the stack
-        // itself (mirrors AppDelegate.envValue on macOS).
+        // The whole .env, parsed once per poll. Null until a read succeeds.
+        private Dictionary<string, string> _envCache;
+
+        // Reads one value out of the stack's .env. Last occurrence wins,
+        // matching docker compose's own env-file semantics, so a hand-appended
+        // override behaves the same here and in the stack itself (mirrors
+        // AppDelegate.envValue on macOS).
         private string EnvValue(string key)
+            => _envCache != null && _envCache.TryGetValue(key, out var v) ? v : null;
+
+        private static Dictionary<string, string> ParseEnv(IEnumerable<string> lines)
         {
+            var d = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (var line in lines)
+            {
+                var t = line.Trim();
+                if (t.Length == 0 || t[0] == '#') continue;
+                var eq = t.IndexOf('=');
+                if (eq <= 0) continue;
+                var k = t.Substring(0, eq).Trim();
+                var v = t.Substring(eq + 1).Trim();
+                if (v.Length > 0) d[k] = v;   // last occurrence wins
+            }
+            return d;
+        }
+
+        /// <summary>
+        /// Refresh the cached .env, over whichever channel can reach it.
+        ///
+        /// TWO CHANNELS, BECAUSE THEY FAIL AT DIFFERENT TIMES.
+        ///
+        /// \\wsl.localhost is cheap and does not wake anything, but it only
+        /// answers while the distro is already running, and it maps the
+        /// Windows caller onto a WSL user — which the installer's 0750 home
+        /// and 0640 .env can refuse. `wsl.exe -- cat` has neither problem: it
+        /// STARTS a stopped distro and runs inside it, past the 9p share
+        /// entirely.
+        ///
+        /// So: try UNC first, and fall back to bash only when the Docker
+        /// daemon is already reachable. That condition matters. It means WSL
+        /// is demonstrably up, so a failed UNC read is a mapping or
+        /// permissions problem worth working around — rather than the user
+        /// having deliberately run `wsl --shutdown`, where the polite thing
+        /// is to stay quiet instead of waking the distro every few seconds.
+        /// </summary>
+        private async Task RefreshEnvAsync()
+        {
+            // 1. UNC — free when it works.
             try
             {
                 var envPath = Path.Combine(_wslHomeUnc, ".env");
-                if (!File.Exists(envPath)) return null;
-                string value = null;
-                foreach (var line in File.ReadAllLines(envPath))
+                if (File.Exists(envPath))
                 {
-                    var trimmed = line.Trim();
-                    if (!trimmed.StartsWith(key + "=")) continue;
-                    var v = trimmed.Substring(key.Length + 1).Trim();
-                    if (v.Length > 0) value = v;
+                    var parsed = ParseEnv(File.ReadAllLines(envPath));
+                    if (parsed.Count > 0)
+                    {
+                        _envCache = parsed;
+                        _wslHomeConfirmed = true;
+                        return;
+                    }
                 }
-                return value;
             }
-            catch
+            catch { /* fall through */ }
+
+            if (!_dockerDaemonUp) return;   // keep the cache we have, if any
+
+            // 2. Through the distro itself.
+            try
             {
-                // UNC reads can fail while WSL is starting/stopping —
-                // fall back to the installer defaults below.
-                return null;
+                var (rc, stdout) = await RunWslBashCaptureAsync(
+                    "cat '" + _wslHome + "/.env' 2>/dev/null\n");
+                if (rc == 0 && !string.IsNullOrWhiteSpace(stdout))
+                {
+                    var parsed = ParseEnv(stdout.Replace("\r", "").Split('\n'));
+                    if (parsed.Count > 0)
+                    {
+                        _envCache = parsed;
+                        _wslHomeConfirmed = true;
+                    }
+                }
             }
+            catch { }
         }
 
         // Ports come from the stack's .env so port-remapped installs report
@@ -559,12 +617,18 @@ namespace FalconPulsar.Tray
             // FalconPulsar has a problem when Docker Desktop is just off.
             _dockerDaemonUp = await IsDockerDaemonRunning();
 
-            // Before any .env read: make sure we are reading the right .env.
-            // At login the stack home resolves to the legacy path because WSL
-            // is still starting; this re-resolves until it lands.
+            // Before any .env read: make sure we are reading the right .env,
+            // then read it ONCE. At login the stack home resolves to the
+            // legacy path because WSL is still starting, so this re-resolves
+            // until it lands; RefreshEnvAsync then confirms it by actually
+            // parsing the file, over whichever channel can reach it.
+            //
+            // One read per poll, not one per key — this used to be seven
+            // separate UNC file reads every few seconds.
             EnsureWslHome();
+            await RefreshEnvAsync();
 
-            // Re-read the AI Engine opt-in each poll (cheap .env read) so
+            // Re-read the AI Engine opt-in each poll (from the cache above) so
             // enabling/disabling it takes effect without restarting the tray.
             _engineEnabled = EngineEnabled;
             _copilotEnabled = CopilotEnabled;
@@ -1400,20 +1464,24 @@ namespace FalconPulsar.Tray
             // This toggle could only ever LOOK like it did nothing. The
             // setting lives in the stack .env, every poll re-reads it, and
             // UpdateUI reassigns .Checked from that read — so if the write
-            // lands somewhere the read doesn't look, or there's no .env at
-            // all, the tick appears and is silently removed a second later
-            // with no error anywhere. Confirm we're pointed at the real .env
-            // before writing, rather than writing into the void.
-            EnsureWslHome();
-            if (!_wslHomeConfirmed)
-            {
-                ShowNotification("Setting not saved",
-                    "Can't reach the stack's .env yet (looked in " + _wslHome
-                    + "). Start the stack, then try again.",
-                    ToolTipIcon.Warning);
-                return;
-            }
-
+            // lands somewhere the read doesn't look, the tick appears and is
+            // silently removed a second later with no error anywhere.
+            //
+            // Deliberately NOT gated on a \\wsl.localhost probe. An earlier
+            // attempt at this refused up front unless File.Exists() could see
+            // the .env over UNC, and that was wrong in the one direction that
+            // matters: `wsl.exe -d <distro> -- bash` STARTS a stopped distro,
+            // while \\wsl.localhost only works once one is already running.
+            // WSL2 shuts a distro down after a few seconds idle, so the guard
+            // refused the very operation that would have woken it — reported
+            // as "Can't reach the stack's .env yet" on a perfectly good
+            // install.
+            //
+            // Ask bash instead. It runs INSIDE the distro, where there is no
+            // 9p filesystem to be unavailable and no Windows-to-Linux user
+            // mapping to be denied by the 0750 home directory the installer
+            // creates. The script below exits 3 with the path when the file
+            // genuinely is not there.
             // Replace-or-append one-liner. The tail -c1 test appends a
             // newline first when the file doesn't end in one, so we never
             // glue onto someone's last line.
@@ -1438,21 +1506,30 @@ namespace FalconPulsar.Tray
             if (rc != 0)
             {
                 ShowNotification("Setting not saved",
-                    "Couldn't write FP_UPDATE_CHECK_AUTO to " + _wslHome + "/.env.",
+                    rc == 3
+                        ? "No .env at " + _wslHome + "/.env — is the stack installed there?"
+                        : "Couldn't write FP_UPDATE_CHECK_AUTO to " + _wslHome + "/.env.",
                     ToolTipIcon.Warning);
                 return;
             }
 
-            // Re-read from .env so the checkbox reflects what actually
-            // landed, then arm/disarm the timers to match.
-            _updateCheckAutoEnabled = UpdateCheckAutoEnabled;
+            // Believe the ECHO-BACK, not a second read over UNC.
+            //
+            // The read-back came from the same bash that just did the write,
+            // so it cannot disagree with itself about which file it means, and
+            // it cannot fail because the 9p share is asleep. Re-reading via
+            // EnvValue here would reintroduce the original bug from the other
+            // side: on a machine where UNC reads fail, the tick would be
+            // removed immediately after a write that genuinely succeeded.
+            var landed = output != null && output.Contains("FP_UPDATE_CHECK_AUTO=" + val);
+            _updateCheckAutoEnabled = landed ? enable : !enable;
             _autoUpdateCheckItem.Checked = _updateCheckAutoEnabled;
             EnsureAutoUpdateTimers();
 
-            // Write reported success, read-back disagrees. This is the exact
+            // Write reported success and the file still disagrees. This is the
             // case that used to be completely silent, and the one a user
             // reports as "I select it and it doesn't stay checked".
-            if (_updateCheckAutoEnabled != enable)
+            if (!landed)
             {
                 ShowNotification("Setting not saved",
                     "Wrote " + val + " but the .env still reads "
