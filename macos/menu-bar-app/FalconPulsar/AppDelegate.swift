@@ -133,7 +133,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Optional AI Engine UI — visibility mirrors the status row above.
         let openEngine = NSMenuItem(title: "Open AI Engine", action: #selector(openAIEngine), keyEquivalent: "e")
         openEngine.target = self
-        openEngine.attributedTitle = inlineIconTitle("Open AI Engine", symbol: "brain", bold: true)
+        openEngine.attributedTitle = inlineIconTitle("Open AI Engine", symbol: "agents", bold: true)
         openEngine.isHidden = !engineEnabled
         menu.addItem(openEngine)
 

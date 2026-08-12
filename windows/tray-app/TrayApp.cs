@@ -477,7 +477,7 @@ namespace FalconPulsar.Tray
             // in .env; visibility is re-evaluated on every poll in UpdateUI.
             _openEngineItem = new ToolStripMenuItem("Open AI Engine", null,
                 (s, e) => OpenAiEngine());
-            _openEngineItem.Image = IconRenderer.Render("brain", Color.FromArgb(70, 70, 70));  // Robot
+            _openEngineItem.Image = IconRenderer.Render("agents", Color.FromArgb(70, 70, 70));  // Agent flow graph
             _openEngineItem.Visible = false;
             menu.Items.Add(_openEngineItem);
 
