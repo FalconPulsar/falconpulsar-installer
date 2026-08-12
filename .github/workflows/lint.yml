@@ -109,6 +109,27 @@ jobs:
         # version bump can never reach main.
         run: scripts/sync-version.sh --check
 
+  icon-sync:
+    name: icon sites match icons.def
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Run sync-icons.sh in check mode
+        # shared/icons/icons.def is the single source of truth for the
+        # QuickDock menu icons, and scripts/sync-icons.sh generates
+        # Icons.g.cs and Icons.g.swift from it. The whole point of owning
+        # the geometry is that the two platforms match BY CONSTRUCTION --
+        # which stops being true the moment one generated file is edited
+        # by hand or the source changes without a regeneration.
+        #
+        # Same guard sync-version.sh provides for VERSION, and it also
+        # validates icons.def itself: both renderers accept only absolute
+        # M/L/C/Z, so a stray arc or a bad mode is rejected here, where the
+        # error can name the line, rather than becoming a malformed literal
+        # in two languages.
+        run: scripts/sync-icons.sh --check
+
   bundle:
     name: bundles contain their script bodies
     runs-on: ubuntu-latest

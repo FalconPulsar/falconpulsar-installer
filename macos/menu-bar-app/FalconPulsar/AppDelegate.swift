@@ -58,16 +58,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Menu
 
-    /// Builds an NSAttributedString where `symbol` (SF Symbol) appears inline
-    /// at the start, followed by the title. All menu items using this render
-    /// their leading edge at column 0 (text and icon share the same column).
+    /// Builds an NSAttributedString where `symbol` appears inline at the
+    /// start, followed by the title. All menu items using this render their
+    /// leading edge at column 0 (text and icon share the same column).
+    ///
+    /// `symbol` now names an icon in shared/icons/icons.def, NOT an SF Symbol.
+    /// SF Symbols is an Apple font that cannot ship on Windows, so the Windows
+    /// tray drew its menu with Segoe MDL2 Assets instead and the two menus
+    /// could never agree — `brain`, `square.grid.2x2` and `safari` have no MDL2
+    /// equivalent at all. Both platforms now render the same geometry from the
+    /// same file, so they match by construction rather than by coincidence.
     private func inlineIconTitle(_ title: String, symbol: String, color: NSColor? = nil, bold: Bool = false) -> NSAttributedString {
         let attachment = NSTextAttachment()
-        var img = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
-        if let color = color, let base = img {
-            let cfg = NSImage.SymbolConfiguration(paletteColors: [color])
-            img = base.withSymbolConfiguration(cfg)
-        }
+        let img = IconRenderer.render(symbol,
+                                      color: color ?? .labelColor,
+                                      size: 14)
+        // A coloured icon is a deliberate signal (the update row), so it must
+        // NOT be tinted to the menu's text colour the way the plain ones are.
+        img.isTemplate = (color == nil)
         attachment.image = img
         let out = NSMutableAttributedString()
         out.append(NSAttributedString(attachment: attachment))
@@ -119,7 +127,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         let openUI = NSMenuItem(title: "Open FalconPulsar", action: #selector(openWebUI), keyEquivalent: "o")
         openUI.target = self
-        openUI.attributedTitle = inlineIconTitle("Open FalconPulsar", symbol: "safari", bold: true)
+        openUI.attributedTitle = inlineIconTitle("Open FalconPulsar", symbol: "globe", bold: true)
         menu.addItem(openUI)
 
         // Optional AI Engine UI — visibility mirrors the status row above.
@@ -132,23 +140,23 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Optional Command Center UI — visibility mirrors the status row above.
         let openCopilot = NSMenuItem(title: "Open Command Center", action: #selector(openCommandCenter), keyEquivalent: "")
         openCopilot.target = self
-        openCopilot.attributedTitle = inlineIconTitle("Open Command Center", symbol: "square.grid.2x2", bold: true)
+        openCopilot.attributedTitle = inlineIconTitle("Open Command Center", symbol: "grid", bold: true)
         openCopilot.isHidden = !copilotEnabled
         menu.addItem(openCopilot)
 
         let start = NSMenuItem(title: "Start Stack", action: #selector(startStack), keyEquivalent: "")
         start.target = self
-        start.attributedTitle = inlineIconTitle("Start Stack", symbol: "play.fill")
+        start.attributedTitle = inlineIconTitle("Start Stack", symbol: "play")
         menu.addItem(start)
 
         let stop = NSMenuItem(title: "Stop Stack", action: #selector(stopStack), keyEquivalent: "")
         stop.target = self
-        stop.attributedTitle = inlineIconTitle("Stop Stack", symbol: "stop.fill")
+        stop.attributedTitle = inlineIconTitle("Stop Stack", symbol: "stop")
         menu.addItem(stop)
 
         let restart = NSMenuItem(title: "Restart Stack", action: #selector(restartStack), keyEquivalent: "")
         restart.target = self
-        restart.attributedTitle = inlineIconTitle("Restart Stack", symbol: "arrow.clockwise")
+        restart.attributedTitle = inlineIconTitle("Restart Stack", symbol: "refresh")
         menu.addItem(restart)
 
         // "Check for updates…" — added between stack-control items and the
@@ -160,7 +168,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // healthcheck).
         let checkUpdates = NSMenuItem(title: "Check for Updates…", action: #selector(checkForUpdates), keyEquivalent: "")
         checkUpdates.target = self
-        checkUpdates.attributedTitle = inlineIconTitle("Check for Updates…", symbol: "arrow.down.circle")
+        checkUpdates.attributedTitle = inlineIconTitle("Check for Updates…", symbol: "download")
         menu.addItem(checkUpdates)
 
         // Passive "Update available: vX" line — hidden until a check
@@ -176,7 +184,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         updateLine.isHidden = true
         if let label = pendingUpdateLabel {
             updateLine.title = label
-            updateLine.attributedTitle = inlineIconTitle(label, symbol: "arrow.up.circle.fill", color: .systemBlue, bold: true)
+            updateLine.attributedTitle = inlineIconTitle(label, symbol: "update", color: .systemBlue, bold: true)
             updateLine.isHidden = false
         }
         menu.addItem(updateLine)
@@ -254,7 +262,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         requestFeature.target = self
         requestFeature.attributedTitle = inlineIconTitle(
             "Request a Feature…",
-            symbol: "lightbulb.fill",
+            symbol: "bulb",
             color: NSColor(red: 0.95, green: 0.55, blue: 0.10, alpha: 1.0)
         )
         menu.addItem(requestFeature)
@@ -1147,7 +1155,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if let item = updateAvailableItem {
             if let label = pendingUpdateLabel {
                 item.title = label
-                item.attributedTitle = inlineIconTitle(label, symbol: "arrow.up.circle.fill", color: .systemBlue, bold: true)
+                item.attributedTitle = inlineIconTitle(label, symbol: "update", color: .systemBlue, bold: true)
                 item.isHidden = false
             } else {
                 item.isHidden = true

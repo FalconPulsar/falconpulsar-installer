@@ -1,0 +1,123 @@
+# FalconPulsar QuickDock icon set — ONE source of truth for both platforms.
+#
+# WHY THIS FILE EXISTS
+#
+# macOS drew its menu icons with SF Symbols; Windows drew them with Segoe
+# MDL2 Assets. Two different platform fonts, so the two menus could never
+# agree: `brain`, `square.grid.2x2` and `safari` have no MDL2 equivalent at
+# all, and SF Symbols cannot be licensed or shipped on Windows. There is no
+# setting that makes font A look like font B.
+#
+# It also made every icon change unverifiable from a Mac. Swapping Stop's
+# drawn square for MDL2 E71A was reverted precisely because nobody here can
+# render Segoe MDL2 to check, and a glyph that resolves to a blank box costs
+# the item its icon entirely.
+#
+# Owning the geometry fixes both: the two platforms are identical BY
+# CONSTRUCTION, and the shapes can be rasterized and looked at before they
+# ship.
+#
+# FORMAT
+#
+#   <name> | <mode> | <path data>
+#
+# One icon may span several lines; they are drawn in order, so a filled
+# backdrop can precede a knocked-out stroke.
+#
+#   mode  F      fill the subpath (non-zero winding)
+#         S<w>   stroke it, width <w> in grid units, round cap + round join
+#         K      fill in the KNOCKOUT colour (the menu background) — used for
+#                the arrow inside a filled circle, so one icon reads as two
+#                tones without needing a second colour channel
+#
+# Path commands are ABSOLUTE ONLY and limited to four, which is the whole
+# grammar both renderers must implement:
+#
+#   M x y                    move to
+#   L x y                    line to
+#   C x1 y1 x2 y2 x y        cubic bezier
+#   Z                        close subpath
+#
+# No arcs. A circle is four cubics — exact enough at 16px and it keeps both
+# parsers to about sixty lines each, which is the point.
+#
+# GRID
+#
+# 24x24, origin top-left, y increasing downward (matches both GDI+ and the
+# flipped NSGraphicsContext the macOS renderer sets up). Live area is inset
+# to roughly 3..21 so a 2-unit stroke never clips at the bounding box.
+#
+# Circle constant: a 12-radius circle centred at (12,12) uses control-point
+# offset 12 * 0.5523 = 6.63.
+#
+# EDITING
+#
+# Change this file, run `scripts/sync-icons.sh`, and BOTH platforms update.
+# CI runs `scripts/sync-icons.sh --check` and fails if the generated files
+# have drifted, the same guard `sync-version.sh` provides for VERSION.
+# `scripts/preview-icons.swift` renders a contact sheet — look at it before
+# committing. That is the whole reason this indirection is worth having.
+
+# ── Open FalconPulsar ──────────────────────────────────────────────────
+# A globe: the Web UI opens in a browser. macOS used `safari`, a compass,
+# which is a Safari-specific mark and reads as nothing on Windows. A globe
+# carries the same "this opens on the web" meaning on both.
+globe | S2 | M 12 3.2 C 16.86 3.2 20.8 7.14 20.8 12 C 20.8 16.86 16.86 20.8 12 20.8 C 7.14 20.8 3.2 16.86 3.2 12 C 3.2 7.14 7.14 3.2 12 3.2 Z
+globe | S2 | M 3.4 12 L 20.6 12
+globe | S2 | M 12 3.2 C 14.6 6 15.6 9 15.6 12 C 15.6 15 14.6 18 12 20.8 C 9.4 18 8.4 15 8.4 12 C 8.4 9 9.4 6 12 3.2 Z
+
+# ── Open AI Engine ─────────────────────────────────────────────────────
+# A brain in profile, matching macOS's `brain`. Two lobes over a stem, with
+# one interior fold — at 16px the fold is what separates it from a cloud.
+brain | S2 | M 12 4.2 C 10.4 3 8.1 3.3 7.1 4.9 C 5.3 4.9 4 6.3 4.2 8 C 3 8.8 2.9 10.6 4 11.6 C 3.2 13 3.8 14.8 5.3 15.4 C 5.3 17.2 7 18.4 8.7 17.9 C 9.4 19.3 11.3 19.6 12 18.4 Z
+brain | S2 | M 12 4.2 C 13.6 3 15.9 3.3 16.9 4.9 C 18.7 4.9 20 6.3 19.8 8 C 21 8.8 21.1 10.6 20 11.6 C 20.8 13 20.2 14.8 18.7 15.4 C 18.7 17.2 17 18.4 15.3 17.9 C 14.6 19.3 12.7 19.6 12 18.4 Z
+brain | S2 | M 12 8.4 L 12 15.2
+
+# ── Open Command Center ────────────────────────────────────────────────
+# Four panes: the ops workspace. Mirrors macOS `square.grid.2x2` exactly —
+# this one needed no interpretation, it is a literal 2x2 of rounded squares.
+grid | F | M 4.4 4.4 L 10.2 4.4 C 10.42 4.4 10.6 4.58 10.6 4.8 L 10.6 10.2 C 10.6 10.42 10.42 10.6 10.2 10.6 L 4.4 10.6 C 4.18 10.6 4 10.42 4 10.2 L 4 4.8 C 4 4.58 4.18 4.4 4.4 4.4 Z
+grid | F | M 13.8 4.4 L 19.6 4.4 C 19.82 4.4 20 4.58 20 4.8 L 20 10.2 C 20 10.42 19.82 10.6 19.6 10.6 L 13.8 10.6 C 13.58 10.6 13.4 10.42 13.4 10.2 L 13.4 4.8 C 13.4 4.58 13.58 4.4 13.8 4.4 Z
+grid | F | M 4.4 13.4 L 10.2 13.4 C 10.42 13.4 10.6 13.58 10.6 13.8 L 10.6 19.2 C 10.6 19.42 10.42 19.6 10.2 19.6 L 4.4 19.6 C 4.18 19.6 4 19.42 4 19.2 L 4 13.8 C 4 13.58 4.18 13.4 4.4 13.4 Z
+grid | F | M 13.8 13.4 L 19.6 13.4 C 19.82 13.4 20 13.58 20 13.8 L 20 19.2 C 20 19.42 19.82 19.6 19.6 19.6 L 13.8 19.6 C 13.58 19.6 13.4 19.42 13.4 19.2 L 13.4 13.8 C 13.4 13.58 13.58 13.4 13.8 13.4 Z
+
+# ── Start Stack ────────────────────────────────────────────────────────
+# Filled triangle, matching `play.fill`. Corners softened slightly so it
+# does not look sharper than the stop square sitting directly beneath it.
+play | F | M 7.6 4.9 C 7.6 4.3 8.25 3.94 8.76 4.25 L 19.3 11.35 C 19.77 11.65 19.77 12.35 19.3 12.65 L 8.76 19.75 C 8.25 20.06 7.6 19.7 7.6 19.1 Z
+
+# ── Stop Stack ─────────────────────────────────────────────────────────
+# Filled rounded square, matching `stop.fill`. This is the shape Segoe MDL2
+# has no clean glyph for — the reason Stop was a hand-drawn rectangle on
+# Windows while its neighbours were font glyphs, and why it sat visibly
+# heavier than them. Owning it settles that permanently.
+stop | F | M 6.6 5.4 L 17.4 5.4 C 18.06 5.4 18.6 5.94 18.6 6.6 L 18.6 17.4 C 18.6 18.06 18.06 18.6 17.4 18.6 L 6.6 18.6 C 5.94 18.6 5.4 18.06 5.4 17.4 L 5.4 6.6 C 5.4 5.94 5.94 5.4 6.6 5.4 Z
+
+# ── Restart Stack ──────────────────────────────────────────────────────
+# Circular arrow, matching `arrow.clockwise`. The ring is deliberately open
+# at the top-right so the arrowhead has somewhere to sit; a closed ring with
+# a head pasted on top reads as a smudge at 16px.
+refresh | S2 | M 20.2 12 C 20.2 16.53 16.53 20.2 12 20.2 C 7.47 20.2 3.8 16.53 3.8 12 C 3.8 7.47 7.47 3.8 12 3.8 C 15.1 3.8 17.8 5.52 19.2 8.06
+refresh | F | M 20.6 3.4 L 20.6 9.1 C 20.6 9.38 20.38 9.6 20.1 9.6 L 14.4 9.6 C 13.96 9.6 13.74 9.07 14.05 8.76 L 19.76 3.05 C 20.07 2.74 20.6 2.96 20.6 3.4 Z
+
+# ── Check for Updates ──────────────────────────────────────────────────
+# Down arrow in an open ring, matching `arrow.down.circle`.
+download | S2 | M 12 3.4 C 16.75 3.4 20.6 7.25 20.6 12 C 20.6 16.75 16.75 20.6 12 20.6 C 7.25 20.6 3.4 16.75 3.4 12 C 3.4 7.25 7.25 3.4 12 3.4 Z
+download | S2 | M 12 7.6 L 12 15.6
+download | S2 | M 8.4 12.2 L 12 15.8 L 15.6 12.2
+
+# ── Update available ───────────────────────────────────────────────────
+# Up arrow knocked out of a FILLED ring, matching `arrow.up.circle.fill`.
+# The K subpath paints in the menu background colour, so the arrow reads as
+# a hole rather than needing a second colour channel through the renderer.
+update | F | M 12 3.4 C 16.75 3.4 20.6 7.25 20.6 12 C 20.6 16.75 16.75 20.6 12 20.6 C 7.25 20.6 3.4 16.75 3.4 12 C 3.4 7.25 7.25 3.4 12 3.4 Z
+update | K | M 11 16.4 L 11 10.5 L 8.9 12.6 C 8.5 13 7.9 13 7.5 12.6 C 7.1 12.2 7.1 11.6 7.5 11.2 L 11.3 7.4 C 11.7 7 12.3 7 12.7 7.4 L 16.5 11.2 C 16.9 11.6 16.9 12.2 16.5 12.6 C 16.1 13 15.5 13 15.1 12.6 L 13 10.5 L 13 16.4 C 13 17 12.6 17.4 12 17.4 C 11.4 17.4 11 17 11 16.4 Z
+
+# ── Request a Feature ──────────────────────────────────────────────────
+# Lightbulb. macOS used a literal emoji here, which is the one place the two
+# platforms drifted in KIND rather than degree — an emoji is full-colour and
+# font-dependent, so it never matched the monochrome items around it on
+# either platform. Now it is a drawn mark like everything else.
+bulb | S2 | M 12 2.8 C 15.9 2.8 19 5.9 19 9.8 C 19 12.1 17.8 13.8 16.7 15.1 C 16 15.9 15.7 16.6 15.7 17.4 L 8.3 17.4 C 8.3 16.6 8 15.9 7.3 15.1 C 6.2 13.8 5 12.1 5 9.8 C 5 5.9 8.1 2.8 12 2.8 Z
+bulb | S2 | M 8.9 19.6 L 15.1 19.6
+bulb | S2 | M 10.2 21.6 L 13.8 21.6

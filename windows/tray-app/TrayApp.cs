@@ -5,7 +5,6 @@ using System;
 using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
-using System.Drawing.Text;
 using System.Collections.Generic;
 using System.IO;
 using System.Net.Http;
@@ -413,14 +412,14 @@ namespace FalconPulsar.Tray
             var openUi = new ToolStripMenuItem("Open FalconPulsar", null,
                 (s, e) => OpenWebUI());
             openUi.Font = new Font(openUi.Font, FontStyle.Bold);
-            openUi.Image = CreateGlyphIcon("\uE774", Color.FromArgb(70, 70, 70));  // Globe
+            openUi.Image = IconRenderer.Render("globe", Color.FromArgb(70, 70, 70));  // Globe
             menu.Items.Add(openUi);
 
             // Optional AI Engine UI — hidden unless FP_AI_ENGINE_ENABLED=true
             // in .env; visibility is re-evaluated on every poll in UpdateUI.
             _openEngineItem = new ToolStripMenuItem("Open AI Engine", null,
                 (s, e) => OpenAiEngine());
-            _openEngineItem.Image = CreateGlyphIcon("\uE99A", Color.FromArgb(70, 70, 70));  // Robot
+            _openEngineItem.Image = IconRenderer.Render("brain", Color.FromArgb(70, 70, 70));  // Robot
             _openEngineItem.Visible = false;
             menu.Items.Add(_openEngineItem);
 
@@ -428,29 +427,24 @@ namespace FalconPulsar.Tray
             // in .env; visibility is re-evaluated on every poll in UpdateUI.
             _openCopilotItem = new ToolStripMenuItem("Open Command Center", null,
                 (s, e) => OpenCopilot());
-            _openCopilotItem.Image = CreateGlyphIcon("\uE80F", Color.FromArgb(70, 70, 70));  // Home
+            _openCopilotItem.Image = IconRenderer.Render("grid", Color.FromArgb(70, 70, 70));  // Home
             _openCopilotItem.Visible = false;
             menu.Items.Add(_openCopilotItem);
 
             _startItem = new ToolStripMenuItem("Start Stack", null,
                 async (s, e) => await RunComposeCommand("up -d"));
-            _startItem.Image = CreateGlyphIcon("\uE768", Color.FromArgb(70, 70, 70));  // Play
+            _startItem.Image = IconRenderer.Render("play", Color.FromArgb(70, 70, 70));  // Play
             _stopItem = new ToolStripMenuItem("Stop Stack", null,
                 async (s, e) => await RunComposeCommand("down"));
-            // Deliberately still a DRAWN square, not a font glyph.
-            //
-            // Play (E768) and Refresh (E72C) either side of it come from
-            // Segoe MDL2 Assets, and matching them with E71A would be the
-            // tidy thing to do -- but the note on CreateSquareIcon below
-            // records that MDL2 has no clean filled square, and that finding
-            // was made on Windows, where this actually renders. A glyph that
-            // resolves to a blank box would cost Stop its icon entirely,
-            // which is worse than the inconsistency it would fix. Sized to
-            // sit on the same optical centre as its neighbours.
-            _stopItem.Image = CreateSquareIcon(Color.FromArgb(70, 70, 70));  // Stop (drawn square)
+            // Stop is a real shape in the shared set now. It used to be a
+            // hand-drawn rectangle because Segoe MDL2 has no clean filled
+            // square -- the reason it sat visibly heavier than the Play and
+            // Refresh glyphs either side of it. Owning the geometry settles
+            // that: all three come from the same file, at the same weight.
+            _stopItem.Image = IconRenderer.Render("stop", Color.FromArgb(70, 70, 70));  // Stop (drawn square)
             _restartItem = new ToolStripMenuItem("Restart Stack", null,
                 async (s, e) => await RunComposeCommand("restart"));
-            _restartItem.Image = CreateGlyphIcon("\uE72C", Color.FromArgb(70, 70, 70));  // Refresh
+            _restartItem.Image = IconRenderer.Render("refresh", Color.FromArgb(70, 70, 70));  // Refresh
             menu.Items.Add(_startItem);
             menu.Items.Add(_stopItem);
             menu.Items.Add(_restartItem);
@@ -463,7 +457,7 @@ namespace FalconPulsar.Tray
             // --apply` so the operator can watch progress.
             var checkUpdates = new ToolStripMenuItem("Check for Updates...", null,
                 async (s, e) => await CheckForUpdatesAsync());
-            checkUpdates.Image = CreateGlyphIcon("\uE896", Color.FromArgb(70, 70, 70));  // Download
+            checkUpdates.Image = IconRenderer.Render("download", Color.FromArgb(70, 70, 70));  // Download
             menu.Items.Add(checkUpdates);
 
             // Passive indicator row \u2014 hidden until an automatic background
@@ -476,7 +470,7 @@ namespace FalconPulsar.Tray
             // This was warm orange -- the same hue as the lightbulb further
             // down the menu, so on Windows an available update read as a
             // warning. An update being available is information, not a fault.
-            _updateAvailableItem.Image = CreateGlyphIcon("\uE74A", Color.FromArgb(0, 120, 212));  // Up arrow, Fluent blue
+            _updateAvailableItem.Image = IconRenderer.Render("update", Color.FromArgb(0, 120, 212));  // Up arrow, Fluent blue
             _updateAvailableItem.Visible = false;
             menu.Items.Add(_updateAvailableItem);
 
@@ -540,7 +534,7 @@ namespace FalconPulsar.Tray
             var requestFeature = new ToolStripMenuItem("Request a Feature...", null,
                 (s, e) => Process.Start(new ProcessStartInfo("https://falconpulsar.com/roadmap#request-form")
                 { UseShellExecute = true }));
-            requestFeature.Image = CreateGlyphIcon("\uEA80", Color.FromArgb(243, 140, 25));  // Lightbulb, warm orange
+            requestFeature.Image = IconRenderer.Render("bulb", Color.FromArgb(243, 140, 25));  // Lightbulb, warm orange
             menu.Items.Add(requestFeature);
 
             menu.Items.Add(new ToolStripMenuItem("Refresh Status", null,
@@ -2406,42 +2400,6 @@ namespace FalconPulsar.Tray
                 MessageBox.Show(ex.Message, "Configuration backup error",
                                 MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
-        }
-
-        // Draws a filled square icon — used for Stop because Segoe MDL2 Assets
-        // doesn't ship a clean filled-square glyph.
-        private static Image CreateSquareIcon(Color color)
-        {
-            var bmp = new Bitmap(16, 16);
-            using (var g = Graphics.FromImage(bmp))
-            using (var brush = new SolidBrush(color))
-            {
-                g.Clear(Color.Transparent);
-                g.SmoothingMode = SmoothingMode.AntiAlias;
-                g.FillRectangle(brush, new Rectangle(4, 4, 8, 8));
-            }
-            return bmp;
-        }
-
-        // Renders a Segoe MDL2 Assets glyph into a 16x16 bitmap so it can be
-        // used as a ToolStripMenuItem.Image. Segoe MDL2 Assets ships with
-        // Windows 10+, so no font shipping is required.
-        private static Image CreateGlyphIcon(string glyph, Color color)
-        {
-            var bmp = new Bitmap(16, 16);
-            using (var g = Graphics.FromImage(bmp))
-            using (var font = new Font("Segoe MDL2 Assets", 11f, FontStyle.Regular, GraphicsUnit.Pixel))
-            using (var brush = new SolidBrush(color))
-            {
-                g.Clear(Color.Transparent);
-                g.SmoothingMode = SmoothingMode.AntiAlias;
-                g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
-                var sz = g.MeasureString(glyph, font);
-                var x = (16 - sz.Width) / 2f;
-                var y = (16 - sz.Height) / 2f;
-                g.DrawString(glyph, font, brush, x, y);
-            }
-            return bmp;
         }
 
         public void Dispose()
