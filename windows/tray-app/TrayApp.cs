@@ -25,9 +25,55 @@ namespace FalconPulsar.Tray
         Error
     }
 
+    /// <summary>
+    /// Listens for the shell's "TaskbarCreated" broadcast so the tray icon can be re-added
+    /// after Explorer restarts.
+    ///
+    /// Explorer.exe is restarted more often than people expect — it crashes, a Windows Update
+    /// replaces it, or the user restarts it from Task Manager. Each time, the notification area
+    /// is destroyed along with every icon in it, and Windows broadcasts this registered message
+    /// so applications can put theirs back. WinForms' NotifyIcon does not listen for it, so the
+    /// icon simply vanished until QuickDock was relaunched — the process was still running fine,
+    /// it just had no way back onto the taskbar.
+    ///
+    /// The window MUST be top-level. A message-only window (HWND_MESSAGE parent) is excluded
+    /// from broadcast messages by design and would never receive this one.
+    /// </summary>
+    internal sealed class TaskbarCreatedWatcher : NativeWindow, IDisposable
+    {
+        [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
+        private static extern uint RegisterWindowMessage(string lpString);
+
+        private static readonly uint WM_TASKBARCREATED = RegisterWindowMessage("TaskbarCreated");
+        private readonly Action _onTaskbarCreated;
+
+        public TaskbarCreatedWatcher(Action onTaskbarCreated)
+        {
+            _onTaskbarCreated = onTaskbarCreated;
+            CreateHandle(new CreateParams());
+        }
+
+        protected override void WndProc(ref Message m)
+        {
+            if (WM_TASKBARCREATED != 0 && (uint)m.Msg == WM_TASKBARCREATED)
+            {
+                // Never let a failure here tear down the message loop: losing the icon is bad,
+                // taking the whole tray app down with it is worse.
+                try { _onTaskbarCreated(); } catch { }
+            }
+            base.WndProc(ref m);
+        }
+
+        public void Dispose()
+        {
+            if (Handle != IntPtr.Zero) DestroyHandle();
+        }
+    }
+
     public class TrayApp : IDisposable
     {
         private readonly NotifyIcon _trayIcon;
+        private readonly TaskbarCreatedWatcher _taskbarWatcher;
         private readonly System.Windows.Forms.Timer _pollTimer;
         private readonly HttpClient _http;
         private readonly string _distro;
@@ -107,6 +153,17 @@ namespace FalconPulsar.Tray
                 ContextMenuStrip = BuildMenu()
             };
             _trayIcon.DoubleClick += (s, e) => OpenWebUI();
+
+            _taskbarWatcher = new TaskbarCreatedWatcher(() =>
+            {
+                // Re-add by toggling. Setting Visible = true on its own is a no-op, because as
+                // far as this object is concerned it is already visible — the icon it believes
+                // it owns was destroyed underneath it when the old tray went away. The toggle
+                // makes NotifyIcon issue NIM_DELETE followed by NIM_ADD, which is what actually
+                // registers us with the newly created notification area.
+                _trayIcon.Visible = false;
+                _trayIcon.Visible = true;
+            });
 
             _pollTimer = new System.Windows.Forms.Timer { Interval = 15000 };
             _pollTimer.Tick += async (s, e) => await PollHealth();
@@ -2521,6 +2578,7 @@ namespace FalconPulsar.Tray
             _pollTimer?.Dispose();
             _updateInitialTimer?.Dispose();
             _updateDailyTimer?.Dispose();
+            _taskbarWatcher?.Dispose();
             _trayIcon?.Dispose();
             _http?.Dispose();
         }
