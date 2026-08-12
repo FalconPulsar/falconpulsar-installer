@@ -689,9 +689,23 @@ check_dockerhub_login() {
 install_docker_linux() {
     require_cmd curl
     log_step "installing Docker Engine via get.docker.com (will use sudo)"
-    curl -fsSL https://get.docker.com -o /tmp/get-docker.sh
-    sh /tmp/get-docker.sh
-    rm -f /tmp/get-docker.sh
+    # Download into a private 0700 directory, never a fixed name in /tmp.
+    #
+    # This runs as root (linux/install.sh refuses to start otherwise). With a predictable
+    # path, any local unprivileged user can pre-create /tmp/get-docker.sh as a file they
+    # own; `curl -o` opens it O_TRUNC without O_EXCL and does not take ownership, so root
+    # writes into THEIR inode — and they can rewrite it before, or while, root executes it.
+    # The sticky bit does not help: it prevents unlinking another user's file, not writing
+    # to your own. mktemp -d gives a root-owned directory no one else can enter, which is
+    # the pattern already used in common.sh and linux/install.sh.
+    _fp_dockertmp="$(mktemp -d)" || { log_error "could not create a temp directory"; return 1; }
+    curl -fsSL https://get.docker.com -o "$_fp_dockertmp/get-docker.sh" || {
+        rm -rf "$_fp_dockertmp"; log_error "could not download the Docker install script"; return 1
+    }
+    sh "$_fp_dockertmp/get-docker.sh"
+    _fp_rc=$?
+    rm -rf "$_fp_dockertmp"
+    [ "$_fp_rc" -eq 0 ] || { log_error "the Docker install script failed (exit $_fp_rc)"; return "$_fp_rc"; }
     log_success "Docker Engine installed"
 }
 

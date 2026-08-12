@@ -381,6 +381,27 @@ func Restore(ctx context.Context, e Env, archive string, opts RestoreOptions) ([
 		}
 	}
 
+	// contained joins root and rest, and refuses anything that escapes root.
+	//
+	// Entry names come verbatim from the archive, and an archive is not necessarily one we
+	// produced — a support bundle, a shared team backup, a file off a NAS. filepath.Join
+	// CLEANS the result, so "core/../../../.ssh/authorized_keys" silently resolves to a path
+	// outside the data directory rather than being rejected. That mattered more than usual
+	// here because setAside RENAMES whatever already exists at the destination before the
+	// archive content is written, so a traversal displaces the victim's file as well as
+	// planting ours.
+	contained := func(root, rest string) (string, bool) {
+		if rest == "" || filepath.IsAbs(rest) || strings.HasPrefix(rest, "/") {
+			return "", false
+		}
+		p := filepath.Join(root, rest)
+		// Compare against root + separator so "/data/core-evil" cannot pass as inside "/data/core".
+		if p != root && !strings.HasPrefix(p, root+string(os.PathSeparator)) {
+			return "", false
+		}
+		return p, true
+	}
+
 	dest := func(arcPath string) (string, bool) {
 		service, rest, ok := strings.Cut(arcPath, "/")
 		if !ok || !want[service] {
@@ -388,15 +409,15 @@ func Restore(ctx context.Context, e Env, archive string, opts RestoreOptions) ([
 		}
 		switch service {
 		case "gateway":
-			return filepath.Join(e.GatewayDir, rest), true
+			return contained(e.GatewayDir, rest)
 		case "engine":
-			return filepath.Join(e.EngineDir, rest), true
+			return contained(e.EngineDir, rest)
 		case "copilot":
-			return filepath.Join(e.CopilotDir, rest), true
+			return contained(e.CopilotDir, rest)
 		case "core":
-			return filepath.Join(e.CoreDir, rest), true
+			return contained(e.CoreDir, rest)
 		case "config":
-			return filepath.Join(e.Home, rest), true
+			return contained(e.Home, rest)
 		}
 		return "", false
 	}
