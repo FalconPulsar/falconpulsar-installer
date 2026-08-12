@@ -372,6 +372,48 @@ port_holder() {
     fi
 }
 
+# fp_port_held_by_our_stack <port>
+#
+# True when the listener on <port> is one of OUR OWN running containers.
+#
+# WHY THIS EXISTS
+#
+# An upgrade deliberately leaves the stack running: fp_apply_existing_action's
+# `upgrade` branch keeps containers up (only `reinstall` and `fresh` run
+# `compose down`), because the upgrade fast-path is pull + restart. The
+# phantom sweep then correctly skips those containers -- they are ours, at the
+# target home, not orphans.
+#
+# So by the time the port check runs, OUR containers are holding 7433/7434/
+# 7435, and the check called that a conflict and died. On Windows, which always
+# passes --yes, FP_ASSUME_YES=1 made it fatal with no way through:
+#
+#     [ok] no orphaned FalconPulsar containers found
+#     [error] Port conflict(s) detected ... FP_REST_PORT = 7433
+#     [error] (could not identify the process holding the port)
+#     [error] Cannot prompt for remap in non-interactive mode
+#
+# "could not identify the process" is the tell: the listener lives in Docker's
+# network namespace, so lsof/ss on the host see a bound port with no process
+# behind it. Every upgrade over a running stack hit this.
+#
+# A port held by a container `docker compose up -d` is about to recreate is
+# not a conflict -- compose replaces its own containers. Only a FOREIGN
+# listener is worth stopping the install for.
+fp_port_held_by_our_stack() {
+    local port="$1"
+    [ -n "$port" ] || return 1
+    # Functional check: a WSL docker shim passes `command -v` and fails on use.
+    docker info >/dev/null 2>&1 || return 1
+    # `docker ps` prints published ports as "0.0.0.0:7433->7433/tcp", several
+    # comma-separated per container. Match the HOST side only -- the container
+    # side is not what we are competing for.
+    docker ps --filter 'name=falconpulsar-' --format '{{.Ports}}' 2>/dev/null \
+        | tr ',' '\n' \
+        | sed 's/^[[:space:]]*//' \
+        | grep -qE "^(0\.0\.0\.0|127\.0\.0\.1|\[::\]|::|[0-9.]+):${port}->"
+}
+
 # check_ports [port...]  (defaults to FP_DEFAULT_PORTS)
 check_ports() {
     local ports="${*:-$FP_DEFAULT_PORTS}"
@@ -436,14 +478,25 @@ fp_check_ports_interactive() {
         local -a conflict_vars=()
         local -a conflict_ports=()
         local v port
+        local -a ours=()
         for v in "${port_vars[@]}"; do
             eval "port=\${$v:-}"
             [ -z "$port" ] && continue
             if port_in_use "$port"; then
+                # Ours is not a conflict: `compose up -d` recreates its own
+                # containers in place. Only a foreign listener blocks us.
+                if fp_port_held_by_our_stack "$port"; then
+                    ours+=("${v}=${port}")
+                    continue
+                fi
                 conflict_vars+=("$v")
                 conflict_ports+=("$port")
             fi
         done
+
+        if [ "${#ours[@]}" -gt 0 ]; then
+            log_info "in use by this stack's own containers (will be recreated): ${ours[*]}"
+        fi
 
         if [ "${#conflict_vars[@]}" -eq 0 ]; then
             local summary=""

@@ -739,19 +739,80 @@ if [ -f "${FP_HOME}/gateway.yaml" ]; then
     sed -i 's/\r$//' "${FP_HOME}/gateway.yaml" 2>/dev/null || true
 fi
 
+# ── Repair anything Docker auto-created as a bind-mount source ──────────────
+#
+# When `docker compose up` runs and a bind-mount SOURCE does not exist, Docker
+# creates it — always as a ROOT-OWNED DIRECTORY, regardless of what the
+# destination is. That single behaviour caused both of these:
+#
+#   ai-engine crash-looping on
+#       Error: EACCES: permission denied, mkdir '/data/db'
+#     because ${FP_ENGINE_DATA_DIR} was made root:root and the container runs
+#     as ${FP_UID}:${FP_GID}.
+#
+#   every container failing to start with
+#       dst=/config/auth-policy.json ... not a directory: Are you trying to
+#       mount a directory onto a file (or vice-versa)?
+#     because auth-policy.json is mounted AS A FILE (compose.yml:372) but did
+#     not exist, so Docker made a DIRECTORY of that name.
+#
+# It only takes one `compose up` before the install reaches this point — a
+# tray Start Stack, an `fp update --apply`, or an install that died earlier
+# (this one died at the port check, ~230 lines above). And it is
+# self-perpetuating: once the directory exists, every later mount fails the
+# same way, and `install -d` is happy because a directory is what it wanted.
+#
+# So repair explicitly rather than assuming a clean slate.
+fp_repair_bind_source_dir() {
+    local path="$1" label="$2"
+    if [ -e "$path" ] && [ ! -d "$path" ]; then
+        log_warn "${label}: ${path} exists but is not a directory — replacing it"
+        rm -f "$path"
+    fi
+    install -d -m 0750 -o "$FP_USER" -g "$FP_USER" "$path"
+    # Re-assert ownership even when it already existed: Docker's version is
+    # root:root, and `install -d` on an existing directory does NOT chown it.
+    chown "$FP_USER":"$FP_USER" "$path" 2>/dev/null || true
+}
+
 # Data dirs — same pattern for every module:
 #   install -d -m 0750 -o $FP_USER  under $FP_HOME
 #   absolute path written to .env
 #   compose bind-mounts that path → /data (or /app/data for gateway)
-install -d -m 0750 -o "$FP_USER" -g "$FP_USER" "$FP_DATA_DIR"
-install -d -m 0750 -o "$FP_USER" -g "$FP_USER" "$FP_GATEWAY_DATA_DIR"
-# Optional modules: only create when enabled (same as historical engine path).
-[ "$FP_AI_ENGINE_ENABLED" = "true" ] && install -d -m 0750 -o "$FP_USER" -g "$FP_USER" "$FP_ENGINE_DATA_DIR"
+fp_repair_bind_source_dir "$FP_DATA_DIR"         "core data"
+fp_repair_bind_source_dir "$FP_GATEWAY_DATA_DIR" "gateway data"
+# The AI Engine is a standard service now, but keep the flag test so a stack
+# that genuinely disabled it does not get a stray directory.
+#
+# `if` rather than the `[ test ] && cmd` this replaced: under `set -e` an
+# AND-list whose test fails returns non-zero as a whole statement and aborts
+# the install. Harmless today because the engine flag is forced true upstream,
+# but it is a landmine for whoever makes it optional again.
+if [ "$FP_AI_ENGINE_ENABLED" = "true" ]; then
+    fp_repair_bind_source_dir "$FP_ENGINE_DATA_DIR" "AI Engine data"
+fi
 FP_COPILOT_DATA_DIR="${FP_COPILOT_DATA_DIR:-${FP_HOME}/copilot-data}"
 if [ "${FP_COPILOT_ENABLED:-false}" = "true" ]; then
-  install -d -m 0750 -o "$FP_USER" -g "$FP_USER" "$FP_COPILOT_DATA_DIR"
+  fp_repair_bind_source_dir "$FP_COPILOT_DATA_DIR" "Command Center data"
   log_info "Command Center data dir: ${FP_COPILOT_DATA_DIR}"
 fi
+
+# The FILE bind mounts get the mirror-image treatment. compose.yml mounts
+# three config files by path (nginx.conf:153, gateway.yaml:184,
+# auth-policy.json:372); for any of them that Docker turned into a directory,
+# the directory has to go before the file can be written. Only a DIRECTORY is
+# removed — an operator's hand-edited gateway.yaml is a file and is left
+# exactly alone.
+for _fp_cfg in "${FP_HOME}/nginx.conf" \
+               "${FP_GATEWAY_CONFIG:-${FP_HOME}/gateway.yaml}" \
+               "${FP_HOME}/auth-policy.json"; do
+    if [ -d "$_fp_cfg" ]; then
+        log_warn "$(basename "$_fp_cfg") exists as a DIRECTORY (Docker created it for a missing bind mount) — removing"
+        rm -rf "$_fp_cfg"
+    fi
+done
+unset _fp_cfg
+
 # Stack-level config files live in FP_HOME (like gateway.yaml), not inside module data.
 fp_write_auth_policy "${FP_HOME}/auth-policy.json"
 
