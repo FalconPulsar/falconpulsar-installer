@@ -377,6 +377,47 @@ fp_rotate_log() {
     chmod 0600 "$path" 2>/dev/null || true
 }
 
+# fp_docker <args...>
+#
+# Run docker wherever it can actually reach the daemon, and REMEMBER which.
+#
+# Root is not guaranteed to have docker access. On WSL with Docker Desktop
+# integration the socket is granted to the human/service user, not to root --
+# and the installer body runs as root while every real docker command goes
+# through `run_as_user "$FP_USER" docker ...`.
+#
+# The checks did not. They called bare `docker info`, got a failure, and
+# returned "nothing here":
+#
+#   fp_detect_phantom_containers  -> "no orphaned FalconPulsar containers"
+#                                    while containers were plainly running
+#   fp_port_held_by_our_stack     -> our own Core's ports looked FOREIGN,
+#                                    so the port check aborted the upgrade
+#
+# Both failures are silent and both say the reassuring thing, which is how an
+# upgrade could report "no orphans" and "port conflict" about the same
+# containers in the same run.
+#
+# Returns non-zero when no context can reach docker, so callers keep their
+# existing "docker unavailable" behaviour.
+_FP_DOCKER_MODE=""
+fp_docker() {
+    if [ -z "${_FP_DOCKER_MODE:-}" ]; then
+        if docker info >/dev/null 2>&1; then
+            _FP_DOCKER_MODE="direct"
+        elif [ -n "${FP_USER:-}" ] && run_as_user "$FP_USER" docker info >/dev/null 2>&1; then
+            _FP_DOCKER_MODE="user"
+        else
+            _FP_DOCKER_MODE="none"
+        fi
+    fi
+    case "$_FP_DOCKER_MODE" in
+        direct) docker "$@" ;;
+        user)   run_as_user "$FP_USER" docker "$@" ;;
+        *)      return 1 ;;
+    esac
+}
+
 # fp_repair_bind_sources <home>
 #
 # Undo what Docker does to MISSING bind-mount sources, before anything mounts
@@ -446,4 +487,36 @@ fp_repair_bind_sources() {
             rm -rf "$f" 2>/dev/null || true
         fi
     done
+
+    # auth-policy.json must EXIST, not merely "not be a directory".
+    #
+    # Removing the directory was not enough and the log proved it: the repair
+    # ran, found nothing to remove (the file was simply ABSENT), and the very
+    # next `compose up` had Docker invent the directory again. Same mount
+    # error, same failed upgrade.
+    #
+    # The reason it is absent is structural. The upgrade fast-path REFRESHES
+    # compose.yml — and the current compose.yml mounts auth-policy.json — but
+    # nothing on that path ever wrote the file. fp_write_auth_policy lives in
+    # the full installer, hundreds of lines after the fast-path exits. So any
+    # stack created before auth-policy.json existed could never upgrade: it
+    # got a compose.yml demanding a file its own installer never made.
+    #
+    # Carry the recorded auth settings forward from the stack's .env so an
+    # SSO-configured install is not silently reset to local-only.
+    if [ ! -f "${home}/auth-policy.json" ] \
+       && command -v fp_write_auth_policy >/dev/null 2>&1; then
+        local _m _p
+        if [ -f "${home}/.env" ]; then
+            _m="$(sed -n 's/^FP_AUTH_MODE=//p' "${home}/.env" | tail -n1 | tr -d '\r')"
+            _p="$(sed -n 's/^FP_SSO_PROVIDER=//p' "${home}/.env" | tail -n1 | tr -d '\r')"
+            # Exported, not just assigned: fp_write_auth_policy reads them
+            # from the environment, and it lives in prompts.sh — shellcheck
+            # cannot see across files, so a bare assignment reads as dead.
+            if [ -n "${_m:-}" ]; then export FP_AUTH_MODE="$_m"; fi
+            if [ -n "${_p:-}" ]; then export FP_SSO_PROVIDER="$_p"; fi
+        fi
+        log_warn "auth-policy.json is missing — writing it (compose mounts it as a file; Docker would create a directory)"
+        fp_write_auth_policy "${home}/auth-policy.json"
+    fi
 }

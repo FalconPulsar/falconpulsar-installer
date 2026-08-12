@@ -103,7 +103,10 @@ fp_detect_phantom_containers() {
     FP_PHANTOM_CONTAINERS=()
     # Functional check (see fp_detect_existing_install): a WSL docker shim
     # passes `command -v` but fails on use, and phantom detection runs docker.
-    docker info >/dev/null 2>&1 || return 1
+    # fp_docker: root may not reach the daemon (see common.sh). A bare
+    # `docker info` here reported "no orphaned containers" on a machine
+    # that had them.
+    fp_docker info >/dev/null 2>&1 || return 1
 
     local target_home="$1"
     local name project workdir reserved is_reserved
@@ -133,7 +136,7 @@ fp_detect_phantom_containers() {
             FP_PHANTOM_CONTAINERS+=("${name}|name conflict — not created by this installer${project:+ (compose project: ${project})}")
         fi
     done < <(
-        docker ps -a \
+        fp_docker ps -a \
             --filter "name=falconpulsar-" \
             --format '{{.Names}}'$'\t''{{.Label "com.docker.compose.project"}}'$'\t''{{.Label "com.docker.compose.project.working_dir"}}' \
             2>/dev/null

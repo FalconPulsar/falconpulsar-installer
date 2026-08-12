@@ -403,12 +403,16 @@ port_holder() {
 fp_port_held_by_our_stack() {
     local port="$1"
     [ -n "$port" ] || return 1
-    # Functional check: a WSL docker shim passes `command -v` and fails on use.
-    docker info >/dev/null 2>&1 || return 1
+    # fp_docker, NOT bare docker: the installer body runs as root, and root
+    # is not guaranteed to reach the daemon (WSL + Docker Desktop grants the
+    # socket to the service user). A bare `docker info` failed here, this
+    # returned "not ours", and our own Core's ports were reported as a foreign
+    # conflict that aborted the upgrade.
+    #
     # `docker ps` prints published ports as "0.0.0.0:7433->7433/tcp", several
     # comma-separated per container. Match the HOST side only -- the container
     # side is not what we are competing for.
-    docker ps --filter 'name=falconpulsar-' --format '{{.Ports}}' 2>/dev/null \
+    fp_docker ps --filter 'name=falconpulsar-' --format '{{.Ports}}' 2>/dev/null \
         | tr ',' '\n' \
         | sed 's/^[[:space:]]*//' \
         | grep -qE "^(0\.0\.0\.0|127\.0\.0\.1|\[::\]|::|[0-9.]+):${port}->"
