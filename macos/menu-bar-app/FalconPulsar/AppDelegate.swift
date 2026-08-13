@@ -1379,8 +1379,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             try ConfigBackup.export(to: url.path, creds: authed)
 
             let ok = NSAlert()
-            ok.messageText = "Export complete"
-            ok.informativeText = "Saved to \(url.path)\n\nKeep this file private — it contains your configuration, encrypted with your admin credentials."
+            let problems = ConfigBackup.lastExportProblems
+            if problems.isEmpty {
+                ok.messageText = "Export complete"
+                ok.informativeText = "Saved to \(url.path)\n\nKeep this file private — it contains your configuration, encrypted with your admin credentials."
+            } else {
+                // The file is still written — a partial backup beats none — but
+                // it must never be presented as a finished one. A backup missing
+                // whole sections restores without complaint and leaves those
+                // parts of the plant empty.
+                ok.messageText = "Export INCOMPLETE — \(problems.count) item(s) missing"
+                ok.informativeText = "Saved to \(url.path), but these could NOT be captured:\n\n"
+                    + problems.map { "• \($0)" }.joined(separator: "\n")
+                    + "\n\nRestoring this file will not bring the listed items back. Check that the stack is running (Start Stack), then export again."
+                ok.alertStyle = .warning
+            }
             ok.addButton(withTitle: "Reveal in Finder")
             ok.addButton(withTitle: "Done")
             if ok.runModal() == .alertFirstButtonReturn {

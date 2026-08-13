@@ -152,6 +152,33 @@ func (c *Client) CreateGatewayToken(ctx context.Context) (string, error) {
 	return resp.Token, nil
 }
 
+// PatchJSON partially updates an existing resource. Config restore needs it: a
+// datasource is created first from the (secret-masked) public export, then its
+// real credentials are written over the top from the admin bundle.
+//
+// PATCH, not PUT — Core routes PUT /api/v1/datasources/<id> only to the
+// mqtt/subscriptions subpath and answers anything else with
+// "Unknown datasource PUT action". The config update lives on
+// handle_api_datasource_patch.
+func (c *Client) PatchJSON(ctx context.Context, path string, body any) ([]byte, error) {
+	raw, _ := json.Marshal(body)
+	req, _ := http.NewRequestWithContext(ctx, "PATCH", c.BaseURL+path, bytes.NewReader(raw))
+	req.Header.Set("Content-Type", "application/json")
+	if c.Token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.Token)
+	}
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode >= 400 {
+		return data, fmt.Errorf("PATCH %s: HTTP %d", path, resp.StatusCode)
+	}
+	return data, nil
+}
+
 // PostJSON performs an authenticated POST with the given body.
 func (c *Client) PostJSON(ctx context.Context, path string, body any) ([]byte, error) {
 	raw, _ := json.Marshal(body)

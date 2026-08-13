@@ -222,6 +222,13 @@ enum ConfigBackup {
     /// import; read by the caller to warn instead of reporting a silent success.
     static var lastImportErrorCount = 0
 
+    /// What the last export could NOT capture, one line per missing section or
+    /// store. Reset at the start of each export; read by the caller to warn
+    /// instead of reporting a clean success. A backup that is silently missing
+    /// every datasource restores without complaint and produces an empty plant,
+    /// so an incomplete file must never be presented as a finished one.
+    static var lastExportProblems: [String] = []
+
     /// Fire a request and return the HTTP status (0 on transport failure).
     /// Used by import to detect a rejected item without the throw/try? dance —
     /// previously every failure was swallowed by `_ = try? syncRequest(req)`.
@@ -351,13 +358,207 @@ enum ConfigBackup {
         }
     }
 
+    // MARK: - AI configuration stores
+
+    /// The stack's data directories, resolved from .env with the same defaults
+    /// compose.yml uses. FP_*_DATA_DIR are supported relocations, so reading a
+    /// hardcoded ~/falconpulsar/ai-gateway-data finds nothing at all on a
+    /// relocated install.
+    struct StackDirs {
+        let gateway: String
+        let engine: String
+        let copilot: String
+    }
+
+    static func stackDirs() -> StackDirs {
+        let coreDir = envValue("FP_DATA_DIR") ?? "\(homeDir)/data"
+        let base = (coreDir as NSString).deletingLastPathComponent
+        return StackDirs(
+            gateway: envValue("FP_GATEWAY_DATA_DIR") ?? "\(base)/ai-gateway-data",
+            engine:  envValue("FP_ENGINE_DATA_DIR")  ?? "\(base)/ai-engine-data",
+            copilot: envValue("FP_COPILOT_DATA_DIR") ?? "\(base)/copilot-data")
+    }
+
+    /// How SQLite is driven inside the owning container: the gateway image
+    /// carries python, the two node services carry node's built-in sqlite.
+    enum StoreRuntime {
+        case python
+        case node
+    }
+
+    /// One SQLite file holding CONFIGURATION rather than history — the things
+    /// an operator expects to survive a rebuild. Deliberately narrower than a
+    /// data backup: conversations, user memory, replay and outbox are history.
+    struct ConfigStore {
+        let container: String     // docker container that owns the writes
+        let hostDir: String       // host directory the container's data volume maps to
+        let containerDir: String  // where that volume lands inside the container
+        let rel: String           // path of the db relative to both
+        let runtime: StoreRuntime
+    }
+
+    static func configStores(_ dirs: StackDirs) -> [ConfigStore] {
+        return [
+            // providers, models, API keys, gateway settings
+            ConfigStore(container: "falconpulsar-ai-gateway", hostDir: dirs.gateway,
+                        containerDir: "/app/data", rel: "ai_config.db", runtime: .python),
+            // semantic registry + terminology packs — declared by hand, expensive to lose
+            ConfigStore(container: "falconpulsar-ai-gateway", hostDir: dirs.gateway,
+                        containerDir: "/app/data", rel: "ssr.db", runtime: .python),
+            // user-authored knowledge documents
+            ConfigStore(container: "falconpulsar-ai-gateway", hostDir: dirs.gateway,
+                        containerDir: "/app/data", rel: "knowledge.db", runtime: .python),
+            // agents, specs, reports, notification channels, schedules
+            ConfigStore(container: "falconpulsar-ai-engine", hostDir: dirs.engine,
+                        containerDir: "/data", rel: "db/fp-agentics.db", runtime: .node),
+            ConfigStore(container: "falconpulsar-copilot", hostDir: dirs.copilot,
+                        containerDir: "/data", rel: "command-center.db", runtime: .node),
+        ]
+    }
+
+    /// Archive entry for a store: "files/" + its path relative to the data
+    /// directory with "/" replaced by "_", so db/fp-agentics.db lands as
+    /// files/db_fp-agentics.db. Shared with the Go and Windows implementations
+    /// — an archive written by one must import in the others.
+    static func storeEntryName(_ rel: String) -> String {
+        return "files/" + rel.replacingOccurrences(of: "/", with: "_")
+    }
+
+    /// Outcome of one store snapshot. `absent` means the store is not part of
+    /// this install, which is not a problem; `failed` means it exists and could
+    /// not be captured, which is a hole in the backup.
+    enum SnapshotResult {
+        case captured(Data)
+        case absent
+        case failed(String)
+    }
+
+    /// Returns a consistent copy of one store's bytes.
+    ///
+    /// This must go through VACUUM INTO inside the owning container, never a
+    /// host-side file read: every one of these databases is opened WAL, so
+    /// recent commits can live entirely in the -wal sidecar. Reading the main
+    /// file alone yields a database that is missing them — or, mid-checkpoint,
+    /// one that is internally inconsistent.
+    static func snapshotConfigStore(_ store: ConfigStore) -> SnapshotResult {
+        let fm = FileManager.default
+        guard !store.hostDir.isEmpty,
+              fm.fileExists(atPath: "\(store.hostDir)/\(store.rel)") else {
+            return .absent
+        }
+        guard containerRunning(store.container) else {
+            return .failed(
+                "\(store.container) is not running, so it cannot be snapshotted consistently")
+        }
+
+        // VACUUM INTO refuses to overwrite, so the destination must not exist.
+        // Write beside the source (inside the volume) and read it back out.
+        let tmpRel = "\(store.rel).fpconfig-snapshot"
+        let tmpHost = "\(store.hostDir)/\(tmpRel)"
+        try? fm.removeItem(atPath: tmpHost)
+        defer { try? fm.removeItem(atPath: tmpHost) }
+
+        let run = docker(["exec", store.container] + vacuumArgv(store, src: store.rel, dst: tmpRel))
+        guard run.status == 0 else {
+            return .failed(run.output.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: tmpHost)) else {
+            return .failed("the snapshot could not be read back from \(store.hostDir)")
+        }
+        return .captured(data)
+    }
+
+    /// The in-container command that snapshots `src` into `dst`, both relative
+    /// to the store's data directory.
+    private static func vacuumArgv(_ store: ConfigStore, src: String, dst: String) -> [String] {
+        let source = quoteLiteral("\(store.containerDir)/\(src)")
+        let target = quoteSQL("\(store.containerDir)/\(dst)")
+        switch store.runtime {
+        case .python:
+            return ["python", "-c",
+                    "import sqlite3; sqlite3.connect(\(source)).execute(\"VACUUM INTO \(target)\")"]
+        case .node:
+            return ["node", "-e",
+                    "const {DatabaseSync}=require('node:sqlite'); new DatabaseSync(\(source)).exec(\"VACUUM INTO \(target)\")"]
+        }
+    }
+
+    /// Renders a path as a double-quoted string literal for the python / node
+    /// one-liners.
+    private static func quoteLiteral(_ p: String) -> String {
+        let escaped = p.replacingOccurrences(of: "\\", with: "\\\\")
+                       .replacingOccurrences(of: "\"", with: "\\\"")
+        return "\"\(escaped)\""
+    }
+
+    /// Renders a path as a single-quoted SQL string literal.
+    private static func quoteSQL(_ p: String) -> String {
+        return "'" + p.replacingOccurrences(of: "'", with: "''") + "'"
+    }
+
+    private static func containerRunning(_ container: String) -> Bool {
+        let run = docker(["inspect", "-f", "{{.State.Running}}", container])
+        return run.status == 0
+            && run.output.trimmingCharacters(in: .whitespacesAndNewlines) == "true"
+    }
+
+    /// Runs `docker <args>` in argv form — no shell in the middle, so container
+    /// names and paths pass through verbatim — and returns its status plus
+    /// combined stdout+stderr.
+    private static func docker(_ args: [String]) -> (status: Int32, output: String) {
+        // Same resolution order as AppDelegate.dockerPath() and the Go side; a
+        // menu-bar app inherits launchd's PATH, which has none of these on it.
+        var launchPath = "/usr/bin/env"
+        var argv = ["docker"] + args
+        for candidate in ["/usr/local/bin/docker",
+                          "/opt/homebrew/bin/docker",
+                          "/Applications/Docker.app/Contents/Resources/bin/docker",
+                          "/usr/bin/docker"]
+            where FileManager.default.isExecutableFile(atPath: candidate) {
+            launchPath = candidate
+            argv = args
+            break
+        }
+
+        let task = Process()
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        task.standardError = pipe
+        task.executableURL = URL(fileURLWithPath: launchPath)
+        task.arguments = argv
+        var env = ProcessInfo.processInfo.environment
+        env["PATH"] = "/Applications/Docker.app/Contents/Resources/bin:/usr/local/bin:/opt/homebrew/bin:"
+            + (env["PATH"] ?? "/usr/bin:/bin")
+        task.environment = env
+        do {
+            try task.run()
+        } catch {
+            return (-1, "could not run docker: \(error.localizedDescription)")
+        }
+        // Drain before waiting, or a child that fills the pipe buffer deadlocks.
+        let out = pipe.fileHandleForReading.readDataToEndOfFile()
+        task.waitUntilExit()
+        return (task.terminationStatus, String(data: out, encoding: .utf8) ?? "")
+    }
+
     // MARK: - Export
 
     static func export(to outputPath: String, creds: AdminCredentials) throws {
+        lastExportProblems = []
         let fm = FileManager.default
         let workDir = NSTemporaryDirectory() + "fpconfig-\(UUID().uuidString)"
         try fm.createDirectory(atPath: workDir, withIntermediateDirectories: true)
         defer { try? fm.removeItem(atPath: workDir) }
+
+        // What went wrong, and what was actually captured. The manifest used to
+        // be written from the list of things the export INTENDED to collect,
+        // and a section that failed to harvest was replaced by an empty stub —
+        // which made a backup silently holding no datasources indistinguishable
+        // from one taken on a stack that has none. These accumulate and the
+        // manifest is written last.
+        var problems: [String] = []
+        var capturedSections: [String] = []
+        var capturedStores: [String] = []
 
         // Files
         let filesDir = "\(workDir)/files"
@@ -368,13 +569,32 @@ enum ConfigBackup {
                 try fm.copyItem(atPath: src, toPath: "\(filesDir)/\(name)")
             }
         }
-        // AI Gateway configuration (providers + models + their encrypted API
-        // keys) lives in the gateway's ai_config.db under ai-gateway-data, NOT
-        // the Core DB. Ship it so AI config restores ready-to-use; the keys stay
-        // Fernet-encrypted with FP_GATEWAY_SECRET (carried in the restored .env).
-        let aiCfgSrc = "\(homeDir)/ai-gateway-data/ai_config.db"
-        if fm.fileExists(atPath: aiCfgSrc) {
-            try fm.copyItem(atPath: aiCfgSrc, toPath: "\(filesDir)/ai_config.db")
+
+        // AI configuration lives outside Core entirely — the gateway's
+        // providers, models and (Fernet-encrypted) API keys, its semantic
+        // registry and knowledge documents, the engine's agents / reports /
+        // notification channels, Command Center's own store. None of it is
+        // reachable through the Core REST API harvested below. The keys stay
+        // Fernet-encrypted with FP_GATEWAY_SECRET (carried in the .env above).
+        //
+        // Two things this must NOT do, both of which it used to: read a
+        // hardcoded ~/falconpulsar/ai-gateway-data/ai_config.db, which captured
+        // nothing on a relocated stack and nothing at all of the other four
+        // stores; and copy the files host-side, which misses every commit still
+        // sitting in a -wal sidecar.
+        let dirs = Self.stackDirs()
+        for store in Self.configStores(dirs) {
+            switch Self.snapshotConfigStore(store) {
+            case .captured(let data):
+                fm.createFile(atPath: "\(workDir)/\(Self.storeEntryName(store.rel))", contents: data)
+                capturedStores.append(store.rel)
+            case .absent:
+                continue  // not installed on this stack
+            case .failed(let why):
+                // A store that exists but could not be snapshotted is a hole in
+                // the backup. Record it so the archive cannot pass for complete.
+                problems.append("\(store.rel): \(why)")
+            }
         }
 
         // API harvest. The list mirrors backup.go in console/. Each section
@@ -397,33 +617,50 @@ enum ConfigBackup {
             ("annotations.json",   "/api/v1/annotations",                          "annotations"),
         ]
         for sec in sections {
-            if let data = Self.harvestPaginated(path: sec.path, sectionKey: sec.key, token: creds.token) {
+            do {
+                let data = try Self.harvestPaginated(path: sec.path, sectionKey: sec.key,
+                                                     token: creds.token)
                 fm.createFile(atPath: "\(apiDir)/\(sec.file)", contents: data)
-            } else {
-                // Empty stub so import can run with what we got. Matches the
-                // Go console behaviour.
-                let stub = "{\"\(sec.key)\":[]}".data(using: .utf8) ?? Data()
-                fm.createFile(atPath: "\(apiDir)/\(sec.file)", contents: stub)
+                capturedSections.append(sec.key)
+            } catch {
+                // A section that failed to harvest is NOT written at all. An
+                // empty stub made "the server refused this endpoint" look
+                // exactly like "this stack has none of these", so a backup
+                // missing every datasource imported cleanly and produced an
+                // empty plant. Import treats an absent section as "not in this
+                // archive" and leaves the target's own data alone.
+                problems.append("\(sec.key): \(error.localizedDescription)")
             }
         }
 
         // v3: the complete server bundle — password hashes, MFA secrets, API
-        // tokens, roles, layouts, favorites, labels, preferences. This is the
-        // ONLY source of the secrets a real "restore a server" needs; the whole
+        // tokens, roles, layouts, favorites, labels, preferences, and the
+        // datasource credentials the public endpoints mask. This is the ONLY
+        // source of the secrets a real "restore a server" needs; the whole
         // backup is AES-encrypted so these never touch disk in the clear. Fetch
-        // it last, after the plain REST sections. A server too old to expose
-        // the endpoint (404) simply yields no bundle and the backup degrades
-        // to v2 behaviour on import — so any non-2xx / network error is skipped
-        // silently. The client treats the response as an opaque blob; it moves
-        // the bytes verbatim (GET body → zip → POST body) without parsing.
+        // it last, after the plain REST sections. The client treats the
+        // response as an opaque blob; it moves the bytes verbatim (GET body →
+        // zip → POST body) without parsing.
+        var bundleCaptured = false
         let bundleURL = URL(string: "\(coreBaseURL)/api/v1/admin/config-bundle")!
         var bundleReq = URLRequest(url: bundleURL)
         bundleReq.addValue("Bearer \(creds.token)", forHTTPHeaderField: "Authorization")
-        if let (bundle, _) = try? syncRequest(bundleReq), !bundle.isEmpty {
-            fm.createFile(atPath: "\(apiDir)/config-bundle.json", contents: bundle)
+        do {
+            let (bundle, _) = try syncRequest(bundleReq)
+            if !bundle.isEmpty {
+                fm.createFile(atPath: "\(apiDir)/config-bundle.json", contents: bundle)
+                bundleCaptured = true
+            }
+        } catch {
+            // Without the bundle there are no password hashes and no datasource
+            // credentials. That is a materially incomplete backup, not a detail
+            // — a server too old to expose the endpoint still restores, but the
+            // user has to be told what they are not getting.
+            problems.append("config-bundle: \(error.localizedDescription)")
         }
 
-        // Manifest
+        // manifest.json, written LAST so it can state what this archive
+        // actually contains rather than what the export set out to collect.
         let hostName = Host.current().localizedName ?? "unknown"
         let df = ISO8601DateFormatter()
         let manifest: [String: Any] = [
@@ -431,7 +668,12 @@ enum ConfigBackup {
             "falconpulsar_version": (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "dev",
             "exported_at": df.string(from: Date()),
             "source_host": hostName,
-            "source_platform": "macOS"
+            "source_platform": "macOS",
+            "sections": capturedSections,
+            "config_stores": capturedStores,
+            "bundle": bundleCaptured,
+            "incomplete": !problems.isEmpty,
+            "errors": problems
         ]
         let manifestData = try JSONSerialization.data(withJSONObject: manifest, options: [.prettyPrinted])
         fm.createFile(atPath: "\(workDir)/manifest.json", contents: manifestData)
@@ -444,12 +686,21 @@ enum ConfigBackup {
         let plain = try Data(contentsOf: URL(fileURLWithPath: zipPath))
         let encrypted = try encrypt(plain, username: creds.username, password: creds.password)
         try encrypted.write(to: URL(fileURLWithPath: outputPath))
+
+        // The file is written either way — a partial backup beats none — but
+        // the caller must not report this as a success.
+        lastExportProblems = problems
     }
 
     // MARK: - Import
 
     static func importBackup(from inputPath: String, creds: AdminCredentials) throws {
         lastImportErrorCount = 0
+        // Core's address, captured ONCE. coreBaseURL re-reads FP_REST_PORT from
+        // .env, and the restore below overwrites that .env part-way through —
+        // every call made after that point would otherwise be aimed at whatever
+        // port the backup carried, which on this host is very likely dead.
+        let baseURL = coreBaseURL
         let fm = FileManager.default
         let encrypted = try Data(contentsOf: URL(fileURLWithPath: inputPath))
         let plain = try decrypt(encrypted, username: creds.username, password: creds.password)
@@ -480,16 +731,31 @@ enum ConfigBackup {
                     try fm.copyItem(atPath: src, toPath: dst)
                 }
             }
-            // AI Gateway config DB → restore into ai-gateway-data so providers,
-            // models, and their encrypted keys come back. The gateway reads it at
-            // startup, so it applies on the next stack restart (prompted below).
-            let aiCfgSrc = "\(filesDir)/ai_config.db"
-            if fm.fileExists(atPath: aiCfgSrc) {
-                let aiCfgDir = "\(homeDir)/ai-gateway-data"
-                try? fm.createDirectory(atPath: aiCfgDir, withIntermediateDirectories: true)
-                let aiCfgDst = "\(aiCfgDir)/ai_config.db"
-                try? fm.removeItem(atPath: aiCfgDst)
-                try fm.copyItem(atPath: aiCfgSrc, toPath: aiCfgDst)
+            // AI configuration stores → back into their real volumes, so
+            // providers, models, encrypted keys, the semantic registry, the
+            // knowledge documents and the engine's agents / reports /
+            // notification channels all come back. The services read them at
+            // startup, so they apply on the next stack restart (prompted below).
+            //
+            // Two things this has to get right: the destination comes from the
+            // resolved data dirs, not a hardcoded ai-gateway-data, or a
+            // relocated stack restores into a directory nothing reads; and the
+            // -wal / -shm sidecars beside the destination MUST go. The file is
+            // replaced underneath a running container, and a stale WAL
+            // belonging to the OLD database would either be replayed over the
+            // restored one (silently reverting it) or rejected as corrupt.
+            let dirs = Self.stackDirs()
+            for store in Self.configStores(dirs) {
+                let src = "\(workDir)/\(Self.storeEntryName(store.rel))"
+                guard fm.fileExists(atPath: src), !store.hostDir.isEmpty else { continue }
+                let dst = "\(store.hostDir)/\(store.rel)"
+                try? fm.createDirectory(atPath: (dst as NSString).deletingLastPathComponent,
+                                        withIntermediateDirectories: true)
+                try? fm.removeItem(atPath: dst)
+                try fm.copyItem(atPath: src, toPath: dst)
+                for sidecar in ["\(dst)-wal", "\(dst)-shm"] {
+                    try? fm.removeItem(atPath: sidecar)
+                }
             }
             sanitizeRestoredEnv(preserved: preservedEnv)
         }
@@ -512,10 +778,12 @@ enum ConfigBackup {
         // password-preserving restore isn't overwritten by the password-less
         // REST create path (which would only add duplicates / 409s).
         var bundleApplied = false
+        var bundleRaw: Data?   // kept: the datasource secrets are applied after the create pass
         let bundleFilePath = "\(apiDir)/config-bundle.json"
         if fm.fileExists(atPath: bundleFilePath),
            let bundleData = try? Data(contentsOf: URL(fileURLWithPath: bundleFilePath)) {
-            let bundleURL = URL(string: "\(coreBaseURL)/api/v1/admin/config-bundle")!
+            bundleRaw = bundleData
+            let bundleURL = URL(string: "\(baseURL)/api/v1/admin/config-bundle")!
             var req = URLRequest(url: bundleURL)
             req.httpMethod = "POST"
             req.addValue("Bearer \(creds.token)", forHTTPHeaderField: "Authorization")
@@ -552,19 +820,38 @@ enum ConfigBackup {
                   let json = try? Data(contentsOf: URL(fileURLWithPath: filePath)) else {
                 continue
             }
-            let items = Self.extractItems(from: json, sectionKey: sec.key)
+            var items = Self.extractItems(from: json, sectionKey: sec.key)
+            if sec.key == "assets" {
+                // GET /api/v1/assets walks the metadata B-tree in sorted BYTE
+                // order over "_asset/id/<decimal>", so id 100 comes back before
+                // id 95. Restored in that order a child can be POSTed before its
+                // parent; Core then auto-creates the parent as a bare
+                // placeholder, and the real parent's own POST comes back 409 —
+                // counted as a benign skip, losing its asset type, properties
+                // and status with nothing reported.
+                items = Self.orderAssetsParentsFirst(items)
+            }
             // Series restore their FULL config in one bulk call: POST
             // /api/v1/series/bulk resolves the asset by path AND applies the
             // engineering limits + alarm thresholds, unlike the per-item POST
             // /api/v1/series (which requires an "asset" field the export never
             // emits and drops the limits/thresholds entirely).
             if sec.key == "series" {
-                Self.importSeriesBulk(items: items, creds: creds, coreBaseURL: coreBaseURL)
+                Self.importSeriesBulk(items: items, creds: creds, coreBaseURL: baseURL)
                 continue
             }
             for raw in items {
-                let item = Self.stripServerIDs(raw)
-                let url = URL(string: "\(coreBaseURL)\(sec.path)")!
+                var item = Self.stripServerIDs(raw)
+                if sec.key == "datasources" {
+                    // GET /api/v1/datasources masks password/token/client_key/
+                    // private_key, and the create handler has no unmask step —
+                    // so POSTing this straight through stores the mask AS the
+                    // credential, leaving a datasource that looks configured and
+                    // cannot authenticate. Drop those keys here and let
+                    // restoreDatasourceSecrets put the real values back.
+                    item = Self.stripMaskedSecrets(item)
+                }
+                let url = URL(string: "\(baseURL)\(sec.path)")!
                 var req = URLRequest(url: url)
                 req.httpMethod = "POST"
                 req.addValue("Bearer \(creds.token)", forHTTPHeaderField: "Authorization")
@@ -575,6 +862,10 @@ enum ConfigBackup {
                 if Self.isImportFailure(Self.requestStatus(req)) { Self.lastImportErrorCount += 1 }
             }
         }
+
+        // The datasources were created without their secrets (the public export
+        // masks them). Put the real credentials back now that the rows exist.
+        Self.restoreDatasourceSecrets(bundle: bundleRaw, creds: creds, coreBaseURL: baseURL)
     }
 
     /// .env keys tied to the HOST the stack runs on — absolute host paths and
@@ -583,7 +874,15 @@ enum ConfigBackup {
     /// cross-host restore repoints core's bind mount at a non-existent path
     /// and the container crash-loops. Everything else in .env (secrets, ports,
     /// flags, admin user) is portable and carried from the backup.
+    ///
+    /// FP_HOME is the install directory itself, written as an absolute host
+    /// path by every installer. compose.yml mounts ${FP_HOME}/nginx.conf into
+    /// the ui and ${FP_HOME}/auth-policy.json into copilot, so carrying the
+    /// backup's value onto a host that installed elsewhere points both bind
+    /// mounts at a path that does not exist — and Docker answers a missing bind
+    /// source by CREATING a root-owned directory where a file belongs.
     static let machineSpecificEnvKeys = [
+        "FP_HOME",
         "FP_DATA_DIR", "FP_GATEWAY_DATA_DIR", "FP_ENGINE_DATA_DIR", "FP_COPILOT_DATA_DIR",
         "FP_GATEWAY_CONFIG", "FP_UID", "FP_GID",
     ]
@@ -656,10 +955,11 @@ enum ConfigBackup {
     /// Core caps at output_max_rows (default 1000) per page regardless of
     /// the client-supplied limit.
     ///
-    /// Returns nil only if the first page fails (caller writes a stub then).
+    /// Throws only if the FIRST page fails — the section is then missing rather
+    /// than empty, and the caller records that instead of writing a stub.
     /// Mid-pagination failures stop early and return what we collected so
     /// far.
-    static func harvestPaginated(path: String, sectionKey: String, token: String) -> Data? {
+    static func harvestPaginated(path: String, sectionKey: String, token: String) throws -> Data {
         let pageLimit = 1000
         let maxIterations = 10_000
         var all: [Any] = []
@@ -668,11 +968,16 @@ enum ConfigBackup {
 
         for i in 0..<maxIterations {
             let paged = "\(path)\(separator)limit=\(pageLimit)&offset=\(offset)"
-            guard let url = URL(string: "\(coreBaseURL)\(paged)") else { return nil }
+            guard let url = URL(string: "\(coreBaseURL)\(paged)") else {
+                throw BackupError.apiError("could not build a URL for \(paged)")
+            }
             var req = URLRequest(url: url)
             req.addValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-            guard let (data, _) = try? syncRequest(req) else {
-                if i == 0 { return nil }
+            var data = Data()
+            do {
+                (data, _) = try syncRequest(req)
+            } catch {
+                if i == 0 { throw error }
                 break
             }
 
@@ -705,7 +1010,7 @@ enum ConfigBackup {
         }
 
         let out: [String: Any] = [sectionKey: all, "count": all.count]
-        return try? JSONSerialization.data(withJSONObject: out)
+        return try JSONSerialization.data(withJSONObject: out)
     }
 
     /// Normalise a list-endpoint JSON response into a flat array of objects.
@@ -748,6 +1053,115 @@ enum ConfigBackup {
             out[k] = v
         }
         return out
+    }
+
+    /// Sorts assets so every one is preceded by its ancestors, using the
+    /// hierarchy path rather than the id.
+    ///
+    /// Ordering by id does not work: Core returns assets in sorted BYTE order
+    /// over "_asset/id/<decimal>", so "100" sorts before "95". Ordering by path
+    /// DEPTH does, because a parent's path is always a proper prefix of its
+    /// children's and therefore strictly shallower. Ties keep their original
+    /// relative order, so a restore is reproducible.
+    ///
+    /// Entries with no usable path keep their order and go last — nothing can
+    /// be known about their placement.
+    static func orderAssetsParentsFirst(_ items: [[String: Any]]) -> [[String: Any]] {
+        func depth(_ item: [String: Any]) -> Int? {
+            guard let path = item["path"] as? String, !path.isEmpty else { return nil }
+            return path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+                       .filter { $0 == "/" }.count
+        }
+        var withPath: [(depth: Int, order: Int, item: [String: Any])] = []
+        var withoutPath: [[String: Any]] = []
+        for (i, item) in items.enumerated() {
+            if let d = depth(item) {
+                withPath.append((d, i, item))
+            } else {
+                withoutPath.append(item)
+            }
+        }
+        // Swift's sort is not stable, so the original position breaks ties.
+        withPath.sort { $0.depth == $1.depth ? $0.order < $1.order : $0.depth < $1.depth }
+        return withPath.map { $0.item } + withoutPath
+    }
+
+    /// What Core substitutes for password / token / client_key / private_key on
+    /// the public datasource endpoints (FP_SECRET_MASK in rest_common.h). It
+    /// must never be written back as if it were a credential.
+    static let secretMask = "********"
+
+    /// Mirrors SECRET_CONFIG_KEYS in falconpulsar-core's rest_common.c. Keep
+    /// the two in step.
+    static let secretConfigKeys = ["password", "token", "client_key", "private_key"]
+
+    /// Removes config keys whose value is the mask, so a create never persists
+    /// "********" as a real credential. Keys holding a genuine value are left
+    /// alone — a backup taken from a Core old enough to return unmasked configs
+    /// still restores directly.
+    static func stripMaskedSecrets(_ item: [String: Any]) -> [String: Any] {
+        guard var config = item["config"] as? [String: Any] else { return item }
+        for key in secretConfigKeys where config[key] as? String == secretMask {
+            config.removeValue(forKey: key)
+        }
+        var out = item
+        out["config"] = config
+        return out
+    }
+
+    /// Writes the real credentials over the datasources the create pass just
+    /// made from the masked public export. The values come from
+    /// GET /api/v1/admin/config-bundle — the admin-only channel that already
+    /// carries password hashes and MFA secrets, and the archive as a whole is
+    /// encrypted.
+    ///
+    /// Matched by NAME, not id: the target mints its own ids. A datasource the
+    /// bundle has a secret for but the target does not hold is skipped — its
+    /// own create already counted as a failure.
+    static func restoreDatasourceSecrets(bundle: Data?, creds: AdminCredentials,
+                                         coreBaseURL: String) {
+        guard let bundle = bundle,
+              let obj = try? JSONSerialization.jsonObject(with: bundle) as? [String: Any],
+              let secrets = obj["datasource_secrets"] as? [[String: Any]],
+              !secrets.isEmpty else {
+            // A v1/v2 archive, or one taken from a Core that predates the
+            // section. Nothing to apply; the datasources keep whatever the
+            // create stored.
+            return
+        }
+
+        // Resolve name -> id on the target.
+        var idByName: [String: String] = [:]
+        let listURL = URL(string: "\(coreBaseURL)/api/v1/datasources")!
+        var listReq = URLRequest(url: listURL)
+        listReq.addValue("Bearer \(creds.token)", forHTTPHeaderField: "Authorization")
+        if let (data, _) = try? syncRequest(listReq) {
+            for ds in extractItems(from: data, sectionKey: "datasources") {
+                if let name = ds["name"] as? String, let id = ds["id"] as? NSNumber {
+                    idByName[name] = id.stringValue
+                }
+            }
+        }
+
+        for secret in secrets {
+            guard let name = secret["name"] as? String,
+                  let id = idByName[name],
+                  var config = secret["config"] as? [String: Any] else { continue }
+            // Never write the mask, even from the bundle.
+            for key in secretConfigKeys where config[key] as? String == secretMask {
+                config.removeValue(forKey: key)
+            }
+            let url = URL(string: "\(coreBaseURL)/api/v1/datasources/\(id)")!
+            var req = URLRequest(url: url)
+            // PATCH, not PUT: Core routes PUT /api/v1/datasources/<id> only to the
+            // mqtt/subscriptions subpath and answers anything else with
+            // "Unknown datasource PUT action". The config update is the PATCH handler.
+            req.httpMethod = "PATCH"
+            req.addValue("Bearer \(creds.token)", forHTTPHeaderField: "Authorization")
+            req.addValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.httpBody = try? JSONSerialization.data(withJSONObject: ["config": config])
+            if isImportFailure(requestStatus(req)) { lastImportErrorCount += 1 }
+        }
     }
 
     /// POST /api/v1/series requires an "asset" field (the asset PATH) to place

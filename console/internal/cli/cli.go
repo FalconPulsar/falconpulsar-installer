@@ -7,6 +7,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -314,6 +315,18 @@ func cmdConfigExport() *cobra.Command {
 				return err
 			}
 			if err := configbackup.Export(ctx, args[0], cli, user, pass); err != nil {
+				// An incomplete export still wrote a usable file. Say exactly
+				// what is missing and exit non-zero, so a script cannot mistake
+				// a half-captured backup for a good one.
+				var incomplete *configbackup.IncompleteExportError
+				if errors.As(err, &incomplete) {
+					fmt.Fprintf(os.Stderr, "Saved to %s\n", incomplete.Written)
+					fmt.Fprintf(os.Stderr, "\n⚠ This backup is INCOMPLETE — do not rely on it to rebuild:\n")
+					for _, p := range incomplete.Problems {
+						fmt.Fprintf(os.Stderr, "    • %s\n", p)
+					}
+					return fmt.Errorf("export incomplete (%d section(s) missing)", len(incomplete.Problems))
+				}
 				return err
 			}
 			fmt.Fprintf(os.Stderr, "Saved to %s\n", args[0])

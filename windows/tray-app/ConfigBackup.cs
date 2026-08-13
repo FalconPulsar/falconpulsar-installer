@@ -3,6 +3,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
 using System.Net.Http;
@@ -35,13 +36,19 @@ namespace FalconPulsar.Tray
     //
     //  Payload (zip):
     //    manifest.json, files/{compose.yml,.env,gateway.yaml},
+    //    files/{ai_config.db,ssr.db,knowledge.db,db_fp-agentics.db,
+    //           command-center.db}  ← the AI stack's configuration stores; the
+    //         entry name is "files/" + the path relative to the service's data
+    //         dir with "/" replaced by "_".
     //    api/{roles,users,asset-types,assets,datasources,series,mappings,
     //         relationships,annotations}.json
     //    api/config-bundle.json  ← GET /api/v1/admin/config-bundle (new in v3):
     //         the complete-server secrets — user password hashes+salts, MFA
-    //         secrets, API-token records, roles, and layout/favorite/label/
-    //         preference KV. Treated as an OPAQUE blob (bytes GET → zip → POST),
-    //         never parsed. Applied first on import.
+    //         secrets, API-token records, roles, layout/favorite/label/
+    //         preference KV, and the UNMASKED datasource configs. Its bytes are
+    //         POSTed back verbatim and applied first on import; only the
+    //         datasource_secrets section is read out of it, after the
+    //         datasources have been created.
     //    (asset-types, series, relationships, annotations are new in v2.)
     //
     //  Format version compatibility:
@@ -126,6 +133,26 @@ namespace FalconPulsar.Tray
         public class BackupException : Exception
         {
             public BackupException(string message) : base(message) { }
+        }
+
+        /// <summary>
+        /// The archive was written but does not hold everything it was asked to
+        /// collect. The file is still usable for whatever it did capture, so
+        /// this is deliberately not a plain failure — but the caller must say
+        /// INCOMPLETE and name the gaps, never "Export complete".
+        /// </summary>
+        public class IncompleteExportException : BackupException
+        {
+            public string Written { get; }
+            public List<string> Problems { get; }
+
+            public IncompleteExportException(string written, List<string> problems)
+                : base($"Backup written to {written} but INCOMPLETE — {problems.Count} section(s) missing: "
+                       + string.Join("; ", problems))
+            {
+                Written = written;
+                Problems = problems;
+            }
         }
 
         // ---- Auth + admin check ----
@@ -284,10 +311,263 @@ namespace FalconPulsar.Tray
         public static string FalconPulsarHomeDir { get; set; } = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "falconpulsar");
 
+        // WSL distro hosting the stack, set by TrayApp alongside
+        // FalconPulsarHomeDir. The AI configuration stores live inside the
+        // distro: Windows reads them over \\wsl.localhost\<distro>, and they are
+        // snapshotted through `wsl.exe -d <distro> -- docker exec`. Empty means
+        // "no distro known", which leaves every store unresolved (and therefore
+        // skipped) rather than guessing at a path.
+        public static string WslDistro { get; set; } = "";
+
+        // ---- AI configuration stores ----
+        //
+        // AI configuration lives outside Core entirely — the gateway's
+        // providers, models and (Fernet-encrypted) API keys, its semantic
+        // registry and terminology packs, the engine's agents / reports /
+        // notification channels, Command Center's own store. None of it is
+        // reachable through the Core REST API. This list, and the archive names
+        // it produces, mirror ConfigStores() in
+        // console/internal/databackup/databackup.go; the two must stay in step
+        // or an archive stops being interchangeable between platforms.
+
+        private sealed class ConfigStore
+        {
+            public string Container;      // docker container that owns the writes
+            public string ContainerDir;   // the data directory as the container sees it
+            public string HostDir;        // the same directory as Windows sees it ("" = unresolved)
+            public string Rel;            // path of the db relative to that directory
+            public bool NodeRuntime;      // node:sqlite (engine, copilot) vs python sqlite3 (gateway)
+        }
+
+        // Entry names are flat: "files/" + the relative path with "/" replaced
+        // by "_", so db/fp-agentics.db travels as files/db_fp-agentics.db.
+        private static string StoreFileName(ConfigStore store) => store.Rel.Replace('/', '_');
+
+        private static List<ConfigStore> ConfigStores()
+        {
+            var dirs = ResolveStackDataDirs();
+            return new List<ConfigStore>
+            {
+                // providers, models, API keys, gateway settings
+                new ConfigStore { Container = "falconpulsar-ai-gateway", ContainerDir = "/app/data",
+                                  HostDir = dirs.gateway, Rel = "ai_config.db" },
+                // semantic registry + terminology packs — declared by hand, expensive to lose
+                new ConfigStore { Container = "falconpulsar-ai-gateway", ContainerDir = "/app/data",
+                                  HostDir = dirs.gateway, Rel = "ssr.db" },
+                // user-authored knowledge documents
+                new ConfigStore { Container = "falconpulsar-ai-gateway", ContainerDir = "/app/data",
+                                  HostDir = dirs.gateway, Rel = "knowledge.db" },
+                // agents, specs, reports, notification channels, schedules
+                new ConfigStore { Container = "falconpulsar-ai-engine", ContainerDir = "/data",
+                                  HostDir = dirs.engine, Rel = "db/fp-agentics.db", NodeRuntime = true },
+                new ConfigStore { Container = "falconpulsar-copilot", ContainerDir = "/data",
+                                  HostDir = dirs.copilot, Rel = "command-center.db", NodeRuntime = true },
+            };
+        }
+
+        // Where those stores actually live. FP_*_DATA_DIR are supported
+        // relocations, and looking for them under a hardcoded ai-gateway-data
+        // meant a relocated stack exported no AI configuration at all while
+        // still reporting success. The defaults are compose.yml's, which hang
+        // off FP_DATA_DIR's parent. Every path in .env is a path INSIDE the
+        // distro, so each is mapped onto \\wsl.localhost\<distro> to be read
+        // from Windows.
+        private static (string gateway, string engine, string copilot) ResolveStackDataDirs()
+        {
+            var vals = ReadEnvValues(Path.Combine(FalconPulsarHomeDir, ".env"), new[] {
+                "FP_HOME", "FP_DATA_DIR",
+                "FP_GATEWAY_DATA_DIR", "FP_ENGINE_DATA_DIR", "FP_COPILOT_DATA_DIR",
+            });
+            string Value(string key) =>
+                vals.TryGetValue(key, out var v) ? v.Trim().Trim('"', '\'') : "";
+
+            var coreDir = Value("FP_DATA_DIR");
+            if (coreDir.Length == 0)
+            {
+                var fpHome = Value("FP_HOME");
+                if (fpHome.Length > 0) coreDir = fpHome + "/data";
+            }
+            if (coreDir.Length == 0) return ("", "", "");   // no readable .env — nothing to resolve
+
+            var parent = LinuxParentDir(coreDir);
+            string Dir(string key, string fallback)
+            {
+                var v = Value(key);
+                return HostPathForLinuxPath(v.Length > 0 ? v : fallback);
+            }
+            return (Dir("FP_GATEWAY_DATA_DIR", parent + "/ai-gateway-data"),
+                    Dir("FP_ENGINE_DATA_DIR",  parent + "/ai-engine-data"),
+                    Dir("FP_COPILOT_DATA_DIR", parent + "/copilot-data"));
+        }
+
+        // Parent of a LINUX path ("/home/u/falconpulsar/data" ->
+        // "/home/u/falconpulsar"). Path.GetDirectoryName would rewrite the
+        // separators as Windows ones, which is not what compose reads.
+        private static string LinuxParentDir(string path)
+        {
+            var trimmed = path.TrimEnd('/');
+            int slash = trimmed.LastIndexOf('/');
+            return slash > 0 ? trimmed.Substring(0, slash) : "/";
+        }
+
+        // A path inside the distro as Windows sees it — the same mapping
+        // TrayApp applies to the install directory when it sets
+        // FalconPulsarHomeDir.
+        private static string HostPathForLinuxPath(string path)
+        {
+            if (string.IsNullOrEmpty(path) || path[0] != '/') return "";
+            if (!IsValidDistroName(WslDistro)) return "";
+            return $@"\\wsl.localhost\{WslDistro}" + path.Replace('/', '\\');
+        }
+
+        // The distro name is interpolated into a UNC path and into wsl.exe's
+        // command line, so anything outside the documented alphanumeric +
+        // dot/underscore/hyphen set is refused rather than passed through
+        // (mirrors TrayApp.IsValidDistroName).
+        private static bool IsValidDistroName(string distro)
+        {
+            if (string.IsNullOrEmpty(distro)) return false;
+            foreach (var c in distro)
+            {
+                bool ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+                          || (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-';
+                if (!ok) return false;
+            }
+            return true;
+        }
+
+        /// <summary>
+        /// Writes a consistent copy of one store to <paramref name="hostDst"/>.
+        ///
+        /// This has to go through VACUUM INTO inside the owning container,
+        /// never a host-side file copy: every one of these databases is opened
+        /// WAL, so recent commits can live entirely in the -wal sidecar.
+        /// Reading the main file alone yields a database missing them — or, if
+        /// it is caught mid-checkpoint, one that is internally inconsistent.
+        ///
+        /// Returns false when the store is not installed here; that is not an
+        /// error, there is simply nothing to capture. Throws when the store
+        /// exists but could not be copied.
+        /// </summary>
+        private static async Task<bool> SnapshotConfigStoreAsync(ConfigStore store, string hostDst)
+        {
+            if (string.IsNullOrEmpty(store.HostDir)) return false;
+            var src = Path.Combine(store.HostDir, store.Rel.Replace('/', '\\'));
+            if (!File.Exists(src)) return false;    // store not present on this install
+            if (!await IsContainerRunningAsync(store.Container))
+                throw new BackupException(
+                    $"{store.Container} is not running, so {store.Rel} cannot be snapshotted consistently");
+
+            // VACUUM INTO refuses to overwrite, so the destination must not
+            // exist. Write beside the source — inside the volume, the only
+            // place the container can write — and move it out afterwards.
+            var tmpRel = store.Rel + ".fpconfig-snapshot";
+            var tmpHost = Path.Combine(store.HostDir, tmpRel.Replace('/', '\\'));
+            try { File.Delete(tmpHost); } catch { }
+            try
+            {
+                var (exitCode, output) = await RunInDistroAsync(
+                    $"docker exec {ShellQuote(store.Container)} {VacuumCommand(store, tmpRel)}");
+                if (exitCode != 0)
+                    throw new BackupException($"snapshot {store.Rel}: {OneLine(output)}");
+                File.Copy(tmpHost, hostDst, overwrite: true);
+            }
+            finally
+            {
+                try { File.Delete(tmpHost); } catch { }
+            }
+            return true;
+        }
+
+        // The same one-liners console/internal/databackup runs: the gateway
+        // image carries python, the engine and Command Center images carry node
+        // with node:sqlite. Both write the snapshot inside the container's own
+        // volume, which is what makes it readable from the host afterwards.
+        private static string VacuumCommand(ConfigStore store, string relDst)
+        {
+            var src = store.ContainerDir + "/" + store.Rel;
+            var dst = SqlQuote(store.ContainerDir + "/" + relDst);
+            if (store.NodeRuntime)
+                return "node -e " + ShellQuote(
+                    "const {DatabaseSync}=require('node:sqlite'); "
+                    + $"new DatabaseSync(\"{src}\").exec(\"VACUUM INTO {dst}\")");
+            return "python -c " + ShellQuote(
+                $"import sqlite3; sqlite3.connect(\"{src}\").execute(\"VACUUM INTO {dst}\")");
+        }
+
+        private static async Task<bool> IsContainerRunningAsync(string container)
+        {
+            var (exitCode, output) = await RunInDistroAsync(
+                $"docker inspect -f '{{{{.State.Running}}}}' {ShellQuote(container)} 2>/dev/null");
+            return exitCode == 0 && output.Trim() == "true";
+        }
+
+        // Runs a bash script inside the distro as its default user — the user
+        // that owns the stack in per-user installs, and the one Docker Desktop's
+        // WSL integration puts `docker` on the PATH for. The script is piped in
+        // rather than passed as arguments so quoting survives wsl.exe's own
+        // command-line parsing (mirrors TrayApp.RunWslBashCaptureAsync).
+        private static async Task<(int exitCode, string output)> RunInDistroAsync(string script)
+        {
+            if (!IsValidDistroName(WslDistro)) return (-1, "no WSL distro configured");
+            var psi = new ProcessStartInfo
+            {
+                FileName = "wsl.exe",
+                Arguments = $"-d {WslDistro} -- bash",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardInput = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                // Force UTF-8 on stdin. .NET otherwise encodes the piped script
+                // in the Windows OEM codepage and bash sees mangled bytes.
+                StandardInputEncoding = new UTF8Encoding(false),
+            };
+            using var proc = Process.Start(psi);
+            if (proc == null) return (-1, "could not start wsl.exe");
+            await proc.StandardInput.WriteAsync(script);
+            proc.StandardInput.Close();
+            // Both pipes are drained before waiting: a container that writes a
+            // long traceback to stderr would otherwise fill its buffer and
+            // deadlock against WaitForExit.
+            var stdout = proc.StandardOutput.ReadToEndAsync();
+            var stderr = proc.StandardError.ReadToEndAsync();
+            await Task.WhenAll(stdout, stderr);
+            await proc.WaitForExitAsync();
+            return (proc.ExitCode, (stdout.Result + stderr.Result).Trim());
+        }
+
+        // Single-quoted SQL string literal.
+        private static string SqlQuote(string value) => "'" + value.Replace("'", "''") + "'";
+
+        // Single-quoted bash word. The script is piped to a shell, so every
+        // interpolated value is quoted rather than trusted.
+        private static string ShellQuote(string value) => "'" + value.Replace("'", "'\\''") + "'";
+
+        // Docker, python and node all fail with multi-line output; the export
+        // report lists one line per problem, so flatten and cap it.
+        private static string OneLine(string output)
+        {
+            var flat = (output ?? "").Replace('\r', ' ').Replace('\n', ' ').Trim();
+            if (flat.Length == 0) return "docker exec failed";
+            return flat.Length > 300 ? flat.Substring(0, 300) + "…" : flat;
+        }
+
         public static async Task ExportAsync(string outputPath, AdminCredentials creds)
         {
             var workDir = Path.Combine(Path.GetTempPath(), "fpconfig-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(workDir);
+
+            // What went wrong, and what was actually captured. The manifest used
+            // to be a fixed set of fields, and a section that failed to harvest
+            // was replaced by an empty stub — which made a backup that silently
+            // contained no datasources indistinguishable from one taken on a
+            // stack that has none. These accumulate and the manifest is written
+            // from them at the end.
+            var problems = new List<string>();
+            var capturedSections = new List<string>();
+            var capturedStores = new List<string>();
+            bool bundleCaptured = false;
             try
             {
                 var filesDir = Path.Combine(workDir, "files");
@@ -298,15 +578,27 @@ namespace FalconPulsar.Tray
                     if (File.Exists(src))
                         File.Copy(src, Path.Combine(filesDir, name), overwrite: true);
                 }
-                // AI Gateway configuration (providers + models + their encrypted
-                // API keys) lives in the gateway's ai_config.db under
-                // ai-gateway-data, NOT the Core DB. Ship it so AI config restores
-                // ready-to-use; keys stay Fernet-encrypted with FP_GATEWAY_SECRET
-                // (carried in the restored .env). FalconPulsarHomeDir is a
-                // \\wsl.localhost UNC path on Windows, so this reads it in-place.
-                var aiCfgSrc = Path.Combine(FalconPulsarHomeDir, "ai-gateway-data", "ai_config.db");
-                if (File.Exists(aiCfgSrc))
-                    File.Copy(aiCfgSrc, Path.Combine(filesDir, "ai_config.db"), overwrite: true);
+                // The AI stack's configuration stores. Snapshotted through the
+                // owning container (see SnapshotConfigStoreAsync) rather than
+                // copied off the host: they are all WAL databases, so a plain
+                // file read misses everything still sitting in the -wal sidecar.
+                // Provider keys stay Fernet-encrypted with FP_GATEWAY_SECRET,
+                // which travels in the restored .env.
+                foreach (var store in ConfigStores())
+                {
+                    try
+                    {
+                        if (await SnapshotConfigStoreAsync(store, Path.Combine(filesDir, StoreFileName(store))))
+                            capturedStores.Add(store.Rel);
+                    }
+                    catch (Exception ex)
+                    {
+                        // A store that exists but could not be snapshotted is a
+                        // hole in the backup. Record it so the archive cannot
+                        // pass for complete.
+                        problems.Add($"{store.Rel}: {ex.Message}");
+                    }
+                }
 
                 var apiDir = Path.Combine(workDir, "api");
                 Directory.CreateDirectory(apiDir);
@@ -337,24 +629,27 @@ namespace FalconPulsar.Tray
                         {
                             var bytes = await HarvestPaginatedAsync(http, sec.path, sec.key);
                             File.WriteAllBytes(Path.Combine(apiDir, sec.file), bytes);
+                            capturedSections.Add(sec.key);
                         }
-                        catch
+                        catch (Exception ex)
                         {
-                            // Empty stub so import can run with what we got.
-                            File.WriteAllText(Path.Combine(apiDir, sec.file),
-                                              $"{{\"{sec.key}\":[]}}");
+                            // A section that failed to harvest is NOT written at
+                            // all. An empty stub made "the server refused this
+                            // endpoint" look exactly like "this stack has none of
+                            // these", so a backup missing every datasource
+                            // imported cleanly and produced an empty plant.
+                            // Import treats an absent section as "not in this
+                            // archive" and leaves the target's own data alone.
+                            problems.Add($"{sec.key}: {ex.Message}");
                         }
                     }
 
                     // v3: the complete server bundle — password hashes, MFA
                     // secrets, API tokens, roles, layouts, favorites, labels,
-                    // preferences. This is the ONLY source of the secrets a real
-                    // "restore a server" needs; the whole backup is AES-encrypted
-                    // so these never touch disk in the clear. Treated as an
-                    // OPAQUE blob: GET body → zip entry → POST body on import,
-                    // never parsed. A server too old to expose the endpoint (404)
-                    // simply yields no bundle and the backup degrades to v2
-                    // behaviour on import. This is the LAST api/* entry added
+                    // preferences, and the unmasked datasource configs. This is
+                    // the ONLY source of the secrets a real "restore a server"
+                    // needs; the whole backup is AES-encrypted so these never
+                    // touch disk in the clear. This is the LAST api/* entry added
                     // before the zip is created.
                     try
                     {
@@ -364,14 +659,24 @@ namespace FalconPulsar.Tray
                         {
                             var bundle = await bundleResp.Content.ReadAsByteArrayAsync();
                             if (bundle.Length > 0)
+                            {
                                 File.WriteAllBytes(
                                     Path.Combine(apiDir, "config-bundle.json"), bundle);
+                                bundleCaptured = true;
+                            }
+                        }
+                        else
+                        {
+                            // Without the bundle there are no password hashes and
+                            // no datasource credentials — a materially incomplete
+                            // backup, not a detail. A Core too old to expose the
+                            // endpoint answers 404 and lands here too.
+                            problems.Add($"config-bundle: HTTP {(int)bundleResp.StatusCode}");
                         }
                     }
-                    catch
+                    catch (Exception ex)
                     {
-                        // Older Core without the endpoint, or a transient
-                        // failure — skip silently; backup degrades to v2.
+                        problems.Add("config-bundle: " + ex.Message);
                     }
                 }
 
@@ -383,13 +688,20 @@ namespace FalconPulsar.Tray
                     .GetExecutingAssembly()
                     .GetName()
                     .Version?.ToString(3) ?? "dev";
+                // Built LAST so it states what this archive actually contains
+                // rather than what the export set out to collect.
                 var manifest = new
                 {
                     format_version = (int)FormatVersion,
                     falconpulsar_version = asmVersion,
                     exported_at = DateTime.UtcNow.ToString("o"),
                     source_host = Environment.MachineName,
-                    source_platform = "Windows"
+                    source_platform = "Windows",
+                    sections = capturedSections,
+                    config_stores = capturedStores,
+                    bundle = bundleCaptured,
+                    incomplete = problems.Count > 0,
+                    errors = problems
                 };
                 File.WriteAllText(
                     Path.Combine(workDir, "manifest.json"),
@@ -404,6 +716,13 @@ namespace FalconPulsar.Tray
                     File.WriteAllBytes(outputPath, encrypted);
                 }
                 finally { try { File.Delete(zipPath); } catch { } }
+
+                // The file is written either way — a partial backup beats none —
+                // but the caller must not be told this succeeded. Silence here is
+                // what let an export missing whole sections pass for a complete
+                // one.
+                if (problems.Count > 0)
+                    throw new IncompleteExportException(outputPath, problems);
             }
             finally
             {
@@ -419,6 +738,14 @@ namespace FalconPulsar.Tray
         // ports, flags, admin user) is portable and carried from the backup.
         private static readonly string[] MachineSpecificEnvKeys =
         {
+            // FP_HOME is the install directory itself, written as an absolute
+            // host path by every installer. compose.yml mounts
+            // ${FP_HOME}/nginx.conf into the ui and ${FP_HOME}/auth-policy.json
+            // into copilot, so carrying the backup's value onto a host that
+            // installed somewhere else points both bind mounts at a path that
+            // does not exist — and Docker answers a missing bind source by
+            // CREATING a root-owned directory where a file belongs.
+            "FP_HOME",
             "FP_DATA_DIR", "FP_GATEWAY_DATA_DIR", "FP_ENGINE_DATA_DIR", "FP_COPILOT_DATA_DIR",
             "FP_GATEWAY_CONFIG", "FP_UID", "FP_GID",
         };
@@ -452,6 +779,12 @@ namespace FalconPulsar.Tray
         public static async Task ImportAsync(string inputPath, AdminCredentials creds)
         {
             LastImportErrorCount = 0;
+            // CoreBaseUrl re-reads FP_REST_PORT from the stack's .env on every
+            // call, and this import OVERWRITES that .env partway through — so a
+            // backup carrying a different port would send everything after that
+            // point at a dead one. Resolve it once, here, and use this value for
+            // the whole run.
+            var baseUrl = CoreBaseUrl;
             var encrypted = File.ReadAllBytes(inputPath);
             var plain = Decrypt(encrypted, creds.Username, creds.Password);
 
@@ -487,18 +820,6 @@ namespace FalconPulsar.Tray
                         if (File.Exists(src))
                             File.Copy(src, dst, overwrite: true);
                     }
-                    // AI Gateway config DB → restore into ai-gateway-data so
-                    // providers, models, and their encrypted keys come back. The
-                    // gateway reads it at startup, so it applies on the next stack
-                    // restart (the "Restart Stack" prompt after import covers it).
-                    var aiCfgSrc = Path.Combine(filesDir, "ai_config.db");
-                    if (File.Exists(aiCfgSrc))
-                    {
-                        var aiCfgDir = Path.Combine(FalconPulsarHomeDir, "ai-gateway-data");
-                        Directory.CreateDirectory(aiCfgDir);
-                        File.Copy(aiCfgSrc, Path.Combine(aiCfgDir, "ai_config.db"), overwrite: true);
-                    }
-
                     // Fix up the restored .env: force FP_AI_GATEWAY_ENABLED to
                     // true (legacy-only key, mandatory component), and re-apply
                     // the preserved machine-specific keys over whatever the
@@ -541,6 +862,46 @@ namespace FalconPulsar.Tray
                         if (changed)
                             File.WriteAllText(envPath, string.Join("\n", lines) + "\n");
                     }
+
+                    // AI configuration stores → back into their real volumes, so
+                    // providers, models, encrypted keys, the semantic registry
+                    // and the engine's agents / reports / notification channels
+                    // all come back. Resolved AFTER the .env fix-up above, so the
+                    // destinations are this host's directories and not the
+                    // backup's.
+                    //
+                    // Two things this has to get right:
+                    //   * the destination comes from .env, not a hardcoded
+                    //     ai-gateway-data — otherwise a relocated stack restores
+                    //     into a directory nothing reads;
+                    //   * the -wal and -shm sidecars beside the destination MUST
+                    //     be removed. The file is replaced underneath a running
+                    //     container, and a stale WAL belonging to the OLD
+                    //     database would either be replayed over the restored one
+                    //     (silently reverting it) or rejected as corrupt.
+                    // These land while the stack is up; the "Restart Stack"
+                    // prompt after import is when the containers re-open them.
+                    foreach (var store in ConfigStores())
+                    {
+                        var storeSrc = Path.Combine(filesDir, StoreFileName(store));
+                        if (!File.Exists(storeSrc)) continue;
+                        if (string.IsNullOrEmpty(store.HostDir)) continue;
+                        var storeDst = Path.Combine(store.HostDir, store.Rel.Replace('/', '\\'));
+                        var storeDstDir = Path.GetDirectoryName(storeDst);
+                        if (!string.IsNullOrEmpty(storeDstDir))
+                            Directory.CreateDirectory(storeDstDir);
+                        File.Copy(storeSrc, storeDst, overwrite: true);
+                        foreach (var sidecar in new[] { storeDst + "-wal", storeDst + "-shm" })
+                        {
+                            try { File.Delete(sidecar); }
+                            catch (Exception ex)
+                            {
+                                throw new BackupException(
+                                    $"Could not remove the stale {Path.GetFileName(sidecar)} " +
+                                    $"({ex.Message}) — the restored {store.Rel} would be unreadable.");
+                            }
+                        }
+                    }
                 }
 
                 // Push API data in dependency order. v3-aware: includes the
@@ -562,20 +923,22 @@ namespace FalconPulsar.Tray
                     // verbatim via the admin endpoint. When it applies, the
                     // users+roles REST sections below are skipped so a verbatim,
                     // password-preserving restore isn't overwritten by the
-                    // password-less REST create path. The bundle is an OPAQUE
-                    // blob: its bytes are POSTed verbatim, never parsed.
+                    // password-less REST create path. Its bytes are POSTed
+                    // verbatim; the bundle is kept because the datasource secrets
+                    // are read out of it once the datasources exist.
                     bool bundleApplied = false;
+                    byte[] bundleBytes = null;
                     var bundleFile = Path.Combine(apiDir, "config-bundle.json");
                     if (File.Exists(bundleFile))
                     {
                         try
                         {
-                            var bundleBytes = await File.ReadAllBytesAsync(bundleFile);
+                            bundleBytes = await File.ReadAllBytesAsync(bundleFile);
                             var bundleBody = new ByteArrayContent(bundleBytes);
                             bundleBody.Headers.ContentType =
                                 new MediaTypeHeaderValue("application/json");
                             var bundleResp = await http.PostAsync(
-                                $"{CoreBaseUrl}/api/v1/admin/config-bundle", bundleBody);
+                                $"{baseUrl}/api/v1/admin/config-bundle", bundleBody);
                             if (bundleResp.IsSuccessStatusCode)
                                 bundleApplied = true;
                         }
@@ -614,12 +977,36 @@ namespace FalconPulsar.Tray
                             // limits/thresholds entirely).
                             if (sec.key == "series")
                             {
-                                await ImportSeriesBulkAsync(http, items);
+                                await ImportSeriesBulkAsync(http, baseUrl, items);
                                 continue;
+                            }
+                            if (sec.key == "assets")
+                            {
+                                // GET /api/v1/assets walks the metadata B-tree in
+                                // sorted BYTE order over "_asset/id/<decimal>", so
+                                // id 100 comes back before id 95. Restored in that
+                                // order a child can be POSTed before its parent;
+                                // Core then auto-creates the parent as a bare
+                                // placeholder, and the real parent's own POST comes
+                                // back 409 and is counted as a skip — losing its
+                                // asset_type, properties and status silently.
+                                items = OrderAssetsParentsFirst(items);
                             }
                             foreach (var raw in items)
                             {
                                 var stripped = StripServerIDs(raw);
+                                if (sec.key == "datasources" && stripped["config"] is JsonObject dsConfig)
+                                {
+                                    // GET /api/v1/datasources masks password /
+                                    // token / client_key / private_key, and the
+                                    // create handler has no unmask step — POSTing
+                                    // this straight through would store the mask AS
+                                    // the credential, leaving a datasource that
+                                    // looks configured and cannot authenticate.
+                                    // RestoreDatasourceSecretsAsync puts the real
+                                    // values back from the admin bundle below.
+                                    StripMaskedSecrets(dsConfig);
+                                }
                                 var body = new StringContent(stripped.ToJsonString(),
                                                              Encoding.UTF8, "application/json");
                                 // Count (don't swallow) a server rejection so the tray
@@ -628,7 +1015,7 @@ namespace FalconPulsar.Tray
                                 // status check is what actually catches it.
                                 try
                                 {
-                                    var resp = await http.PostAsync($"{CoreBaseUrl}{sec.path}", body);
+                                    var resp = await http.PostAsync($"{baseUrl}{sec.path}", body);
                                     if (!resp.IsSuccessStatusCode && (int)resp.StatusCode != 409)
                                         LastImportErrorCount++;
                                 }
@@ -637,6 +1024,11 @@ namespace FalconPulsar.Tray
                         }
                         catch { /* skip malformed */ }
                     }
+
+                    // The datasources were created without their secrets (the
+                    // public export masks them). Put the real credentials back
+                    // now that the rows exist.
+                    await RestoreDatasourceSecretsAsync(http, baseUrl, bundleBytes);
                 }
             }
             finally
@@ -653,8 +1045,9 @@ namespace FalconPulsar.Tray
         /// which Core caps at output_max_rows (default 1000) per page
         /// regardless of any client-supplied ?limit=.
         ///
-        /// On error returns an empty {"&lt;sectionKey&gt;":[]} stub so the
-        /// import side can still run with the rest of the backup.
+        /// Throws when the FIRST page fails: the caller records that section as
+        /// missing rather than writing an empty stub, which would be
+        /// indistinguishable from a stack that genuinely has none.
         /// </summary>
         private static async Task<byte[]> HarvestPaginatedAsync(
             HttpClient http, string basePath, string sectionKey)
@@ -818,7 +1211,8 @@ namespace FalconPulsar.Tray
         /// carried in the export, so series arrive ready to use (definition +
         /// limits + alarm setpoints). Batched under the 5000-item bulk cap.
         /// </summary>
-        private static async Task ImportSeriesBulkAsync(HttpClient http, IEnumerable<JsonObject> items)
+        private static async Task ImportSeriesBulkAsync(
+            HttpClient http, string baseUrl, IEnumerable<JsonObject> items)
         {
             const int batchSize = 1000;
             var batch = new JsonArray();
@@ -829,24 +1223,184 @@ namespace FalconPulsar.Tray
                 batch.Add(stripped);
                 if (batch.Count >= batchSize)
                 {
-                    await PostSeriesBatchAsync(http, batch);
+                    await PostSeriesBatchAsync(http, baseUrl, batch);
                     batch = new JsonArray();
                 }
             }
-            if (batch.Count > 0) await PostSeriesBatchAsync(http, batch);
+            if (batch.Count > 0) await PostSeriesBatchAsync(http, baseUrl, batch);
         }
 
-        private static async Task PostSeriesBatchAsync(HttpClient http, JsonArray batch)
+        private static async Task PostSeriesBatchAsync(HttpClient http, string baseUrl, JsonArray batch)
         {
             var payload = new JsonObject { ["series"] = batch };
             var body = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json");
             try
             {
-                var resp = await http.PostAsync($"{CoreBaseUrl}/api/v1/series/bulk", body);
+                var resp = await http.PostAsync($"{baseUrl}/api/v1/series/bulk", body);
                 if (!resp.IsSuccessStatusCode && (int)resp.StatusCode != 409)
                     LastImportErrorCount++;
             }
             catch { LastImportErrorCount++; }
+        }
+
+        /// <summary>
+        /// What Core substitutes for password / token / client_key /
+        /// private_key on the public datasource endpoints (FP_SECRET_MASK in
+        /// rest_common.h). It must never be written back as if it were a
+        /// credential.
+        /// </summary>
+        private const string SecretMask = "********";
+
+        /// <summary>Mirrors SECRET_CONFIG_KEYS in falconpulsar-core's
+        /// rest_common.c. Keep the two in step.</summary>
+        private static readonly string[] SecretConfigKeys =
+            { "password", "token", "client_key", "private_key" };
+
+        /// <summary>
+        /// Removes the keys of a datasource config whose value is the mask, so
+        /// a write never persists "********" as a real credential. Keys holding
+        /// a genuine value are left alone — a backup taken from a Core old
+        /// enough to return unmasked configs still restores directly.
+        /// </summary>
+        private static void StripMaskedSecrets(JsonObject config)
+        {
+            foreach (var key in SecretConfigKeys)
+            {
+                if (config[key] is JsonValue v && v.TryGetValue<string>(out var s) && s == SecretMask)
+                    config.Remove(key);
+            }
+        }
+
+        /// <summary>
+        /// Writes the real credentials over the datasources the create pass just
+        /// made from the masked public export. The values come from
+        /// GET /api/v1/admin/config-bundle — the admin-only channel that already
+        /// carries password hashes and MFA secrets — and the archive as a whole
+        /// is encrypted.
+        ///
+        /// Matched by NAME, not id: the target mints its own ids. An archive
+        /// with no datasource_secrets (v1/v2, or one taken from a Core that
+        /// predates the section) is a no-op.
+        /// </summary>
+        private static async Task RestoreDatasourceSecretsAsync(
+            HttpClient http, string baseUrl, byte[] bundleBytes)
+        {
+            if (bundleBytes == null || bundleBytes.Length == 0) return;
+            JsonNode bundle;
+            try { bundle = JsonNode.Parse(Encoding.UTF8.GetString(bundleBytes)); }
+            catch { return; }
+            if (bundle is not JsonObject bundleObj) return;
+            if (bundleObj["datasource_secrets"] is not JsonArray secrets || secrets.Count == 0) return;
+
+            // Resolve name -> id on the target.
+            var idByName = new Dictionary<string, string>();
+            try
+            {
+                var listResp = await http.GetAsync($"{baseUrl}/api/v1/datasources");
+                if (listResp.IsSuccessStatusCode)
+                {
+                    foreach (var ds in ExtractItems(
+                                 await listResp.Content.ReadAsStringAsync(), "datasources"))
+                    {
+                        var name = ds["name"]?.ToString();
+                        var id = ds["id"]?.ToString();
+                        if (!string.IsNullOrEmpty(name) && IsDecimal(id))
+                            idByName[name] = id;
+                    }
+                }
+            }
+            catch { /* nothing resolves below, and each secret is then skipped */ }
+
+            foreach (var node in secrets)
+            {
+                if (node is not JsonObject secret) continue;
+                var name = secret["name"]?.ToString();
+                if (string.IsNullOrEmpty(name)) continue;
+                // A datasource that isn't on the target failed to import; its
+                // secret has nowhere to go, and that failure was already counted
+                // in the datasources section.
+                if (!idByName.TryGetValue(name, out var id)) continue;
+                if (secret["config"] is not JsonObject rawConfig) continue;
+
+                var config = (JsonObject)rawConfig.DeepClone();
+                StripMaskedSecrets(config);   // never write the mask, even from the bundle
+                var payload = new JsonObject { ["config"] = config };
+                var body = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json");
+                try
+                {
+                    // PATCH, not PUT: Core routes PUT /api/v1/datasources/<id> only to
+                    // the mqtt/subscriptions subpath and answers anything else with
+                    // "Unknown datasource PUT action". The config update is the PATCH
+                    // handler, so a PUT here would 400 and leave every restored
+                    // datasource with no credential at all.
+                    using var patch = new HttpRequestMessage(
+                        new HttpMethod("PATCH"), $"{baseUrl}/api/v1/datasources/{id}")
+                    {
+                        Content = body,
+                    };
+                    var resp = await http.SendAsync(patch);
+                    if (!resp.IsSuccessStatusCode) LastImportErrorCount++;
+                }
+                catch { LastImportErrorCount++; }
+            }
+        }
+
+        // Ids are interpolated into a URL path, so accept only the decimal form
+        // Core actually issues.
+        private static bool IsDecimal(string value)
+        {
+            if (string.IsNullOrEmpty(value)) return false;
+            foreach (var c in value)
+                if (c < '0' || c > '9') return false;
+            return true;
+        }
+
+        /// <summary>
+        /// Sorts assets so every asset is preceded by its ancestors, using the
+        /// hierarchy path rather than the id.
+        ///
+        /// Ordering by id does not work: Core returns assets in sorted BYTE
+        /// order over "_asset/id/&lt;decimal&gt;", so "100" sorts before "95".
+        /// Ordering by path DEPTH does, because a parent's path is always a
+        /// proper prefix of its children's and therefore strictly shallower.
+        /// Siblings keep their original relative order, so a restore is
+        /// reproducible; assets with no usable path keep theirs and go last,
+        /// since nothing can be known about their placement.
+        /// </summary>
+        private static List<JsonObject> OrderAssetsParentsFirst(IEnumerable<JsonObject> items)
+        {
+            var withPath = new List<JsonObject>();
+            var depths = new List<int>();
+            var withoutPath = new List<JsonObject>();
+            int maxDepth = 0;
+            foreach (var item in items)
+            {
+                int depth = AssetPathDepth(item);
+                if (depth < 0) { withoutPath.Add(item); continue; }
+                withPath.Add(item);
+                depths.Add(depth);
+                if (depth > maxDepth) maxDepth = depth;
+            }
+            // Bucketing by depth in input order is a stable sort, and stability
+            // is the point: a comparison sort would shuffle siblings.
+            var ordered = new List<JsonObject>(withPath.Count + withoutPath.Count);
+            for (int d = 0; d <= maxDepth; d++)
+                for (int i = 0; i < withPath.Count; i++)
+                    if (depths[i] == d) ordered.Add(withPath[i]);
+            ordered.AddRange(withoutPath);
+            return ordered;
+        }
+
+        // Depth of an asset's "path" — the number of separators inside it.
+        // Negative when the item carries no usable path.
+        private static int AssetPathDepth(JsonObject item)
+        {
+            if (item["path"] is not JsonValue pv || !pv.TryGetValue<string>(out var path)
+                || string.IsNullOrEmpty(path)) return -1;
+            int depth = 0;
+            foreach (var c in path.Trim('/'))
+                if (c == '/') depth++;
+            return depth;
         }
     }
 }

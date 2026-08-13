@@ -63,11 +63,13 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/falconpulsar/falconpulsar-installer/console/internal/actions"
 	"github.com/falconpulsar/falconpulsar-installer/console/internal/api"
+	"github.com/falconpulsar/falconpulsar-installer/console/internal/databackup"
 	"golang.org/x/crypto/pbkdf2"
 )
 
@@ -230,18 +232,14 @@ func Export(ctx context.Context, output string, cli *api.Client, user, pass stri
 	// from the real install dir, not blindly from ~/falconpulsar.
 	home := actions.HomeDir()
 
-	// manifest.json
-	manifest := map[string]any{
-		"format_version":       FormatVersion,
-		"falconpulsar_version": "0.1.4-alpha.84",
-		"exported_at":          time.Now().UTC().Format(time.RFC3339),
-		"source_host":          hostname(),
-		"source_platform":      runtime.GOOS,
-	}
-	mb, _ := json.MarshalIndent(manifest, "", "  ")
-	if err := writeZipFile(zw, "manifest.json", mb); err != nil {
-		return err
-	}
+	// What went wrong, and what was actually captured. The manifest used to be
+	// written here, BEFORE any harvesting, so it could not record either — and
+	// a failed section was replaced by an empty stub, which made a backup that
+	// silently contained no datasources indistinguishable from one taken on a
+	// stack that has none. These accumulate and the manifest is written last.
+	var sectionErrors []string
+	var capturedStores []string
+	var capturedSections []string
 
 	// config files
 	for _, name := range []string{"compose.yml", ".env", "gateway.yaml"} {
@@ -253,17 +251,50 @@ func Export(ctx context.Context, output string, cli *api.Client, user, pass stri
 		}
 	}
 
-	// AI Gateway configuration — providers, models, and their (Fernet-encrypted)
-	// API keys — lives in the gateway's ai_config.db under the ai-gateway-data
-	// volume, NOT the Core DB, so nothing above captures it. Ship it so a restore
-	// brings AI configuration back ready-to-use. The keys stay encrypted with
-	// FP_GATEWAY_SECRET (also carried in the restored .env), and the whole
-	// .fpconfig is AES-encrypted — defense in depth. Absent on a stack with no
-	// AI config yet, or a custom gateway data dir → skipped.
-	if data, err := os.ReadFile(filepath.Join(home, "ai-gateway-data", "ai_config.db")); err == nil {
-		if err := writeZipFile(zw, "files/ai_config.db", data); err != nil {
+	// AI configuration lives outside Core entirely — the gateway's providers,
+	// models and (Fernet-encrypted) API keys, its semantic registry and
+	// terminology packs, the engine's agents / reports / notification channels.
+	// None of it is reachable through the Core REST API above.
+	//
+	// Two things this must NOT do, both of which it used to:
+	//   * find the files under a hardcoded <home>/ai-gateway-data — FP_*_DATA_DIR
+	//     are supported relocations, and a relocated stack silently exported no
+	//     AI state at all while still reporting success;
+	//   * copy them with a host-side read — every one is opened WAL, so recent
+	//     writes sit in the -wal sidecar and never reach the archive.
+	// LoadEnv resolves the real directories; SnapshotConfigStore goes through
+	// VACUUM INTO inside the owning container.
+	dbEnv := databackup.LoadEnv(home)
+	snapDir, err := os.MkdirTemp("", "fpconfig-snap-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(snapDir)
+
+	for _, store := range databackup.ConfigStores(dbEnv) {
+		arcName := "files/" + strings.ReplaceAll(store.Rel, "/", "_")
+		dst := filepath.Join(snapDir, strings.ReplaceAll(store.Rel, "/", "_"))
+
+		captured, err := databackup.SnapshotConfigStore(ctx, dbEnv, store, dst)
+		if err != nil {
+			// A store that exists but could not be snapshotted is a hole in the
+			// backup. Record it so the archive cannot pass for complete.
+			sectionErrors = append(sectionErrors,
+				fmt.Sprintf("%s: %v", store.Rel, err))
+			continue
+		}
+		if !captured {
+			continue // not installed on this stack
+		}
+		data, err := os.ReadFile(dst)
+		if err != nil {
+			sectionErrors = append(sectionErrors, fmt.Sprintf("%s: %v", store.Rel, err))
+			continue
+		}
+		if err := writeZipFile(zw, arcName, data); err != nil {
 			return err
 		}
+		capturedStores = append(capturedStores, store.Rel)
 	}
 
 	// API endpoints harvested as JSON files inside the zip. Order doesn't
@@ -294,12 +325,19 @@ func Export(ctx context.Context, output string, cli *api.Client, user, pass stri
 	} {
 		data, err := harvestPaginated(ctx, cli, ep.path, ep.key)
 		if err != nil {
-			// Don't abort the whole export over one failed section — write
-			// an empty stub so import can at least continue with whatever
-			// did harvest, and surface the section name in the manifest.
-			data = []byte(`{"` + ep.key + `":[]}`)
+			// A section that failed to harvest is NOT written at all. Writing
+			// an empty stub made "the server refused this endpoint" look
+			// exactly like "this stack has none of these", so a backup missing
+			// every datasource imported cleanly and produced an empty plant.
+			// Import treats an absent section as "not in this archive" and
+			// leaves whatever is already on the target alone.
+			sectionErrors = append(sectionErrors, fmt.Sprintf("%s: %v", ep.key, err))
+			continue
 		}
-		_ = writeZipFile(zw, "api/"+ep.name, data)
+		if err := writeZipFile(zw, "api/"+ep.name, data); err != nil {
+			return err
+		}
+		capturedSections = append(capturedSections, ep.key)
 	}
 
 	// v3: the complete server bundle — password hashes, MFA secrets, API
@@ -308,8 +346,35 @@ func Export(ctx context.Context, output string, cli *api.Client, user, pass stri
 	// backup is AES-encrypted so these never touch disk in the clear. A
 	// server too old to expose the endpoint (404) simply yields no bundle
 	// and the backup degrades to v2 behaviour on import.
+	bundleCaptured := false
 	if bundle, err := cli.GetRaw(ctx, "/api/v1/admin/config-bundle"); err == nil && len(bundle) > 0 {
-		_ = writeZipFile(zw, "api/config-bundle.json", bundle)
+		if err := writeZipFile(zw, "api/config-bundle.json", bundle); err != nil {
+			return err
+		}
+		bundleCaptured = true
+	} else if err != nil {
+		// Without the bundle there are no password hashes and no datasource
+		// credentials. That is a materially incomplete backup, not a detail.
+		sectionErrors = append(sectionErrors, "config-bundle: "+err.Error())
+	}
+
+	// manifest.json, written LAST so it can state what this archive actually
+	// contains rather than what the export intended to collect.
+	manifest := map[string]any{
+		"format_version":       FormatVersion,
+		"falconpulsar_version": "0.1.4-alpha.84",
+		"exported_at":          time.Now().UTC().Format(time.RFC3339),
+		"source_host":          hostname(),
+		"source_platform":      runtime.GOOS,
+		"sections":             capturedSections,
+		"config_stores":        capturedStores,
+		"bundle":               bundleCaptured,
+		"incomplete":           len(sectionErrors) > 0,
+		"errors":               sectionErrors,
+	}
+	mb, _ := json.MarshalIndent(manifest, "", "  ")
+	if err := writeZipFile(zw, "manifest.json", mb); err != nil {
+		return err
 	}
 
 	if err := zw.Close(); err != nil {
@@ -319,7 +384,30 @@ func Export(ctx context.Context, output string, cli *api.Client, user, pass stri
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(output, ct, 0600)
+	if err := os.WriteFile(output, ct, 0600); err != nil {
+		return err
+	}
+
+	// The file is written either way — a partial backup beats none — but the
+	// caller must not be told this succeeded. Silence here is what let an
+	// export missing whole sections pass for a complete one.
+	if len(sectionErrors) > 0 {
+		return &IncompleteExportError{Written: output, Problems: sectionErrors}
+	}
+	return nil
+}
+
+// IncompleteExportError reports that the archive was written but does not hold
+// everything it was asked to. The file is still usable for whatever imported
+// cleanly, so this is deliberately not a plain failure.
+type IncompleteExportError struct {
+	Written  string
+	Problems []string
+}
+
+func (e *IncompleteExportError) Error() string {
+	return fmt.Sprintf("backup written to %s but INCOMPLETE — %d section(s) missing: %s",
+		e.Written, len(e.Problems), strings.Join(e.Problems, "; "))
 }
 
 // Import decrypts, unzips, and pushes config back to Core.
@@ -372,13 +460,37 @@ func Import(ctx context.Context, input string, cli *api.Client, user, pass strin
 			}
 		}
 	}
-	// AI Gateway config DB → restore into the ai-gateway-data volume so
-	// providers, models, and their encrypted keys come back. extractTo creates
-	// the parent dir. The gateway reads it at startup, so it takes effect on the
-	// next stack restart (the caller already tells the user to restart).
-	if f, ok := entries["files/ai_config.db"]; ok {
-		if err := extractTo(f, filepath.Join(home, "ai-gateway-data", "ai_config.db")); err != nil {
+	// AI configuration stores → back into their real volumes, so providers,
+	// models, encrypted keys, the semantic registry and the engine's agents /
+	// reports / notification channels all come back.
+	//
+	// Two things this has to get right:
+	//   * the destination comes from LoadEnv, not a hardcoded ai-gateway-data —
+	//     otherwise a relocated stack restores into a directory nothing reads;
+	//   * the -wal and -shm sidecars beside the destination MUST be removed.
+	//     The file is replaced underneath a running container, and a stale WAL
+	//     belonging to the OLD database would either be replayed over the
+	//     restored one (silently reverting it) or rejected as corrupt.
+	// These land while the stack is up; the caller tells the user to restart,
+	// which is when the containers actually re-open them.
+	restoreEnv := databackup.LoadEnv(home)
+	for _, store := range databackup.ConfigStores(restoreEnv) {
+		arcName := "files/" + strings.ReplaceAll(store.Rel, "/", "_")
+		f, ok := entries[arcName]
+		if !ok {
+			continue
+		}
+		if store.HostDir == "" {
+			continue
+		}
+		dst := filepath.Join(store.HostDir, store.Rel)
+		if err := extractTo(f, dst); err != nil {
 			return summary, err
+		}
+		for _, sidecar := range []string{dst + "-wal", dst + "-shm"} {
+			if err := os.Remove(sidecar); err != nil && !os.IsNotExist(err) {
+				return summary, fmt.Errorf("removing stale %s: %w", filepath.Base(sidecar), err)
+			}
 		}
 	}
 	// Legacy back-compat: a backup taken on a pre-mandatory-gateway install
@@ -395,8 +507,10 @@ func Import(ctx context.Context, input string, cli *api.Client, user, pass strin
 	// verbatim, password-preserving restore isn't overwritten by the
 	// password-less REST create path.
 	bundleApplied := false
+	var bundleRaw []byte // kept: datasource secrets are applied after the create pass
 	if f, ok := entries["api/config-bundle.json"]; ok {
 		if raw, err := readZipFile(f); err == nil {
+			bundleRaw = raw
 			if _, err := cli.PostJSON(ctx, "/api/v1/admin/config-bundle", json.RawMessage(raw)); err == nil {
 				bundleApplied = true
 				summary.Sections["config-bundle"] = SectionStats{Created: 1}
@@ -463,6 +577,15 @@ func Import(ctx context.Context, input string, cli *api.Client, user, pass strin
 			continue
 		}
 		items := extractItems(raw, ep.section)
+		if ep.section == "assets" {
+			// GET /api/v1/assets walks the metadata B-tree in sorted BYTE order
+			// over "_asset/id/<decimal>", so id 100 comes back before id 95.
+			// Restored in that order a child can be POSTed before its parent;
+			// Core then auto-creates the parent as a bare placeholder, and the
+			// real parent's own POST comes back 409 and is counted as "skipped"
+			// — losing its asset_type, properties and status silently.
+			items = orderAssetsParentsFirst(items)
+		}
 		st := summary.Sections[ep.section]
 
 		// Series restore the WHOLE configuration in one bulk call. The single
@@ -481,6 +604,16 @@ func Import(ctx context.Context, input string, cli *api.Client, user, pass strin
 			// Different servers issue different UUIDs/ids; we want the target
 			// to mint fresh ones based on the natural keys (name, path, etc.).
 			cleanItem := stripServerIDs(item)
+			if ep.section == "datasources" {
+				// GET /api/v1/datasources masks password/token/client_key/
+				// private_key to "********", and the create handler has no
+				// unmask step — so POSTing this straight through would store
+				// the mask AS the credential, leaving a datasource that looks
+				// configured and cannot authenticate. Drop those keys here and
+				// let restoreDatasourceSecrets put the real values back from
+				// the admin bundle.
+				cleanItem = stripMaskedSecrets(cleanItem)
+			}
 			_, err := cli.PostJSON(ctx, ep.path, cleanItem)
 			if err == nil {
 				st.Created++
@@ -500,6 +633,11 @@ func Import(ctx context.Context, input string, cli *api.Client, user, pass strin
 		}
 		summary.Sections[ep.section] = st
 	}
+
+	// Datasources were created without their secrets (the public export masks
+	// them). Put the real credentials back now that the rows exist.
+	restoreDatasourceSecrets(ctx, cli, bundleRaw, &summary)
+
 	return summary, nil
 }
 
@@ -1027,6 +1165,144 @@ func extractItems(raw []byte, sectionKey string) []any {
 // We strip top-level `id`, `created_at`, `updated_at`, and `disk_bytes`
 // (a runtime stat). The natural keys (`name`, `path`, `username`) are kept
 // so the server can de-dupe.
+// orderAssetsParentsFirst sorts assets so every asset is preceded by its
+// ancestors, using the hierarchy path rather than the id.
+//
+// Ordering by id does not work: Core returns assets in sorted BYTE order over
+// "_asset/id/<decimal>", so "100" sorts before "95". Ordering by path DEPTH
+// does, because a parent's path is always a proper prefix of its children's and
+// therefore strictly shallower. Ties keep their original relative order so the
+// result is deterministic.
+//
+// Assets with no usable path keep their position relative to each other and go
+// last, since nothing can be known about their placement.
+func orderAssetsParentsFirst(items []any) []any {
+	depth := func(v any) (int, bool) {
+		obj, ok := v.(map[string]any)
+		if !ok {
+			return 0, false
+		}
+		p, ok := obj["path"].(string)
+		if !ok || p == "" {
+			return 0, false
+		}
+		return strings.Count(strings.Trim(p, "/"), "/"), true
+	}
+
+	withPath := make([]any, 0, len(items))
+	withoutPath := make([]any, 0)
+	for _, it := range items {
+		if _, ok := depth(it); ok {
+			withPath = append(withPath, it)
+		} else {
+			withoutPath = append(withoutPath, it)
+		}
+	}
+
+	sort.SliceStable(withPath, func(i, j int) bool {
+		di, _ := depth(withPath[i])
+		dj, _ := depth(withPath[j])
+		return di < dj
+	})
+
+	return append(withPath, withoutPath...)
+}
+
+// secretMask is what Core substitutes for password / token / client_key /
+// private_key on the public datasource endpoints (FP_SECRET_MASK in
+// rest_common.h). It must never be written back as if it were a credential.
+const secretMask = "********"
+
+// secretConfigKeys mirrors SECRET_CONFIG_KEYS in falconpulsar-core's
+// rest_common.c. Keep the two in step.
+var secretConfigKeys = []string{"password", "token", "client_key", "private_key"}
+
+// stripMaskedSecrets removes config keys whose value is the mask, so a create
+// never persists "********" as a real credential. Keys holding a genuine value
+// are left alone — a backup taken from a Core old enough to return unmasked
+// configs still restores directly.
+func stripMaskedSecrets(item any) any {
+	obj, ok := item.(map[string]any)
+	if !ok {
+		return item
+	}
+	cfg, ok := obj["config"].(map[string]any)
+	if !ok {
+		return obj
+	}
+	for _, k := range secretConfigKeys {
+		if s, isStr := cfg[k].(string); isStr && s == secretMask {
+			delete(cfg, k)
+		}
+	}
+	return obj
+}
+
+// restoreDatasourceSecrets writes the real credentials over the datasources the
+// create pass just made from the masked public export. The values come from
+// GET /api/v1/admin/config-bundle, the admin-only channel that already carries
+// password hashes and MFA secrets; the archive as a whole is encrypted.
+//
+// Matched by NAME, not id: the target mints its own ids.
+func restoreDatasourceSecrets(ctx context.Context, cli *api.Client, bundleRaw []byte,
+	summary *ImportSummary) {
+
+	if len(bundleRaw) == 0 {
+		return
+	}
+	var bundle struct {
+		DatasourceSecrets []struct {
+			Name   string         `json:"name"`
+			Config map[string]any `json:"config"`
+		} `json:"datasource_secrets"`
+	}
+	if err := json.Unmarshal(bundleRaw, &bundle); err != nil || len(bundle.DatasourceSecrets) == 0 {
+		// A v1/v2 archive, or one taken from a Core that predates the section.
+		// Nothing to apply; the datasources keep whatever the create stored.
+		return
+	}
+
+	// Resolve name -> id on the target.
+	idByName := map[string]uint64{}
+	if raw, err := cli.GetRaw(ctx, "/api/v1/datasources"); err == nil {
+		for _, it := range extractItems(raw, "datasources") {
+			if o, ok := it.(map[string]any); ok {
+				name, _ := o["name"].(string)
+				if id, ok := o["id"].(float64); ok && name != "" {
+					idByName[name] = uint64(id)
+				}
+			}
+		}
+	}
+
+	st := summary.Sections["datasource-secrets"]
+	for _, ds := range bundle.DatasourceSecrets {
+		id, found := idByName[ds.Name]
+		if !found {
+			// The datasource itself failed to import; its secret has nowhere
+			// to go. Already counted as an error in the datasources section.
+			continue
+		}
+		// Never write the mask, even from the bundle.
+		for _, k := range secretConfigKeys {
+			if s, isStr := ds.Config[k].(string); isStr && s == secretMask {
+				delete(ds.Config, k)
+			}
+		}
+		path := fmt.Sprintf("/api/v1/datasources/%d", id)
+		if _, err := cli.PatchJSON(ctx, path, map[string]any{"config": ds.Config}); err != nil {
+			st.Errors++
+			summary.TotalErrors++
+			st.ErrorDetails = appendCapped(st.ErrorDetails, ds.Name+": "+err.Error(), 5)
+			continue
+		}
+		st.Created++
+	}
+	if st.Created > 0 || st.Errors > 0 {
+		summary.Sections["datasource-secrets"] = st
+	}
+}
+
 func stripServerIDs(item any) any {
 	obj, ok := item.(map[string]any)
 	if !ok {
@@ -1160,6 +1436,14 @@ func readZipFile(f *zip.File) ([]byte, error) {
 // Restore). Everything else in .env (secrets, ports, feature flags, admin
 // user) is portable and is correctly carried from the backup.
 var machineSpecificEnvKeys = []string{
+	// FP_HOME is the install directory itself, written as an absolute host path
+	// by both installers. compose.yml mounts ${FP_HOME}/nginx.conf into the ui
+	// and ${FP_HOME}/auth-policy.json into copilot, so carrying the backup's
+	// value to a host that installed somewhere else points both bind mounts at
+	// a path that does not exist — and Docker answers a missing bind source by
+	// CREATING a root-owned directory where a file belongs. Restoring onto a
+	// different install path left the stack unable to start.
+	"FP_HOME",
 	"FP_DATA_DIR",
 	"FP_GATEWAY_DATA_DIR",
 	"FP_ENGINE_DATA_DIR",

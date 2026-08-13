@@ -6,6 +6,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -711,10 +712,19 @@ func (a *App) doExport() {
 				err := configbackup.Export(context.Background(), path, cli, user, pass)
 				a.tv.QueueUpdateDraw(func() {
 					a.pages.RemovePage("modal")
-					if err != nil {
-						a.showMessage("Export failed", err.Error(), true)
-					} else {
+					var incomplete *configbackup.IncompleteExportError
+					switch {
+					case err == nil:
 						a.showMessage("Export complete", "Saved to "+path, true)
+					case errors.As(err, &incomplete):
+						// The file exists and is usable, but it does not hold
+						// everything. Never let this read as success.
+						a.showMessage("Export INCOMPLETE",
+							"Saved to "+path+"\n\nBut these could not be captured:\n  • "+
+								strings.Join(incomplete.Problems, "\n  • ")+
+								"\n\nDo not rely on this file to rebuild the server.", true)
+					default:
+						a.showMessage("Export failed", err.Error(), true)
 					}
 				})
 			}()

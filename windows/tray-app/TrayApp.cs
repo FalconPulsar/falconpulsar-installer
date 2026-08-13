@@ -301,8 +301,12 @@ namespace FalconPulsar.Tray
 
             // Config Backup must export/import the real stack files inside
             // WSL — the same directory the Config Files menu opens — not the
-            // legacy %USERPROFILE%\falconpulsar mirror.
+            // legacy %USERPROFILE%\falconpulsar mirror. It also needs the distro
+            // itself: the AI configuration databases are snapshotted through
+            // `wsl.exe -d <distro> -- docker exec`, and their data directories
+            // are resolved from .env as paths inside that distro.
             ConfigBackup.FalconPulsarHomeDir = _wslHomeUnc;
+            ConfigBackup.WslDistro = _distro;
 
             // Confirmation is NOT a File.Exists() over UNC. \\wsl.localhost
             // only answers while the distro is running, and WSL2 stops one
@@ -2518,6 +2522,19 @@ namespace FalconPulsar.Tray
                     $"Saved to {dlg.FileName}\n\nKeep this file private — it contains your configuration, encrypted with your admin credentials.",
                     "Export complete",
                     MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (ConfigBackup.IncompleteExportException ex)
+            {
+                // The file was still written, so say where it is — but it is
+                // missing whole sections, and a backup believed complete is
+                // worse than no backup at all. Name every gap.
+                MessageBox.Show(
+                    $"Saved to {ex.Written}, but this backup is INCOMPLETE.\n\n" +
+                    "The following could NOT be captured:\n\n" +
+                    "• " + string.Join("\n• ", ex.Problems) + "\n\n" +
+                    "Restoring from this file will not bring those back. Start the stack (Start Stack), wait for every service to come up, and export again.",
+                    "Export INCOMPLETE",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
             catch (Exception ex)
             {

@@ -127,6 +127,86 @@ func targets(e Env) []target {
 	}
 }
 
+// ConfigStore names a SQLite file that holds CONFIGURATION rather than history
+// — the things an operator expects to survive a rebuild.
+type ConfigStore struct {
+	Container string // docker container that owns the file
+	HostDir   string // host directory the container's data volume maps to
+	Rel       string // path of the db relative to that directory
+	Runner    func(containerDir, src, dst string) []string
+}
+
+// ConfigStores lists the stores a CONFIGURATION backup should carry. It is
+// deliberately narrower than targets(): conversations, user memory, replay and
+// outbox are history, and belong to the data backup instead.
+func ConfigStores(e Env) []ConfigStore {
+	py := func(cd, s, d string) []string { return pyVacuum("/app/data", s, d) }
+	node := func(cd, s, d string) []string { return nodeVacuum("/data", s, d) }
+	return []ConfigStore{
+		// providers, models, API keys, gateway settings
+		{"falconpulsar-ai-gateway", e.GatewayDir, "ai_config.db", py},
+		// semantic registry + terminology packs — declared by hand, expensive to lose
+		{"falconpulsar-ai-gateway", e.GatewayDir, "ssr.db", py},
+		// user-authored knowledge documents
+		{"falconpulsar-ai-gateway", e.GatewayDir, "knowledge.db", py},
+		// agents, specs, reports, notification channels, schedules
+		{"falconpulsar-ai-engine", e.EngineDir, "db/fp-agentics.db", node},
+		{"falconpulsar-copilot", e.CopilotDir, "command-center.db", node},
+	}
+}
+
+// SnapshotConfigStore writes a consistent copy of one store to hostDst.
+//
+// It must go through VACUUM INTO inside the container, never a host-side file
+// copy: every one of these databases is opened WAL (the gateway sets
+// PRAGMA journal_mode=WAL for all of them), so recent commits can live entirely
+// in the -wal sidecar. Reading the main file alone yields a database that is
+// missing them — or, mid-checkpoint, one that is internally inconsistent.
+//
+// Returns false when the container is not running or the file does not exist;
+// that is not an error, it just means there is nothing to capture.
+func SnapshotConfigStore(ctx context.Context, e Env, s ConfigStore, hostDst string) (bool, error) {
+	if e.DockerExec == nil {
+		e.DockerExec = realDockerExec
+	}
+	if e.ContainerRunning == nil {
+		e.ContainerRunning = realContainerRunning
+	}
+	if s.HostDir == "" {
+		return false, nil
+	}
+	if _, err := os.Stat(filepath.Join(s.HostDir, s.Rel)); err != nil {
+		return false, nil // store not present on this install
+	}
+	if !e.ContainerRunning(ctx, s.Container) {
+		return false, fmt.Errorf("%s is not running, so %s cannot be snapshotted consistently",
+			s.Container, s.Rel)
+	}
+
+	// VACUUM INTO refuses to overwrite, so the destination must not exist. Write
+	// beside the source (inside the volume) and move it out afterwards.
+	tmpRel := s.Rel + ".fpconfig-snapshot"
+	tmpHost := filepath.Join(s.HostDir, tmpRel)
+	_ = os.Remove(tmpHost)
+
+	if err := e.DockerExec(ctx, s.Container, s.Runner("", s.Rel, tmpRel)); err != nil {
+		return false, fmt.Errorf("snapshot %s: %w", s.Rel, err)
+	}
+	defer os.Remove(tmpHost)
+
+	data, err := os.ReadFile(tmpHost)
+	if err != nil {
+		return false, fmt.Errorf("read snapshot of %s: %w", s.Rel, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(hostDst), 0o755); err != nil {
+		return false, err
+	}
+	if err := os.WriteFile(hostDst, data, 0o600); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // LoadEnv resolves the stack layout from ${FP_HOME}/.env with the same
 // defaults compose.yml uses.
 func LoadEnv(home string) Env {
