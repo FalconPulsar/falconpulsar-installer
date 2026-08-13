@@ -22,6 +22,15 @@
 //	files/.env                   ← env vars (may contain secrets)
 //	files/gateway.yaml           ← AI Gateway config seed
 //	files/ai_config.db           ← AI Gateway providers + models + encrypted keys
+//	files/ssr.db                 ← semantic registry + terminology packs
+//	files/knowledge.db           ← user-authored knowledge documents
+//	files/watches.db             ← watches (what the plant is asked to keep an eye on)
+//	files/db_fp-agentics.db      ← AI Engine agents, reports, notification channels
+//	files/command-center.db      ← Command Center configuration
+//
+//	Every store above is snapshotted with VACUUM INTO inside its own container —
+//	they are opened WAL, so a host-side read misses whatever is still in the
+//	-wal sidecar. Directories come from .env (FP_*_DATA_DIR), never hardcoded.
 //	api/roles.json               ← GET /api/v1/roles
 //	api/users.json               ← GET /api/v1/users
 //	api/asset-types.json         ← GET /api/v1/asset-types       (NEW in v2)

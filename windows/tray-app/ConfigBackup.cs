@@ -36,7 +36,7 @@ namespace FalconPulsar.Tray
     //
     //  Payload (zip):
     //    manifest.json, files/{compose.yml,.env,gateway.yaml},
-    //    files/{ai_config.db,ssr.db,knowledge.db,db_fp-agentics.db,
+    //    files/{ai_config.db,ssr.db,knowledge.db,watches.db,db_fp-agentics.db,
     //           command-center.db}  ← the AI stack's configuration stores; the
     //         entry name is "files/" + the path relative to the service's data
     //         dir with "/" replaced by "_".
@@ -357,6 +357,11 @@ namespace FalconPulsar.Tray
                 // user-authored knowledge documents
                 new ConfigStore { Container = "falconpulsar-ai-gateway", ContainerDir = "/app/data",
                                   HostDir = dirs.gateway, Rel = "knowledge.db" },
+                // Watches are authored by a person and say what the plant should
+                // keep an eye on — configuration, not history, even though the
+                // same file also holds each watch's last stored snapshot.
+                new ConfigStore { Container = "falconpulsar-ai-gateway", ContainerDir = "/app/data",
+                                  HostDir = dirs.gateway, Rel = "watches.db" },
                 // agents, specs, reports, notification channels, schedules
                 new ConfigStore { Container = "falconpulsar-ai-engine", ContainerDir = "/data",
                                   HostDir = dirs.engine, Rel = "db/fp-agentics.db", NodeRuntime = true },

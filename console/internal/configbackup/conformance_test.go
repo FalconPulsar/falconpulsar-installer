@@ -68,6 +68,7 @@ func TestAllImplementationsKnowTheSameArchiveEntries(t *testing.T) {
 		"files/ai_config.db",
 		"files/ssr.db",
 		"files/knowledge.db",
+		"files/watches.db",
 		"files/db_fp-agentics.db",
 		"files/command-center.db",
 		"api/roles.json",

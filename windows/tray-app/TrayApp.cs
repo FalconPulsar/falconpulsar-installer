@@ -166,7 +166,15 @@ namespace FalconPulsar.Tray
             });
 
             _pollTimer = new System.Windows.Forms.Timer { Interval = 15000 };
-            _pollTimer.Tick += async (s, e) => await PollHealth();
+            // Never let this throw. It is an async void handler firing unattended
+            // every 15 seconds — thousands of times a day — and an exception
+            // escaping one is rethrown on the sync context and ENDS the process,
+            // taking the tray icon with it and leaving nothing on screen to
+            // explain why. That is how QuickDock kept vanishing after several
+            // hours: WSL2 idles its VM down, and the WSL/UNC reads inside
+            // PollHealth start failing. A poll that cannot read the stack should
+            // report the stack as unreachable and try again in 15 seconds.
+            _pollTimer.Tick += async (s, e) => await SafePollHealth();
             _pollTimer.Start();
 
             // Arm the automatic update-check timers when the .env flag is
@@ -175,7 +183,7 @@ namespace FalconPulsar.Tray
             _updateCheckAutoEnabled = UpdateCheckAutoEnabled;
             EnsureAutoUpdateTimers();
 
-            _ = PollHealth();
+            _ = SafePollHealth();
         }
 
         // WSL distro names are documented as alphanumerics + dot/underscore/hyphen.
@@ -694,7 +702,7 @@ namespace FalconPulsar.Tray
             menu.Items.Add(requestFeature);
 
             menu.Items.Add(new ToolStripMenuItem("Refresh Status", null,
-                async (s, e) => await PollHealth()));
+                async (s, e) => await SafePollHealth()));
             menu.Items.Add(new ToolStripMenuItem("About FalconPulsar", null,
                 (s, e) => ShowAbout()));
             menu.Items.Add(new ToolStripSeparator());
@@ -705,6 +713,61 @@ namespace FalconPulsar.Tray
                 (s, e) => ExitApp()));
 
             return menu;
+        }
+
+        // Consecutive polls that threw. Reported in the tooltip so a tray that has
+        // gone blind says so, instead of quietly showing whatever it last knew.
+        private int _consecutivePollFailures;
+
+        /// <summary>
+        /// PollHealth with a guarantee that nothing escapes.
+        /// </summary>
+        /// <remarks>
+        /// The poll touches WSL, UNC paths and the Docker daemon, none of which is
+        /// reliably present for the whole life of a login session — WSL2 in
+        /// particular shuts its VM down when idle. Any of those throwing used to
+        /// terminate the tray, because the Tick handler is async void.
+        /// </remarks>
+        private async Task SafePollHealth()
+        {
+            try
+            {
+                await PollHealth();
+                _consecutivePollFailures = 0;
+            }
+            catch (Exception ex)
+            {
+                _consecutivePollFailures++;
+                // Two in a row is roughly 30 seconds of not knowing, which is worth
+                // saying out loud; a single blip while WSL wakes up is not.
+                if (_consecutivePollFailures >= 2)
+                {
+                    // NotifyIcon.Text throws above 63 characters, which would be a
+                    // fine way to reintroduce exactly the crash this method exists
+                    // to prevent. Keep it short and set it defensively.
+                    try { _trayIcon.Text = "FalconPulsar: status unavailable"; }
+                    catch { }
+                }
+                LogPollFailure(ex);
+            }
+        }
+
+        private void LogPollFailure(Exception ex)
+        {
+            try
+            {
+                var dir = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "FalconPulsar");
+                Directory.CreateDirectory(dir);
+                File.AppendAllText(
+                    Path.Combine(dir, "quickdock.log"),
+                    $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} [poll] {ex.GetType().Name}: {ex.Message}{Environment.NewLine}");
+            }
+            catch
+            {
+                // Logging must never be the thing that kills the tray.
+            }
         }
 
         private async Task PollHealth()

@@ -408,6 +408,11 @@ enum ConfigBackup {
             // user-authored knowledge documents
             ConfigStore(container: "falconpulsar-ai-gateway", hostDir: dirs.gateway,
                         containerDir: "/app/data", rel: "knowledge.db", runtime: .python),
+            // Watches are authored by a person and say what the plant should keep
+            // an eye on — configuration, not history, even though the same file
+            // also holds each watch's last stored snapshot.
+            ConfigStore(container: "falconpulsar-ai-gateway", hostDir: dirs.gateway,
+                        containerDir: "/app/data", rel: "watches.db", runtime: .python),
             // agents, specs, reports, notification channels, schedules
             ConfigStore(container: "falconpulsar-ai-engine", hostDir: dirs.engine,
                         containerDir: "/data", rel: "db/fp-agentics.db", runtime: .node),

@@ -149,6 +149,11 @@ func ConfigStores(e Env) []ConfigStore {
 		{"falconpulsar-ai-gateway", e.GatewayDir, "ssr.db", py},
 		// user-authored knowledge documents
 		{"falconpulsar-ai-gateway", e.GatewayDir, "knowledge.db", py},
+		// Watches are authored by a person and say what the plant should keep an
+		// eye on — configuration, not history, even though the same file also
+		// holds each watch's last stored snapshot. Rebuilding a server without
+		// them means someone has to remember what was being watched.
+		{"falconpulsar-ai-gateway", e.GatewayDir, "watches.db", py},
 		// agents, specs, reports, notification channels, schedules
 		{"falconpulsar-ai-engine", e.EngineDir, "db/fp-agentics.db", node},
 		{"falconpulsar-copilot", e.CopilotDir, "command-center.db", node},
