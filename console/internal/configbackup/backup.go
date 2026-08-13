@@ -27,10 +27,6 @@
 //	files/watches.db             ← watches (what the plant is asked to keep an eye on)
 //	files/db_fp-agentics.db      ← AI Engine agents, reports, notification channels
 //	files/command-center.db      ← Command Center configuration
-//
-//	Every store above is snapshotted with VACUUM INTO inside its own container —
-//	they are opened WAL, so a host-side read misses whatever is still in the
-//	-wal sidecar. Directories come from .env (FP_*_DATA_DIR), never hardcoded.
 //	api/roles.json               ← GET /api/v1/roles
 //	api/users.json               ← GET /api/v1/users
 //	api/asset-types.json         ← GET /api/v1/asset-types       (NEW in v2)
@@ -44,7 +40,14 @@
 //	                                the complete-server secrets: user password
 //	                                hashes+salts, MFA secrets, API-token
 //	                                records, roles, and layout/favorite/label/
-//	                                preference KV — applied first on import.
+//	                                preference KV — applied first on import, and
+//	                                the only channel carrying datasource secrets
+//	                                (the public list endpoint masks them).
+//
+// Every files/*.db above is snapshotted with VACUUM INTO inside its own
+// container: they are opened WAL, so a host-side read misses whatever is still
+// in the -wal sidecar. Their directories come from .env (FP_*_DATA_DIR) and are
+// never hardcoded, because those are supported relocations.
 //
 // Format version compatibility:
 //
@@ -371,7 +374,7 @@ func Export(ctx context.Context, output string, cli *api.Client, user, pass stri
 	// contains rather than what the export intended to collect.
 	manifest := map[string]any{
 		"format_version":       FormatVersion,
-		"falconpulsar_version": "0.1.4-alpha.84",
+		"falconpulsar_version": "0.1.4-alpha.85",
 		"exported_at":          time.Now().UTC().Format(time.RFC3339),
 		"source_host":          hostname(),
 		"source_platform":      runtime.GOOS,
