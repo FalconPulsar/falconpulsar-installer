@@ -374,7 +374,7 @@ func Export(ctx context.Context, output string, cli *api.Client, user, pass stri
 	// contains rather than what the export intended to collect.
 	manifest := map[string]any{
 		"format_version":       FormatVersion,
-		"falconpulsar_version": "0.1.4-alpha.85",
+		"falconpulsar_version": "0.1.4-alpha.86",
 		"exported_at":          time.Now().UTC().Format(time.RFC3339),
 		"source_host":          hostname(),
 		"source_platform":      runtime.GOOS,
