@@ -87,9 +87,7 @@ uninstaller. Every step is documented and reversible.
 ### Linux
 
 ```bash
-FP_TAG=$(curl -fsSL "https://api.github.com/repos/FalconPulsar/falconpulsar-installer/releases?per_page=1" | awk -F'"' '/"tag_name":/ {print $4; exit}')
-curl -fsSL "https://github.com/FalconPulsar/falconpulsar-installer/releases/download/${FP_TAG}/install-linux.sh" -o install-linux.sh
-sudo bash install-linux.sh
+FP_TAG=$(curl -fsSL "https://api.github.com/repos/FalconPulsar/falconpulsar-installer/releases?per_page=1" | awk -F'"' '/"tag_name":/{print $4; exit}'); curl -fsSL "https://github.com/FalconPulsar/falconpulsar-installer/releases/download/${FP_TAG}/install-linux.sh" -o install-linux.sh; sudo bash install-linux.sh
 ```
 
 > The installer is interactive (it prompts you to accept the legal terms).
