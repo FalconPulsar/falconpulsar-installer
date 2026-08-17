@@ -49,7 +49,7 @@
 ;               below, which scripts/sync-version.sh keeps in sync with
 ;               the repo-root VERSION file (CI lint enforces no drift).
 #ifndef MyAppVersion
-  #define MyAppVersion "0.1.4-alpha.88"
+  #define MyAppVersion "0.1.4-alpha.89"
 #endif
 #define MyAppPublisher   "FalconPulsar Contributors"
 #define MyAppURL         "https://github.com/FalconPulsar/falconpulsar-installer"
