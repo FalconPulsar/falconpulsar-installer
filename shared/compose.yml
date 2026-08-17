@@ -49,7 +49,7 @@
 #   FP_WS_PORT          WebSocket port (default 7434)
 #   FP_PUBSUB_PORT      Pub/Sub WebSocket port (default 7435)
 #   FP_GATEWAY_PORT     AI Gateway port (default 7436)
-#   FP_UI_PORT          Web UI port (default 8080)
+#   FP_UI_PORT          Web UI port (default 80)
 #   FP_LOG_LEVEL        debug, info, warn, error (default info)
 #
 # LLM provider credentials (Anthropic, xAI, OpenAI, Ollama, etc.) are NOT
@@ -131,7 +131,7 @@ services:
     container_name: falconpulsar-ui
     restart: unless-stopped
     ports:
-      - "${FP_UI_PORT:-8080}:8080"
+      - "${FP_UI_PORT:-80}:8080"
     environment:
       # The origins the shell is permitted to embed. The image turns this into
       # the CSP `frame-src` and `connect-src` at container start; with it
@@ -285,7 +285,7 @@ services:
       # As for Copilot: sets this surface's `frame-ancestors` and the
       # <meta name="fp-shell-origin"> the embedded page reads to decide which
       # parent may hand it a session. See the note on the ui service.
-      FP_SHELL_ORIGIN: "http://${FP_PUBLIC_HOST:-localhost}:${FP_UI_PORT:-8080}"
+      FP_SHELL_ORIGIN: "http://${FP_PUBLIC_HOST:-localhost}:${FP_UI_PORT:-80}"
       FP_CORE_URL: http://core:7433
       FP_CORE_WS: ws://core:7434/ws
       FP_AI_GATEWAY_URL: http://ai-gateway:7436
@@ -343,7 +343,7 @@ services:
       # handshake from. Left unset it falls back to the dev shell on 5173,
       # which is wrong for every real install — the handshake is refused and
       # the surface asks for a second login inside the frame.
-      FP_SHELL_ORIGIN: "http://${FP_PUBLIC_HOST:-localhost}:${FP_UI_PORT:-8080}"
+      FP_SHELL_ORIGIN: "http://${FP_PUBLIC_HOST:-localhost}:${FP_UI_PORT:-80}"
       # In-container data root (host path is only the bind mount source).
       FP_COPILOT_DATA_DIR: /data
       FP_CC_DEPLOYMENT_MODE: plant

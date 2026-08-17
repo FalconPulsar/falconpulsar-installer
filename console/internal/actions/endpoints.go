@@ -23,7 +23,7 @@ import (
 // in shared/compose.yml (and the port in api.DefaultBaseURL).
 const (
 	defaultRestPort    = "7433"
-	defaultUIPort      = "8080"
+	defaultUIPort      = "80"
 	defaultGatewayPort = "7436"
 )
 
@@ -47,7 +47,14 @@ func RestURL() string {
 // UIURL returns the Web UI base URL on this host, honoring an
 // FP_UI_PORT remap in the stack's .env.
 func UIURL() string {
-	return "http://localhost:" + portFromEnv(parseEnvFile(), "FP_UI_PORT", defaultUIPort)
+	p := portFromEnv(parseEnvFile(), "FP_UI_PORT", defaultUIPort)
+	// Omit the port when it is the HTTP default (80) — the browser drops it, so
+	// the shell URL and the surfaces layered on it (/agents, /workplace) read as
+	// clean http://localhost with no port.
+	if p == "80" {
+		return "http://localhost"
+	}
+	return "http://localhost:" + p
 }
 
 // GatewayURL returns the AI gateway base URL on this host, honoring an

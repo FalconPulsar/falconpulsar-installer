@@ -434,7 +434,7 @@ namespace FalconPulsar.Tray
         // health and open the Web UI correctly; the literals are only the
         // installer defaults, used when .env is missing or doesn't set them.
         private string RestPort => EnvValue("FP_REST_PORT") ?? "7433";
-        private string UiPort => EnvValue("FP_UI_PORT") ?? "8080";
+        private string UiPort => EnvValue("FP_UI_PORT") ?? "80";
         private string EnginePort => EnvValue("FP_ENGINE_PORT") ?? "8085";
         private string CopilotPort => EnvValue("FP_COPILOT_PORT") ?? "8090";
 

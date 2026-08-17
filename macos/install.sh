@@ -101,7 +101,7 @@ Options:
   --home <path>     Stack directory (default: ~/falconpulsar)
   --data-dir <path> Database directory (default: ~/falconpulsar/data)
   --rest-port <n>   REST API port (default: 7433)
-  --ui-port <n>     Web UI port (default: 8080)
+  --ui-port <n>     Web UI port (default: 80)
   --yes, -y         Assume yes to all prompts
   --debug           Verbose debug output
   --help, -h        This help
@@ -427,7 +427,7 @@ FP_REST_PORT="${FP_REST_PORT:-7433}"
 FP_WS_PORT="${FP_WS_PORT:-7434}"
 FP_PUBSUB_PORT="${FP_PUBSUB_PORT:-7435}"
 FP_GATEWAY_PORT="${FP_GATEWAY_PORT:-7436}"
-FP_UI_PORT="${FP_UI_PORT:-8080}"
+FP_UI_PORT="${FP_UI_PORT:-80}"
 FP_ENGINE_PORT="${FP_ENGINE_PORT:-8085}"
 # The host a BROWSER types to reach this machine. Not a bind address and not
 # a container name: the shell embeds Command Center and AI Engine as frames,

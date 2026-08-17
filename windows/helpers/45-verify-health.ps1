@@ -101,10 +101,10 @@ if ($apiRc -eq 0) {
 
 # Check Web UI
 Write-Info 'Checking Web UI...'
-$uiScript = 'curl -sf http://localhost:8080 >/dev/null 2>&1'
+$uiScript = 'curl -sf http://localhost >/dev/null 2>&1'
 $uiRc = Invoke-WslBash -Distro $Distro -Script $uiScript -User root
 if ($uiRc -eq 0) {
-    Write-Info '  Web UI: responding on port 8080'
+    Write-Info '  Web UI: responding'
 } else {
     Write-Warn '  Web UI: not responding yet (may still be starting)'
 }
@@ -130,7 +130,7 @@ foreach ($surface in @(
     @{ Label = 'AI Engine';      Path = '/engine/' },
     @{ Label = 'Command Center'; Path = '/copilot/' }
 )) {
-    $sScript = "curl -sf http://localhost:8080$($surface.Path) >/dev/null 2>&1"
+    $sScript = "curl -sf http://localhost$($surface.Path) >/dev/null 2>&1"
     $sRc = Invoke-WslBash -Distro $Distro -Script $sScript -User root
     if ($sRc -eq 0) {
         Write-Info "  $($surface.Label): reachable through the shell at $($surface.Path)"
@@ -144,11 +144,11 @@ if ($allOk) {
     Write-Output ''
     Write-Output '[ok] FalconPulsar is installed and running'
     Write-Output ''
-    Write-Output '  Web UI:     http://localhost:8080'
+    Write-Output '  Web UI:     http://localhost'
     Write-Output '  REST API:   http://localhost:7433'
     Write-Output '  WebSocket:  ws://localhost:7434'
     Write-Output '  AI Gateway: http://localhost:7436'
-    Write-Output '  AI Engine:  http://localhost:8080/agents (embedded in the shell)'
+    Write-Output '  AI Engine:  http://localhost/agents (embedded in the shell)'
     Write-Output ''
     exit 0
 } else {

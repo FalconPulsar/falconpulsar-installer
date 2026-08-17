@@ -6,7 +6,7 @@
 #
 # Adds a "FalconPulsar" group under the All Users Start Menu with:
 #
-#   - Open FalconPulsar Web UI       -- http://localhost:8080
+#   - Open FalconPulsar Web UI       -- http://localhost
 #   - Start FalconPulsar             -- wsl docker compose up -d
 #   - Stop FalconPulsar              -- wsl docker compose down
 #   - Restart FalconPulsar           -- wsl docker compose restart
@@ -108,7 +108,7 @@ URL=$Url
     Write-Info "Created URL shortcut: $Name"
 }
 
-New-UrlShortcut -Name 'Open FalconPulsar Web UI' -Url 'http://localhost:8080'
+New-UrlShortcut -Name 'Open FalconPulsar Web UI' -Url 'http://localhost'
 
 # Relaunch the tray manager (for when the user has quit/killed it).
 $trayExe = Join-Path $InstallDir 'FalconPulsarTray.exe'
@@ -192,6 +192,6 @@ Write-Output "[ok] Start Menu shortcuts created in $groupDir"
 
 } catch {
     Write-Warn "Could not create all Start Menu shortcuts: $($_.Exception.Message)"
-    Write-Warn 'The install succeeded -- shortcuts are cosmetic. You can access FalconPulsar at http://localhost:8080'
+    Write-Warn 'The install succeeded -- shortcuts are cosmetic. You can access FalconPulsar at http://localhost'
 }
 exit 0

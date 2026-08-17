@@ -608,7 +608,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// health and open the Web UI correctly; the literals are only the
     /// installer defaults, used when .env is missing or doesn't set them.
     private var restPort: String { envValue("FP_REST_PORT") ?? "7433" }
-    private var uiPort: String { envValue("FP_UI_PORT") ?? "8080" }
+    private var uiPort: String { envValue("FP_UI_PORT") ?? "80" }
     private var enginePort: String { envValue("FP_ENGINE_PORT") ?? "8085" }
     private var copilotPort: String { envValue("FP_COPILOT_PORT") ?? "8090" }
 
