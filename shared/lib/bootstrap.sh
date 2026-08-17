@@ -79,7 +79,7 @@ _fp_wait_http() {
     # server console / SSH session doesn't render mojibake.
     case "${LC_ALL:-}${LC_CTYPE:-}${LANG:-}" in
         *[Uu][Tt][Ff]8* | *[Uu][Tt][Ff]-8*) frames=( '⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏' ) ;;
-        *) frames=( '|' '/' '-' '\' ) ;;
+        *) frames=( '|' '/' '-' "\\" ) ;;
     esac
     [ -t 2 ] && tty=1
     start=$(date +%s); deadline=$(( start + timeout ))
