@@ -819,9 +819,9 @@ done
 # Command Center verification — mirrors linux/install.sh so both platforms
 # report the same thing: process health, then the server-side stack links.
 if [ "${FP_COPILOT_ENABLED:-false}" = "true" ]; then
-    if curl -sf "http://127.0.0.1:${FP_COPILOT_PORT}/health" >/dev/null 2>&1; then
-        log_success "Command Center: process health on port ${FP_COPILOT_PORT}"
-        CC_STACK="$(curl -sf "http://127.0.0.1:${FP_COPILOT_PORT}/api/cc/stack-status" 2>/dev/null || true)"
+    if curl -sf "http://127.0.0.1:${FP_UI_PORT}/copilot/health" >/dev/null 2>&1; then
+        log_success "Command Center: reachable through the shell (/copilot/)"
+        CC_STACK="$(curl -sf "http://127.0.0.1:${FP_UI_PORT}/copilot/api/cc/stack-status" 2>/dev/null || true)"
         if [ -n "$CC_STACK" ]; then
             CC_READY="$(printf '%s' "$CC_STACK" | sed -n 's/.*"readyForOps":[[:space:]]*\(true\|false\).*/\1/p' | head -1)"
             CC_CORE="$(printf '%s' "$CC_STACK" | sed -n 's/.*"core":{[^}]*"status":"\([^"]*\)".*/\1/p' | head -1)"
@@ -867,7 +867,7 @@ ${FP_C_GREEN}${FP_C_BOLD}╔═════════════════�
   REST API:  ${FP_C_CYAN}http://localhost:${FP_REST_PORT}${FP_C_RESET}
   WebSocket: ${FP_C_CYAN}ws://localhost:${FP_WS_PORT}${FP_C_RESET}
 $(if [ "${FP_COPILOT_ENABLED:-false}" = "true" ]; then
-  printf '  Command Center: %shttp://localhost:%s%s\n' "${FP_C_CYAN}" "${FP_COPILOT_PORT}" "${FP_C_RESET}"
+  printf '  Command Center: %shttp://localhost:%s/workplace%s\n' "${FP_C_CYAN}" "${FP_UI_PORT}" "${FP_C_RESET}"
 fi)
   Auth mode: ${FP_C_BOLD}${FP_AUTH_MODE:-local}${FP_C_RESET}$(if [ "${FP_SSO_PROVIDER:-none}" != "none" ]; then printf ' (SSO: %s)' "${FP_SSO_PROVIDER}"; fi)
 

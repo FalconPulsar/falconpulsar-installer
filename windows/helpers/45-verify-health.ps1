@@ -124,16 +124,18 @@ if ($gwRc -eq 0) {
 # modes are simply empty rectangles, with nothing on screen to say why. That
 # is the failure this check exists to name.
 Write-Info 'Checking embedded surfaces...'
+# Since the single-origin fold the surfaces have no host port of their own --
+# they are reached only through the shell's nginx at /copilot/ and /engine/.
 foreach ($surface in @(
-    @{ Label = 'AI Engine';      Port = 8085 },
-    @{ Label = 'Command Center'; Port = 8090 }
+    @{ Label = 'AI Engine';      Path = '/engine/' },
+    @{ Label = 'Command Center'; Path = '/copilot/' }
 )) {
-    $sScript = "curl -sf http://localhost:$($surface.Port)/ >/dev/null 2>&1"
+    $sScript = "curl -sf http://localhost:8080$($surface.Path) >/dev/null 2>&1"
     $sRc = Invoke-WslBash -Distro $Distro -Script $sScript -User root
     if ($sRc -eq 0) {
-        Write-Info "  $($surface.Label): responding on port $($surface.Port)"
+        Write-Info "  $($surface.Label): reachable through the shell at $($surface.Path)"
     } else {
-        Write-Warn "  $($surface.Label): not responding on port $($surface.Port) -- the shell will show this mode as unavailable"
+        Write-Warn "  $($surface.Label): not reachable through the shell at $($surface.Path) -- that mode will show as unavailable"
     }
 }
 
@@ -146,7 +148,7 @@ if ($allOk) {
     Write-Output '  REST API:   http://localhost:7433'
     Write-Output '  WebSocket:  ws://localhost:7434'
     Write-Output '  AI Gateway: http://localhost:7436'
-    Write-Output '  AI Engine:  http://localhost:8085'
+    Write-Output '  AI Engine:  http://localhost:8080/agents (embedded in the shell)'
     Write-Output ''
     exit 0
 } else {

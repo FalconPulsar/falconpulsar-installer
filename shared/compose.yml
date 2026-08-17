@@ -270,16 +270,11 @@ services:
     user: "${FP_UID}:${FP_GID}"
     # AI Engine is a standard stack service (no compose profile) — always
     # installed alongside Core / Web UI / AI Gateway.
-    ports:
-      # Serves its own Fleet/Builder/Reports UI, which the shell embeds as the
-      # Agents mode. The browser frames it BY ORIGIN rather than proxying it
-      # through the shell's nginx, so it has to be reachable from wherever the
-      # browser runs — loopback-only meant Agents worked on the machine that
-      # installed it and was an empty rectangle from anywhere else. Matches
-      # FP_COPILOT_BIND, which has always defaulted this way for the same
-      # reason. Set FP_ENGINE_BIND=127.0.0.1 to keep it off the LAN, and
-      # accept that a remote browser then cannot show the Agents mode.
-      - "${FP_ENGINE_BIND:-0.0.0.0}:${FP_ENGINE_PORT:-8085}:8085"
+    # No published host port. Since the single-origin fold the Agents UI is
+    # reached ONLY through the shell's own nginx at /engine/ (same origin),
+    # never on its own port — a surface must not be callable outside the shell.
+    # It stays on the internal network as ai-engine:8085 for the shell's nginx
+    # and inter-service calls; the shell's /engine/ block proxies to it there.
     volumes:
       - "${FP_ENGINE_DATA_DIR:-${FP_DATA_DIR}/../ai-engine-data}:/data"
     depends_on:
@@ -337,8 +332,10 @@ services:
     restart: unless-stopped
     user: "${FP_UID}:${FP_GID}"
     profiles: ["copilot"]
-    ports:
-      - "${FP_COPILOT_BIND:-0.0.0.0}:${FP_COPILOT_PORT:-8090}:8080"
+    # No published host port — reached ONLY through the shell at /copilot/
+    # (single-origin fold). Internal network only, as copilot:8080; the shell's
+    # /copilot/ nginx block proxies to it there. A surface is never externally
+    # callable outside the shell.
     environment:
       # The shell's origin. Two things depend on it: the `frame-ancestors`
       # this surface sends, and the <meta name="fp-shell-origin"> it puts in
