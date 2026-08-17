@@ -126,7 +126,7 @@ struct InstallerView: View {
     func executeConclusionActions() {
         if state.installSuccess {
             if state.openWebUI {
-                NSWorkspace.shared.open(URL(string: "http://localhost:8080")!)
+                NSWorkspace.shared.open(URL(string: "http://localhost")!)
             }
             if state.launchMenuBar {
                 let logPath = "/tmp/falconpulsar-install.log"
@@ -674,7 +674,7 @@ struct ConclusionPage: View {
 
             if state.installSuccess {
                 VStack(alignment: .leading, spacing: 6) {
-                    ServiceRow(name: "Web UI", url: "http://localhost:8080")
+                    ServiceRow(name: "Web UI", url: "http://localhost")
                     ServiceRow(name: "REST API", url: "http://localhost:7433")
                     ServiceRow(name: "WebSocket", url: "ws://localhost:7434")
                     ServiceRow(name: "AI Capabilities", url: "http://localhost:7436")

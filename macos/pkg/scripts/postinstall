@@ -135,7 +135,7 @@ EXIT_CODE=${PIPESTATUS[0]}
 
 if [ "$EXIT_CODE" -eq 0 ]; then
     log_info "Installation completed successfully"
-    log_info "Web UI: http://localhost:8080"
+    log_info "Web UI: http://localhost"
     log_info "Log file: $LOG_FILE"
 else
     log_error "Installation failed with exit code $EXIT_CODE"
