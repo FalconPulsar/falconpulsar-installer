@@ -88,8 +88,14 @@ uninstaller. Every step is documented and reversible.
 
 ```bash
 FP_TAG=$(curl -fsSL "https://api.github.com/repos/FalconPulsar/falconpulsar-installer/releases?per_page=1" | awk -F'"' '/"tag_name":/ {print $4; exit}')
-curl -fsSL "https://github.com/FalconPulsar/falconpulsar-installer/releases/download/${FP_TAG}/install-linux.sh" | sudo bash
+curl -fsSL "https://github.com/FalconPulsar/falconpulsar-installer/releases/download/${FP_TAG}/install-linux.sh" -o install-linux.sh
+sudo bash install-linux.sh
 ```
+
+> The installer is interactive (it prompts you to accept the legal terms).
+> Download it to a file and run it, as above, so the prompts can read your
+> keyboard. Piping straight into `sudo bash` gives the script no terminal,
+> so the legal prompt auto-declines and the install cancels.
 
 Installs the stack on Ubuntu, Debian, RHEL, Rocky, AlmaLinux, Fedora, or
 openSUSE. Docker Engine is installed via `get.docker.com` if it isn't
@@ -99,8 +105,9 @@ To uninstall:
 
 ```bash
 FP_TAG=$(curl -fsSL "https://api.github.com/repos/FalconPulsar/falconpulsar-installer/releases?per_page=1" | awk -F'"' '/"tag_name":/ {print $4; exit}')
-curl -fsSL "https://github.com/FalconPulsar/falconpulsar-installer/releases/download/${FP_TAG}/uninstall-linux.sh" | sudo bash
-# add `-s -- --purge` to also delete the local database
+curl -fsSL "https://github.com/FalconPulsar/falconpulsar-installer/releases/download/${FP_TAG}/uninstall-linux.sh" -o uninstall-linux.sh
+sudo bash uninstall-linux.sh
+# add `--purge` to also delete the local database
 ```
 
 ### macOS
@@ -187,10 +194,11 @@ credentials via `FP_REGISTRY_USER` / `FP_REGISTRY_PASS`.
 
 ```bash
 FP_TAG=$(curl -fsSL "https://api.github.com/repos/FalconPulsar/falconpulsar-installer/releases?per_page=1" | awk -F'"' '/"tag_name":/ {print $4; exit}')
+curl -fsSL "https://github.com/FalconPulsar/falconpulsar-installer/releases/download/${FP_TAG}/install-linux.sh" -o install-linux.sh
 FP_REGISTRY=ghcr.io/your-org/falconpulsar \
 FP_REGISTRY_USER=your-github-username \
 FP_REGISTRY_PASS=ghp_your_personal_access_token \
-    curl -fsSL "https://github.com/FalconPulsar/falconpulsar-installer/releases/download/${FP_TAG}/install-linux.sh" | sudo -E bash
+    sudo -E bash install-linux.sh
 ```
 
 The Windows installer has a dedicated **Container Registry** wizard page
@@ -235,8 +243,8 @@ with the installer log attached. Log locations:
 
 - macOS GUI installer and the Linux / macOS uninstallers:
   `/tmp/falconpulsar-install.log`
-- Terminal (`curl | bash`) installs print to the console — capture with
-  `… | sudo bash 2>&1 | tee install.log`
+- Terminal installs print to the console — capture with
+  `sudo bash install-linux.sh 2>&1 | tee install.log`
 - Windows: `%TEMP%\falconpulsar-install.log`
 
 ---

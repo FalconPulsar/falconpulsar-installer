@@ -67,7 +67,7 @@ fp_wait_for_api_ready() {
 
     log_info "waiting for REST API on port ${port} to accept requests..."
     while [ "$(date +%s)" -lt "$deadline" ]; do
-        if curl -fsS -o /dev/null "http://127.0.0.1:${port}/api/v1/health" 2>/dev/null; then
+        if curl -fsS --max-time 5 -o /dev/null "http://127.0.0.1:${port}/api/v1/health" 2>/dev/null; then
             log_success "REST API is responding"
             return 0
         fi
@@ -88,7 +88,7 @@ fp_wait_for_gateway_ready() {
 
     log_info "waiting for AI Gateway on port ${port} to accept requests..."
     while [ "$(date +%s)" -lt "$deadline" ]; do
-        if curl -fsS -o /dev/null "http://127.0.0.1:${port}/health" 2>/dev/null; then
+        if curl -fsS --max-time 5 -o /dev/null "http://127.0.0.1:${port}/health" 2>/dev/null; then
             log_success "AI Gateway is responding"
             return 0
         fi
@@ -292,12 +292,12 @@ fp_wipe_gateway_seed_defaults() {
     deadline=$(( $(date +%s) + 90 ))
     log_info "waiting for AI Gateway to finish init before wiping seed defaults"
     while [ "$(date +%s)" -lt "$deadline" ]; do
-        if curl -fsS -o /dev/null "http://127.0.0.1:${port}/health" 2>/dev/null; then
+        if curl -fsS --max-time 5 -o /dev/null "http://127.0.0.1:${port}/health" 2>/dev/null; then
             break
         fi
         sleep 2
     done
-    if ! curl -fsS -o /dev/null "http://127.0.0.1:${port}/health" 2>/dev/null; then
+    if ! curl -fsS --max-time 5 -o /dev/null "http://127.0.0.1:${port}/health" 2>/dev/null; then
         log_warn "AI Gateway did not become healthy in 90s — leaving seed defaults in place"
         return 0
     fi
@@ -307,14 +307,29 @@ fp_wipe_gateway_seed_defaults() {
     # /health body). Older images without the field fall straight through.
     deadline=$(( $(date +%s) + 300 ))
     log_info "checking AI Gateway knowledge warm-up state before wiping seed defaults"
+    local warm_started warm_elapsed warm_next_beat=30 warm_announced=0
+    warm_started=$(date +%s)
     while [ "$(date +%s)" -lt "$deadline" ]; do
-        if ! curl -fsS "http://127.0.0.1:${port}/health" 2>/dev/null | \
+        if ! curl -fsS --max-time 5 "http://127.0.0.1:${port}/health" 2>/dev/null | \
                 grep -q '"knowledge"[[:space:]]*:[[:space:]]*"warming"'; then
             break
         fi
+        # First boot only: the gateway downloads a ~1.3GB embedding model from
+        # HuggingFace before warm-up finishes. On a slow/rate-limited link this
+        # legitimately takes minutes — emit a heartbeat so the wait is visibly
+        # progressing instead of looking frozen (the #1 "is it stuck?" report).
+        warm_elapsed=$(( $(date +%s) - warm_started ))
+        if [ "$warm_elapsed" -ge "$warm_next_beat" ]; then
+            if [ "$warm_announced" = "0" ]; then
+                log_info "AI Gateway is downloading its ~1.3GB embedding model (first install only) — can take a few minutes on a slow link"
+                warm_announced=1
+            fi
+            log_info "  still warming up… ${warm_elapsed}s elapsed (waiting up to 300s, then continuing regardless)"
+            warm_next_beat=$(( warm_next_beat + 30 ))
+        fi
         sleep 5
     done
-    if curl -fsS "http://127.0.0.1:${port}/health" 2>/dev/null | \
+    if curl -fsS --max-time 5 "http://127.0.0.1:${port}/health" 2>/dev/null | \
             grep -q '"knowledge"[[:space:]]*:[[:space:]]*"warming"'; then
         log_warn "AI Gateway knowledge warm-up still running after 300s — proceeding anyway (model cache + top-up seeding keep the restart safe)"
     fi
@@ -333,7 +348,7 @@ fp_wipe_gateway_seed_defaults() {
 
     deadline=$(( $(date +%s) + 60 ))
     while [ "$(date +%s)" -lt "$deadline" ]; do
-        if curl -fsS -o /dev/null "http://127.0.0.1:${port}/health" 2>/dev/null; then
+        if curl -fsS --max-time 5 -o /dev/null "http://127.0.0.1:${port}/health" 2>/dev/null; then
             log_success "AI Gateway clean: 0 providers, 0 models"
             return 0
         fi
