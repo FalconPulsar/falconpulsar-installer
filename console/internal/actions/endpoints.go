@@ -25,8 +25,6 @@ const (
 	defaultRestPort    = "7433"
 	defaultUIPort      = "8080"
 	defaultGatewayPort = "7436"
-	defaultEnginePort  = "8085"
-	defaultCopilotPort = "8090"
 )
 
 // portFromEnv returns env[key] when it parses as a valid TCP port, and
@@ -60,11 +58,14 @@ func GatewayURL() string {
 	return "http://localhost:" + portFromEnv(parseEnvFile(), "FP_GATEWAY_PORT", defaultGatewayPort)
 }
 
-// EngineURL returns the optional AI Engine UI base URL on this host,
-// honoring an FP_ENGINE_PORT remap in the stack's .env. Only meaningful
-// on installs where EngineEnabled() reports true.
+// EngineURL returns where a person reaches the AI Engine: the shell's Agents
+// mode. Since the single-origin fold the Engine is an embedded surface, not a
+// standalone app on :8085 — opening it there means arriving without the shell
+// around it (no mode switcher, no identity) and waiting for a handshake from a
+// parent frame that is not there. The status row above still checks the
+// container itself; this is the door a person uses. Honors an FP_UI_PORT remap.
 func EngineURL() string {
-	return "http://localhost:" + portFromEnv(parseEnvFile(), "FP_ENGINE_PORT", defaultEnginePort)
+	return UIURL() + "/agents"
 }
 
 // EngineEnabled reports whether the optional AI Engine service is enabled
@@ -75,11 +76,12 @@ func EngineEnabled() bool {
 	return strings.EqualFold(strings.TrimSpace(parseEnvFile()["FP_AI_ENGINE_ENABLED"]), "true")
 }
 
-// CopilotURL returns the optional Command Center UI base URL on this host,
-// honoring an FP_COPILOT_PORT remap in the stack's .env. Only meaningful
-// on installs where CopilotEnabled() reports true.
+// CopilotURL returns where a person reaches the Command Center: the shell's
+// Workplace mode. As with EngineURL, since the single-origin fold it is an
+// embedded surface rather than a standalone app on :8090, so the door is the
+// shell mode, not the surface's own path. Honors an FP_UI_PORT remap.
 func CopilotURL() string {
-	return "http://localhost:" + portFromEnv(parseEnvFile(), "FP_COPILOT_PORT", defaultCopilotPort)
+	return UIURL() + "/workplace"
 }
 
 // CopilotEnabled reports whether the optional Command Center service is
