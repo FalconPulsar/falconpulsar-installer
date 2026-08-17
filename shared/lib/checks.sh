@@ -11,7 +11,7 @@
 #   - check_kernel              — Linux 5.15+ recommended
 #   - check_systemd             — required for the systemd install mode
 #   - check_ram / check_disk    — minimums per REQUIREMENTS.md
-#   - check_ports               — 7433/7434/7435/7436/8080 must be free
+#   - check_ports               — 7433/7434/7435/7436/80 must be free
 #   - check_docker              — docker engine + compose v2 plugin
 #   - check_docker_daemon       — daemon reachable + non-root member of docker group
 #   - install_docker_linux      — wraps the official get.docker.com script
@@ -35,7 +35,7 @@ fi
 FP_MIN_RAM_MB_LINUX=4096
 FP_MIN_RAM_MB_OTHER=8192
 FP_MIN_DISK_GB=10
-FP_DEFAULT_PORTS="7433 7434 7435 7436 8080"
+FP_DEFAULT_PORTS="7433 7434 7435 7436 80"
 
 # ── OS detection ─────────────────────────────────────────────────────────────
 # Reads /etc/os-release and exports FP_DISTRO_ID, FP_DISTRO_VERSION,

@@ -423,6 +423,13 @@ if fp_has_existing_install; then
 
     fp_apply_existing_action "$FP_HOME"
 
+    # One-time Web-UI port migration (:8080 → 80). Edits .env in place, so
+    # it runs BEFORE both the fast-path and the full flow read it — a single
+    # site covers upgrade and reinstall. Skipped when the operator pinned
+    # FP_UI_PORT (--ui-port / env → *_EXPLICIT), and when port 80 is held by
+    # a foreign process. See fp_migrate_ui_port_80 in existing.sh.
+    fp_migrate_ui_port_80 "$FP_HOME" "${FP_UI_PORT_EXPLICIT:-}"
+
     # Refresh uninstall.sh + auth.sh BEFORE the fast-path. Otherwise every
     # upgrade keeps the user's old (potentially broken) uninstaller on disk.
     # Mirrors the same fix in macos/install.sh.
@@ -526,7 +533,12 @@ fi
 # we surface what's holding it and let the user remap our port, re-check
 # after fixing manually, or abort.
 log_step "verifying required TCP ports are free"
-fp_check_ports_interactive FP_REST_PORT FP_WS_PORT FP_PUBSUB_PORT FP_GATEWAY_PORT FP_UI_PORT FP_ENGINE_PORT
+# Only the ports the stack actually PUBLISHES on the host are checked.
+# Since the single-origin fold, the AI Engine and Command Center are
+# reached through the shell's nginx (no host port of their own), so
+# FP_ENGINE_PORT / FP_COPILOT_PORT are internal-only — checking them here
+# would falsely block an install over an unrelated listener on 8085/8090.
+fp_check_ports_interactive FP_REST_PORT FP_WS_PORT FP_PUBSUB_PORT FP_GATEWAY_PORT FP_UI_PORT
 
 # Container registry — wizard-style prompt (Linux parity with Mac SwiftUI
 # RegistryPage and Windows Inno Setup RegistryPage). Collects URL +
@@ -709,9 +721,9 @@ log_step "step 6/8 — stack files in ${FP_HOME}"
 prompt_transport_mode
 prompt_auth_mode
 prompt_copilot
-if [ "${FP_COPILOT_ENABLED:-false}" = "true" ]; then
-    fp_check_ports_interactive FP_COPILOT_PORT
-fi
+# No FP_COPILOT_PORT pre-flight: since the fold, Command Center publishes no
+# host port (it is served through the shell's nginx at /copilot/), so there
+# is nothing to conflict with. prompt_copilot only refreshes COMPOSE_PROFILES.
 prompt_admin_credentials
 
 install -m 0644 -o "$FP_USER" -g "$FP_USER" \

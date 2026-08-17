@@ -560,7 +560,8 @@ echo '[ok] Reinstall prep complete (database preserved)'
 
 # -- 3b. Post-cleanup port verification --------------------------------------
 # The bash installer's step 1 pre-flight fails hard on ANY port conflict
-# (7433/7434/7435/7436/8080). On Windows, WSL-side ss/lsof can't see the
+# (7433/7434/7435/7436/80 — the Web UI now publishes on 80, not 8080).
+# On Windows, WSL-side ss/lsof can't see the
 # process holding a port because Docker Desktop binds it on the Windows
 # host; that's why the bash error ends up blank after "port X is in use".
 #
@@ -569,7 +570,7 @@ echo '[ok] Reinstall prep complete (database preserved)'
 # Windows-native tools (Get-NetTCPConnection / tasklist / docker ps).
 # If it's another Docker container we offer to stop it; if it's a native
 # Windows process we report name+PID and tell the user to stop it.
-$FpPorts = @(7433, 7434, 7435, 7436, 8080)
+$FpPorts = @(7433, 7434, 7435, 7436, 80)
 $Conflicts = @()
 foreach ($p in $FpPorts) {
     $conn = Get-NetTCPConnection -LocalPort $p -State Listen -ErrorAction SilentlyContinue

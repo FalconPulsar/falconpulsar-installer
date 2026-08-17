@@ -371,6 +371,73 @@ fp_apply_existing_action() {
     esac
 }
 
+# fp_migrate_ui_port_80 <home> <operator_explicit>
+#
+#   home              stack dir holding the install's .env
+#   operator_explicit "1" when the operator pinned FP_UI_PORT via flag/env
+#                     — then the migration is skipped and their choice wins.
+#
+# One-time move of an existing install off the historical :8080 Web-UI
+# default onto the clean port 80, so the shell — and the Command Center /
+# AI Engine surfaces folded onto it — live at a bare http://<host>/ with
+# no :8080 in the URL. This edits the .env in place, so it must run BEFORE
+# both the upgrade fast-path and the full reinstall flow read the file
+# (call site: right after fp_apply_existing_action in both installers).
+#
+# Scope is deliberately narrow:
+#   • Only the historical default (8080) migrates. Any other remap is a
+#     considered operator choice and is left untouched.
+#   • An operator who pins FP_UI_PORT via --ui-port / the environment opts
+#     out entirely (operator_explicit=1) — even to re-pin 8080.
+#   • It moves only when port 80 is actually bindable. If a FOREIGN process
+#     holds 80 (a system web server, another container), the install stays
+#     on :8080 rather than breaking the recreate that follows.
+#
+# It also writes FP_UI_PORT explicitly (never leaves it to the compose
+# default), so an older fp console / tray binary — whose own built-in
+# default may still be 8080 — reads the right port straight from .env.
+fp_migrate_ui_port_80() {
+    local home="$1" explicit="${2:-}"
+    [ -f "${home}/.env" ] || return 0
+    [ "$explicit" = "1" ] && return 0
+
+    local cur
+    cur="$(sed -n 's/^FP_UI_PORT=//p' "${home}/.env" | tail -n1 | tr -d '\r')"
+    # Only 8080 (or an absent line, which inherits the refreshed compose
+    # default — now 80 — and so is also about to move) is in scope.
+    case "$cur" in
+        8080|"") ;;
+        *) return 0 ;;
+    esac
+
+    # Port-80 safety gate. A listener that is one of OUR OWN containers is
+    # not a conflict — `compose up -d` replaces it — so only a foreign
+    # holder blocks the move. (During an upgrade our ui still holds :8080,
+    # not :80, so the common case is simply "80 is free".)
+    if port_in_use 80 && ! fp_port_held_by_our_stack 80; then
+        log_warn "Port 80 is held by another process — keeping the Web UI on :8080."
+        port_holder 80 >&2 2>/dev/null || true
+        # Pin 8080 so the refreshed compose default (80) does not silently
+        # move a no-FP_UI_PORT install onto the occupied port.
+        if [ -z "$cur" ] && ! grep -q '^FP_UI_PORT=' "${home}/.env"; then
+            printf 'FP_UI_PORT=8080\n' >> "${home}/.env"
+        fi
+        return 0
+    fi
+
+    if [ "$cur" = "8080" ]; then
+        # cur is exactly 8080 (verified above) — replace the whole value so
+        # a trailing CR from a Windows/hand-edited .env is dropped too.
+        local migrated
+        migrated="$(sed 's/^FP_UI_PORT=.*/FP_UI_PORT=80/' "${home}/.env")"
+        printf '%s\n' "$migrated" > "${home}/.env"
+    elif ! grep -q '^FP_UI_PORT=' "${home}/.env"; then
+        printf 'FP_UI_PORT=80\n' >> "${home}/.env"
+    fi
+    log_info "Web UI moved to port 80 — now reachable at a clean http://<host>/ (was :8080)."
+    return 0
+}
+
 # Upgrade fast-path: when the user chose "upgrade" AND the existing compose.yml
 # is intact, skip the full install and just migrate+pull+recreate. Returns 0 if
 # it completed the upgrade (caller should exit success); 1 if not applicable.

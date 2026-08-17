@@ -313,6 +313,14 @@ if fp_has_existing_install; then
 
     fp_apply_existing_action "$FP_HOME"
 
+    # One-time Web-UI port migration (:8080 → 80). Edits .env in place, so
+    # it runs BEFORE both the fast-path and the full flow read it — a single
+    # site covers upgrade and reinstall. FP_UI_PORT is still unset here
+    # unless the operator pinned it (--ui-port / env); the ${FP_UI_PORT:+1}
+    # marker makes an explicit pin opt out. Skipped too when port 80 is held
+    # by a foreign process. See fp_migrate_ui_port_80 in existing.sh.
+    fp_migrate_ui_port_80 "$FP_HOME" "${FP_UI_PORT:+1}"
+
     # Refresh uninstall.sh + auth.sh BEFORE the fast-path. Otherwise every
     # upgrade keeps the user's old (potentially broken) uninstaller on disk.
     if [ -f "${SCRIPT_DIR}/uninstall.sh" ] && [ -d "${FP_HOME}" ]; then
@@ -350,7 +358,7 @@ fi
 # (or an upgrade that fell through from the fast-path) anything not re-read
 # here silently reverts to defaults: a custom data dir comes back as
 # ${FP_HOME}/data (core re-inits an empty database while the real one sits
-# orphaned at the custom path), remapped ports revert to 7433/…/8080, and a
+# orphaned at the custom path), remapped ports revert to 7433/…/80, and a
 # pinned FP_VERSION jumps to "latest". Seed unset settings from the
 # existing .env before the port check below so the ports being verified are
 # the ones the stack will actually use. Explicit flags and operator-set
@@ -455,7 +463,12 @@ fi
 # external — the prompt lets the user remap our port, re-check, or
 # abort instead of dying outright.
 log_step "verifying required TCP ports are free"
-fp_check_ports_interactive FP_REST_PORT FP_WS_PORT FP_PUBSUB_PORT FP_GATEWAY_PORT FP_UI_PORT FP_ENGINE_PORT
+# Only the ports the stack actually PUBLISHES on the host are checked.
+# Since the single-origin fold, the AI Engine and Command Center are
+# reached through the shell's nginx (no host port of their own), so
+# FP_ENGINE_PORT / FP_COPILOT_PORT are internal-only — checking them here
+# would falsely block an install over an unrelated listener on 8085/8090.
+fp_check_ports_interactive FP_REST_PORT FP_WS_PORT FP_PUBSUB_PORT FP_GATEWAY_PORT FP_UI_PORT
 
 # Container registry — wizard-style prompt (parity with the Linux installer
 # and the Mac SwiftUI RegistryPage / Windows Inno Setup RegistryPage).
@@ -477,9 +490,9 @@ fp_registry_ensure_access
 prompt_transport_mode
 prompt_auth_mode
 prompt_copilot
-if [ "${FP_COPILOT_ENABLED:-false}" = "true" ]; then
-    fp_check_ports_interactive FP_COPILOT_PORT
-fi
+# No FP_COPILOT_PORT pre-flight: since the fold, Command Center publishes no
+# host port (it is served through the shell's nginx at /copilot/), so there
+# is nothing to conflict with. prompt_copilot only refreshes COMPOSE_PROFILES.
 prompt_admin_credentials
 
 # ── Step 3: Stack directory ─────────────────────────────────────────────────
