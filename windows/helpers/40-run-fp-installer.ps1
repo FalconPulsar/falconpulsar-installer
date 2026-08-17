@@ -560,7 +560,7 @@ echo '[ok] Reinstall prep complete (database preserved)'
 
 # -- 3b. Post-cleanup port verification --------------------------------------
 # The bash installer's step 1 pre-flight fails hard on ANY port conflict
-# (7433/7434/7435/7436/80 — the Web UI now publishes on 80, not 8080).
+# (7433/7434/7435/7436/80 -- the Web UI now publishes on 80, not 8080).
 # On Windows, WSL-side ss/lsof can't see the
 # process holding a port because Docker Desktop binds it on the Windows
 # host; that's why the bash error ends up blank after "port X is in use".
