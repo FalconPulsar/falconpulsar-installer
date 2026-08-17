@@ -60,19 +60,61 @@ FP_GATEWAY_TOKEN_PERMISSIONS='[
 
 # ── REST helpers ────────────────────────────────────────────────────────────
 
+# Poll an HTTP endpoint until curl succeeds (2xx/3xx) or the timeout passes.
+#   $1 url   $2 timeout_seconds   $3 human message (no trailing punctuation)
+# Returns 0 on success, 1 on timeout.
+#
+# On an interactive terminal (stderr is a TTY) it shows a single live line —
+# a rotating spinner plus elapsed seconds, redrawn in place — so a slow wait
+# visibly reads as "working", not frozen. When stderr is NOT a TTY (piped,
+# `| tee install.log`, CI, non-interactive), a spinner would spew carriage
+# returns into the log, so it degrades to a quiet elapsed-time heartbeat
+# every 15s. Each probe is capped with --max-time so one hung request can
+# never stall the loop past its deadline.
+_fp_wait_http() {
+    local url="$1" timeout="$2" msg="$3"
+    local start now elapsed deadline frame=0 last_beat=0 tty=0
+    local -a frames
+    # Braille spinner only on a UTF-8 locale; plain ASCII otherwise so a bare
+    # server console / SSH session doesn't render mojibake.
+    case "${LC_ALL:-}${LC_CTYPE:-}${LANG:-}" in
+        *[Uu][Tt][Ff]8* | *[Uu][Tt][Ff]-8*) frames=( '⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏' ) ;;
+        *) frames=( '|' '/' '-' '\' ) ;;
+    esac
+    [ -t 2 ] && tty=1
+    start=$(date +%s); deadline=$(( start + timeout ))
+    while :; do
+        if curl -fsS --max-time 5 -o /dev/null "$url" 2>/dev/null; then
+            [ "$tty" = "1" ] && printf '\r\033[K' >&2
+            return 0
+        fi
+        now=$(date +%s); elapsed=$(( now - start ))
+        [ "$now" -ge "$deadline" ] && break
+        if [ "$tty" = "1" ]; then
+            printf '\r%s[..]%s %s %s... %ss' "${FP_C_BLUE}" "${FP_C_RESET}" \
+                "${frames[$(( frame % ${#frames[@]} ))]}" "$msg" "$elapsed" >&2
+            frame=$(( frame + 1 ))
+            sleep 0.2
+        else
+            if [ "$(( elapsed - last_beat ))" -ge 15 ]; then
+                log_info "  ${msg}... ${elapsed}s"
+                last_beat="$elapsed"
+            fi
+            sleep 2
+        fi
+    done
+    [ "$tty" = "1" ] && printf '\r\033[K' >&2
+    return 1
+}
+
 # Wait for /api/v1/health to return 200. Times out after 3 minutes.
 fp_wait_for_api_ready() {
     local port="${1:-7433}"
-    local deadline=$(( $(date +%s) + 180 ))
-
     log_info "waiting for REST API on port ${port} to accept requests..."
-    while [ "$(date +%s)" -lt "$deadline" ]; do
-        if curl -fsS --max-time 5 -o /dev/null "http://127.0.0.1:${port}/api/v1/health" 2>/dev/null; then
-            log_success "REST API is responding"
-            return 0
-        fi
-        sleep 2
-    done
+    if _fp_wait_http "http://127.0.0.1:${port}/api/v1/health" 180 "starting core"; then
+        log_success "REST API is responding"
+        return 0
+    fi
     die "timed out waiting for REST API on port ${port}"
 }
 
@@ -84,16 +126,11 @@ fp_wait_for_api_ready() {
 # runs after this gate in the install flow.
 fp_wait_for_gateway_ready() {
     local port="${1:-${FP_GATEWAY_PORT:-7436}}"
-    local deadline=$(( $(date +%s) + 180 ))
-
     log_info "waiting for AI Gateway on port ${port} to accept requests..."
-    while [ "$(date +%s)" -lt "$deadline" ]; do
-        if curl -fsS --max-time 5 -o /dev/null "http://127.0.0.1:${port}/health" 2>/dev/null; then
-            log_success "AI Gateway is responding"
-            return 0
-        fi
-        sleep 2
-    done
+    if _fp_wait_http "http://127.0.0.1:${port}/health" 180 "starting AI Gateway"; then
+        log_success "AI Gateway is responding"
+        return 0
+    fi
     log_error "timed out waiting for the AI Gateway on port ${port}"
     return 1
 }
@@ -257,25 +294,27 @@ fp_bootstrap_gateway_token() {
 #
 # Order of operations:
 #   1. Poll http://127.0.0.1:${FP_GATEWAY_PORT}/health until 200 OK
-#      (max 90 s). Without the wait, the gateway's seed INSERTs would
-#      run AFTER our DELETEs and undo them. Callers invoke this after
-#      the fp_wait_for_gateway_ready hard gate, so this inner poll
-#      normally succeeds on the first probe.
-#   2. Wait (max 300 s) while /health reports components.knowledge as
-#      "warming". Newer gateway images bind their port and answer
-#      /health BEFORE the background knowledge warm-up (model download
-#      + knowledge seeding) finishes, so the restart in step 4 could
-#      otherwise land mid-warm-up. An absent knowledge field means an
-#      older gateway image that only answers /health once fully
-#      initialised — proceed immediately, same as "ready"/"degraded".
-#      On deadline expiry we warn and proceed anyway: the gateway
-#      tolerates a mid-warm-up restart (persistent model cache +
-#      top-up seeding make warm-up convergent across restarts).
-#   3. docker exec into the container, DELETE FROM both tables.
-#   4. docker restart the container — the gateway loads provider/model
+#      (max 90 s). This is the only wait we need: the gateway seeds the
+#      provider/model catalog SYNCHRONOUSLY during startup, before it
+#      binds the port and answers /health (main.py awaits
+#      seed_gateway_from_config well before it yields). So a 200 here
+#      guarantees the rows we are about to DELETE already exist — our
+#      DELETEs cannot be undone by a later seed INSERT.
+#
+#      We deliberately do NOT wait for the background knowledge warm-up
+#      (the ~1.3GB embedding-model download, components.knowledge ==
+#      "warming"). It is unrelated to the provider/model catalog, it can
+#      take many minutes on a slow link, and the restart in step 3 is
+#      explicitly tolerated mid-warm-up (persistent model cache + top-up
+#      seeding make it convergent across restarts). Blocking the install
+#      on that download only made a fast install look frozen — the exact
+#      symptom users reported.
+#   2. docker exec into the container, DELETE FROM both tables.
+#   3. docker restart the container — the gateway loads provider/model
 #      state into memory at startup, so without a restart the API would
-#      keep serving the stale in-memory list.
-#   5. Re-poll /health so subsequent install steps see a healthy stack.
+#      keep serving the stale in-memory list. The interrupted model
+#      download simply resumes in the background after the restart.
+#   4. Re-poll /health so subsequent install steps see a healthy stack.
 #
 # Non-fatal: any failure logs a warning and returns 0. We never abort an
 # otherwise-successful install just because the cosmetic cleanup didn't
@@ -287,53 +326,17 @@ fp_bootstrap_gateway_token() {
 fp_wipe_gateway_seed_defaults() {
     local container="${1:-falconpulsar-ai-gateway}"
     local port="${2:-${FP_GATEWAY_PORT:-7436}}"
-    local deadline
 
-    deadline=$(( $(date +%s) + 90 ))
+    # Step 1: /health 200 guarantees the provider/model catalog is seeded
+    # (main.py seeds it before binding the port). We do NOT wait for the
+    # background embedding-model download — see the note above.
     log_info "waiting for AI Gateway to finish init before wiping seed defaults"
-    while [ "$(date +%s)" -lt "$deadline" ]; do
-        if curl -fsS --max-time 5 -o /dev/null "http://127.0.0.1:${port}/health" 2>/dev/null; then
-            break
-        fi
-        sleep 2
-    done
-    if ! curl -fsS --max-time 5 -o /dev/null "http://127.0.0.1:${port}/health" 2>/dev/null; then
+    if ! _fp_wait_http "http://127.0.0.1:${port}/health" 90 "waiting for AI Gateway"; then
         log_warn "AI Gateway did not become healthy in 90s — leaving seed defaults in place"
         return 0
     fi
 
-    # Hold the restart below while the gateway's background knowledge
-    # warm-up is still running (components.knowledge == "warming" in the
-    # /health body). Older images without the field fall straight through.
-    deadline=$(( $(date +%s) + 300 ))
-    log_info "checking AI Gateway knowledge warm-up state before wiping seed defaults"
-    local warm_started warm_elapsed warm_next_beat=30 warm_announced=0
-    warm_started=$(date +%s)
-    while [ "$(date +%s)" -lt "$deadline" ]; do
-        if ! curl -fsS --max-time 5 "http://127.0.0.1:${port}/health" 2>/dev/null | \
-                grep -q '"knowledge"[[:space:]]*:[[:space:]]*"warming"'; then
-            break
-        fi
-        # First boot only: the gateway downloads a ~1.3GB embedding model from
-        # HuggingFace before warm-up finishes. On a slow/rate-limited link this
-        # legitimately takes minutes — emit a heartbeat so the wait is visibly
-        # progressing instead of looking frozen (the #1 "is it stuck?" report).
-        warm_elapsed=$(( $(date +%s) - warm_started ))
-        if [ "$warm_elapsed" -ge "$warm_next_beat" ]; then
-            if [ "$warm_announced" = "0" ]; then
-                log_info "AI Gateway is downloading its ~1.3GB embedding model (first install only) — can take a few minutes on a slow link"
-                warm_announced=1
-            fi
-            log_info "  still warming up… ${warm_elapsed}s elapsed (waiting up to 300s, then continuing regardless)"
-            warm_next_beat=$(( warm_next_beat + 30 ))
-        fi
-        sleep 5
-    done
-    if curl -fsS --max-time 5 "http://127.0.0.1:${port}/health" 2>/dev/null | \
-            grep -q '"knowledge"[[:space:]]*:[[:space:]]*"warming"'; then
-        log_warn "AI Gateway knowledge warm-up still running after 300s — proceeding anyway (model cache + top-up seeding keep the restart safe)"
-    fi
-
+    # Step 2: DELETE the self-seeded catalog.
     log_info "removing AI Gateway's self-seeded providers and models"
     if ! docker exec "$container" \
             sqlite3 /app/data/ai_config.db \
@@ -343,17 +346,16 @@ fp_wipe_gateway_seed_defaults() {
         return 0
     fi
 
+    # Step 3: restart so the in-memory catalog matches the wiped DB. This may
+    # interrupt the background model download; it resumes on the next boot.
     log_info "restarting AI Gateway so in-memory state matches wiped DB"
     docker restart "$container" >/dev/null 2>&1 || true
 
-    deadline=$(( $(date +%s) + 60 ))
-    while [ "$(date +%s)" -lt "$deadline" ]; do
-        if curl -fsS --max-time 5 -o /dev/null "http://127.0.0.1:${port}/health" 2>/dev/null; then
-            log_success "AI Gateway clean: 0 providers, 0 models"
-            return 0
-        fi
-        sleep 2
-    done
+    # Step 4: re-poll so later install steps see a healthy stack.
+    if _fp_wait_http "http://127.0.0.1:${port}/health" 60 "AI Gateway restarting"; then
+        log_success "AI Gateway clean: 0 providers, 0 models"
+        return 0
+    fi
     log_warn "AI Gateway slow to come back after wipe — UI may show stale models for a moment"
     return 0
 }
