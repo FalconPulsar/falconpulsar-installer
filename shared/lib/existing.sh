@@ -590,6 +590,24 @@ fp_try_upgrade_fastpath() {
             printf 'FP_CONFIRM_SECRET=%s\n' "$confirm_secret" >> "${home}/.env"
             log_info "generated FP_CONFIRM_SECRET (32 random bytes, hex)"
         fi
+        # The Engine→Command-Center machine door. Fresh installs mint this
+        # since alpha.83, but the fleet's upgrade norm is pull-:latest, which
+        # never rewrites .env — so every install from before alpha.83 runs
+        # with the door silently closed: the Engine posts runbook reports to
+        # the incident rooms and each post no-ops for want of the key. Same
+        # carry-forward rule as the secrets above: only minted when absent;
+        # compose feeds it to BOTH engine and copilot, and the recreate below
+        # picks it up.
+        if ! grep -q '^FP_CC_MACHINE_KEY=.' "${home}/.env"; then
+            local cc_machine_key
+            if command -v openssl >/dev/null 2>&1; then
+                cc_machine_key="$(openssl rand -hex 32)"
+            else
+                cc_machine_key="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+            fi
+            printf 'FP_CC_MACHINE_KEY=%s\n' "$cc_machine_key" >> "${home}/.env"
+            log_info "generated FP_CC_MACHINE_KEY (Engine→Command Center room posts now enabled)"
+        fi
         # Anchor the gateway.yaml mount to the stack dir — compose's
         # default resolves relative to FP_DATA_DIR, which breaks for
         # legacy installs created with a custom --data-dir (Docker would
