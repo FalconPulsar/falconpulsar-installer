@@ -107,6 +107,45 @@ _fp_wait_http() {
     return 1
 }
 
+# ── Service-key validation ──────────────────────────────────────────────────
+# fp_gateway_token_state <env_file> [rest_port]
+#
+# Presence is not validity: a well-formed FP_API_KEY line can name a token
+# core has no record of (data volume replaced/restored after the mint, token
+# revoked in Settings → Tokens). Field incident 2026-08: a fresh customer
+# install carried exactly that, booted green, and every Core-data feature
+# failed at first use with a bare 401. Probe once with the real credential.
+#
+# Prints one word on stdout:
+#   absent   — no FP_API_KEY line (or empty value)
+#   valid    — core accepted the credential (HTTP 200 on /auth/me)
+#   invalid  — core REJECTED it (HTTP 401/403) → caller should re-mint
+#   unknown  — core unreachable / any other answer → carry forward, never
+#              force a re-mint on a transient
+fp_gateway_token_state() {
+    local env_file="$1" port="${2:-7433}" key code
+    [ -f "$env_file" ] || { printf 'absent\n'; return 0; }
+    # tail -n1: compose v2's dotenv is last-occurrence-wins for repeated
+    # keys, so validate the line the gateway would actually receive.
+    key="$(sed -n 's/^FP_API_KEY=//p' "$env_file" 2>/dev/null | tail -n1)" || true
+    if [ -z "$key" ]; then
+        printf 'absent\n'
+        return 0
+    fi
+    # Header via stdin (-H @-) so the credential never appears in curl's
+    # argv — same reason the mint below pipes the admin password. curl has
+    # supported @- header files since 7.55 (2017); every supported platform
+    # ships newer.
+    code=$(printf 'Authorization: Bearer %s\n' "$key" | \
+        curl -s -o /dev/null -w '%{http_code}' --max-time 10 -H @- \
+        "http://127.0.0.1:${port}/api/v1/auth/me" 2>/dev/null) || code=000
+    case "$code" in
+        200)     printf 'valid\n' ;;
+        401|403) printf 'invalid\n' ;;
+        *)       printf 'unknown\n' ;;
+    esac
+}
+
 # Wait for /api/v1/health to return 200. Times out after 3 minutes.
 fp_wait_for_api_ready() {
     local port="${1:-7433}"
@@ -252,8 +291,13 @@ fp_bootstrap_gateway_token() {
     {
         # Drop the incomplete-setup marker left by an unattended upgrade
         # that skipped the mint (see fp_try_upgrade_fastpath) — the token
-        # appended below is exactly what it was waiting for.
-        sed '/^FP_AI_SETUP_INCOMPLETE=/d' "$env_file"
+        # appended below is exactly what it was waiting for. Also drop any
+        # existing FP_API_KEY line: a re-mint over an INVALID carried-forward
+        # key (fp_gateway_token_state=invalid) must replace it, not leave a
+        # duplicate line (compose's dotenv is last-wins so the append would
+        # still work, but validators and humans reading .env should never
+        # meet two keys).
+        sed -e '/^FP_AI_SETUP_INCOMPLETE=/d' -e '/^FP_API_KEY=/d' "$env_file"
         printf 'FP_API_KEY=%s\n' "$token"
         if [ -n "$gateway_secret" ]; then
             printf 'FP_GATEWAY_SECRET=%s\n' "$gateway_secret"

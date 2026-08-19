@@ -754,8 +754,40 @@ fp_try_upgrade_fastpath() {
     # against core with. Minting one requires an admin login, so prompt
     # for credentials when they weren't supplied via the environment.
     # Existing tokens are never touched.
-    local bootstrapped_gateway=0 ai_setup_incomplete=0
-    if [ -f "${home}/.env" ] && ! grep -q '^FP_API_KEY=.' "${home}/.env" \
+    local bootstrapped_gateway=0 ai_setup_incomplete=0 gw_key_state='absent' gw_db_preexists=0
+    # Validate a carried-forward key instead of presence-checking it: the
+    # .env can hold a well-formed FP_API_KEY that this core has no record
+    # of (data volume replaced/restored after the mint, token revoked) —
+    # field incident 2026-08. 'invalid' re-enters the mint path below;
+    # 'unknown' (core unreachable) carries forward — never force a re-mint
+    # on a transient.
+    if [ -f "${home}/.env" ] && grep -q '^FP_API_KEY=.' "${home}/.env"; then
+        gw_key_state='unknown'
+        if declare -f fp_gateway_token_state >/dev/null 2>&1; then
+            local vrest_port
+            vrest_port="$(sed -n 's/^FP_REST_PORT=//p' "${home}/.env" | tail -n1)"
+            # The `up -d` above may have just RECREATED core (image-updating
+            # upgrade) — probing a booting core reads connection-refused as
+            # 'unknown' and the dead-key case slips through on the exact
+            # path this validation exists for. Bounded, non-fatal wait;
+            # 'unknown' → keep-key remains the final fallback.
+            if declare -f _fp_wait_http >/dev/null 2>&1; then
+                _fp_wait_http "http://127.0.0.1:${vrest_port:-${FP_REST_PORT:-7433}}/api/v1/health" 120 "waiting for core before token check" || true
+            fi
+            gw_key_state="$(fp_gateway_token_state "${home}/.env" "${vrest_port:-${FP_REST_PORT:-7433}}")"
+        fi
+        case "$gw_key_state" in
+            valid)
+                log_success "gateway service token verified against core" ;;
+            invalid)
+                log_warn "the FP_API_KEY in .env is NOT valid on this core (data volume replaced/restored, or the token was revoked)"
+                log_warn "re-minting the gateway service token" ;;
+            unknown)
+                log_warn "could not verify the gateway service token (core not reachable) — keeping it" ;;
+        esac
+    fi
+    if [ -f "${home}/.env" ] \
+       && { [ "$gw_key_state" = 'absent' ] || [ "$gw_key_state" = 'invalid' ]; } \
        && declare -f fp_bootstrap_gateway_token >/dev/null 2>&1; then
         if { [ -z "${FP_ADMIN_USER:-}" ] || [ -z "${FP_ADMIN_PASS:-}" ]; } \
            && [ "${FP_ASSUME_YES:-0}" != "1" ] && [ -r /dev/tty ]; then
@@ -771,11 +803,22 @@ fp_try_upgrade_fastpath() {
             export FP_ADMIN_USER FP_ADMIN_PASS
         fi
         if [ -n "${FP_ADMIN_USER:-}" ] && [ -n "${FP_ADMIN_PASS:-}" ]; then
+            # Record whether the gateway database predates this run BEFORE
+            # the recreate below can create one — it gates the seed wipe
+            # after the health gate, same as the fresh installers'
+            # GATEWAY_DB_PREEXISTS. When the data dir is remapped and we
+            # can't see the file, err on PREEXISTS (skip the wipe): stale
+            # seed rows are cosmetic, deleting a customer's configured
+            # providers is not.
+            if [ -f "${home}/ai-gateway-data/ai_config.db" ] || [ ! -d "${home}/ai-gateway-data" ]; then
+                gw_db_preexists=1
+            fi
             # Mint against the port the stack actually publishes: the
             # .env remap wins over FP_REST_PORT pre-defaulted (unexported)
             # by the installer shell — same precedence as gw_port below.
+            # tail -n1: compose's dotenv is last-occurrence-wins.
             local rest_port
-            rest_port="$(sed -n 's/^FP_REST_PORT=//p' "${home}/.env" | head -n1)"
+            rest_port="$(sed -n 's/^FP_REST_PORT=//p' "${home}/.env" | tail -n1)"
             FP_REST_PORT="${rest_port:-${FP_REST_PORT:-7433}}" \
                 fp_bootstrap_gateway_token "${home}/.env"
             bootstrapped_gateway=1
@@ -803,14 +846,19 @@ fp_try_upgrade_fastpath() {
     # published port from .env, so the .env value is what actually binds.
     local gw_port=""
     if [ -f "${home}/.env" ]; then
-        gw_port="$(sed -n 's/^FP_GATEWAY_PORT=//p' "${home}/.env" | head -n1)"
+        gw_port="$(sed -n 's/^FP_GATEWAY_PORT=//p' "${home}/.env" | tail -n1)"
     fi
     gw_port="${gw_port:-${FP_GATEWAY_PORT:-7436}}"
     if declare -f fp_wait_for_gateway_ready >/dev/null 2>&1; then
         fp_wait_for_gateway_ready "${gw_port}" || \
             die "the AI Gateway did not become healthy — inspect: docker logs falconpulsar-ai-gateway"
     fi
-    if [ "$bootstrapped_gateway" = "1" ] \
+    # Wipe the image's self-seeded provider/model catalog ONLY when this
+    # run's mint created a brand-new gateway database. A re-mint over an
+    # INVALID key on an established install (revoked token, restored core
+    # volume) must NEVER touch ai_config.db — it holds the customer's real
+    # providers and their encrypted API keys.
+    if [ "$bootstrapped_gateway" = "1" ] && [ "${gw_db_preexists:-0}" = "0" ] \
        && declare -f fp_wipe_gateway_seed_defaults >/dev/null 2>&1; then
         fp_wipe_gateway_seed_defaults falconpulsar-ai-gateway "${gw_port}"
     fi

@@ -1130,17 +1130,27 @@ while :; do
 done
 
 # ── 7b. Create the AI gateway service token via REST API ──────────────────
-# This appends FP_API_KEY=<token> to .env. The admin password is consumed
+# This writes FP_API_KEY=<token> to .env. The admin password is consumed
 # by the login call here and then we drop it from our shell variables.
-# Skipped when a token was carried forward from a previous .env — minting
-# a new one would strand the old token, and the accompanying
-# FP_GATEWAY_SECRET regeneration would orphan the provider keys it
-# encrypted in ai_config.db.
-if grep -q '^FP_API_KEY=.' "${FP_HOME}/.env" 2>/dev/null; then
-    log_info "gateway service token already present in .env — keeping it"
-else
-    fp_bootstrap_gateway_token "${FP_HOME}/.env"
-fi
+# A token carried forward from a previous .env is VALIDATED against the
+# running core rather than presence-checked: the preserved database is not
+# guaranteed to hold its record (data dir replaced/restored after the mint
+# — field incident 2026-08). Valid or unverifiable keys are kept (minting
+# over a valid one would strand it); a REJECTED key re-enters the mint,
+# which replaces the stale line. FP_GATEWAY_SECRET is only ever generated
+# when absent, so a re-mint never orphans encrypted provider keys.
+GW_KEY_STATE="$(fp_gateway_token_state "${FP_HOME}/.env" "${FP_REST_PORT}")"
+case "$GW_KEY_STATE" in
+    valid)
+        log_info "gateway service token verified against core — keeping it" ;;
+    unknown)
+        log_warn "could not verify the carried-forward gateway service token — keeping it" ;;
+    invalid)
+        log_warn "the FP_API_KEY carried forward in .env is NOT valid on this core — re-minting"
+        fp_bootstrap_gateway_token "${FP_HOME}/.env" ;;
+    absent)
+        fp_bootstrap_gateway_token "${FP_HOME}/.env" ;;
+esac
 
 # ── 7c. Start the rest of the stack ───────────────────────────────────────
 log_info "starting ui and ai-gateway"
