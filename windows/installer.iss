@@ -49,7 +49,7 @@
 ;               below, which scripts/sync-version.sh keeps in sync with
 ;               the repo-root VERSION file (CI lint enforces no drift).
 #ifndef MyAppVersion
-  #define MyAppVersion "0.1.4-alpha.94"
+  #define MyAppVersion "0.1.4-alpha.95"
 #endif
 #define MyAppPublisher   "FalconPulsar Contributors"
 #define MyAppURL         "https://github.com/FalconPulsar/falconpulsar-installer"
@@ -255,7 +255,7 @@ Name: "copilot"; \
 ;     any failure, instead of Inno Setup's generic "command failed" dialog
 ;   - check Docker Desktop / WSL Integration state up front
 Filename: "{app}\FalconPulsarTray.exe"; \
-    Description: "Launch FalconPulsar Tray Manager"; Flags: postinstall nowait skipifsilent
+    Description: "Launch FalconPulsar QuickDock"; Flags: postinstall nowait skipifsilent
 Filename: "http://localhost:8080"; \
     Description: "Open the FalconPulsar Web UI"; Flags: postinstall shellexec skipifsilent nowait unchecked
 Filename: "notepad.exe"; Parameters: "{code:GetLogPath}"; \

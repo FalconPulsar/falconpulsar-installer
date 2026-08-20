@@ -16,7 +16,7 @@
     <Version>0.1.0</Version>
     <Company>FalconPulsar Contributors</Company>
     <Product>FalconPulsar</Product>
-    <Description>FalconPulsar system tray manager</Description>
+    <Description>FalconPulsar QuickDock</Description>
     <PublishSingleFile>true</PublishSingleFile>
     <SelfContained>true</SelfContained>
     <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>

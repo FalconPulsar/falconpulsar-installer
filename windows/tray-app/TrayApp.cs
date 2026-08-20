@@ -734,6 +734,7 @@ namespace FalconPulsar.Tray
             {
                 await PollHealth();
                 _consecutivePollFailures = 0;
+                MaybeLogHandleCounts();
             }
             catch (Exception ex)
             {
@@ -900,7 +901,7 @@ namespace FalconPulsar.Tray
             if (_updateAvailable)
                 tooltip += " (update available)";
 
-            _trayIcon.Icon = CreateStatusIcon(color, _updateAvailable);
+            SetTrayIcon(color, _updateAvailable);
             _trayIcon.Text = tooltip;
 
             _updateAvailableItem.Visible = _updateAvailable;
@@ -933,9 +934,9 @@ namespace FalconPulsar.Tray
             if (!_dockerDaemonUp)
             {
                 _coreItem.Text = "Docker Desktop is not running";
-                _coreItem.Image = CreateDot(Color.Red);
+                _coreItem.Image = Dot(Color.Red);
                 _uiItem.Text = "Start Docker Desktop, then click Refresh Status";
-                _uiItem.Image = CreateDot(Color.Gray);
+                _uiItem.Image = Dot(Color.Gray);
                 _gatewayItem.Text = "";
                 _gatewayItem.Image = null;
                 _apiItem.Text = "";
@@ -948,17 +949,17 @@ namespace FalconPulsar.Tray
             else
             {
                 _coreItem.Text = _coreRunning ? "Core: Running" : "Core: Stopped";
-                _coreItem.Image = CreateDot(_coreRunning ? Color.Green : Color.Red);
+                _coreItem.Image = Dot(_coreRunning ? Color.Green : Color.Red);
                 _uiItem.Text = _uiRunning ? "Web UI: Running" : "Web UI: Stopped";
-                _uiItem.Image = CreateDot(_uiRunning ? Color.Green : Color.Red);
+                _uiItem.Image = Dot(_uiRunning ? Color.Green : Color.Red);
                 _gatewayItem.Text = _gatewayRunning ? "AI Capabilities: Running" : "AI Capabilities: Stopped";
-                _gatewayItem.Image = CreateDot(_gatewayRunning ? Color.Green : Color.Red);
+                _gatewayItem.Image = Dot(_gatewayRunning ? Color.Green : Color.Red);
                 _apiItem.Text = _apiHealthy ? "REST API: Healthy" : "REST API: Not responding";
-                _apiItem.Image = CreateDot(_apiHealthy ? Color.Green : Color.Gray);
+                _apiItem.Image = Dot(_apiHealthy ? Color.Green : Color.Gray);
                 _engineItem.Text = _engineRunning ? "AI Engine: Running" : "AI Engine: Stopped";
-                _engineItem.Image = CreateDot(_engineRunning ? Color.Green : Color.Red);
+                _engineItem.Image = Dot(_engineRunning ? Color.Green : Color.Red);
                 _copilotItem.Text = _copilotRunning ? "Command Center: Running" : "Command Center: Stopped";
-                _copilotItem.Image = CreateDot(_copilotRunning ? Color.Green : Color.Red);
+                _copilotItem.Image = Dot(_copilotRunning ? Color.Green : Color.Red);
             }
 
             // Enable/disable actions based on state
@@ -1719,7 +1720,7 @@ namespace FalconPulsar.Tray
 
         private async Task RunComposeCommand(string command)
         {
-            _trayIcon.Icon = CreateStatusIcon(Color.FromArgb(234, 179, 8), _updateAvailable);
+            SetTrayIcon(Color.FromArgb(234, 179, 8), _updateAvailable);
             _trayIcon.Text = "FalconPulsar: Working...";
             _startItem.Enabled = false;
             _stopItem.Enabled = false;
@@ -1864,11 +1865,88 @@ namespace FalconPulsar.Tray
             return _falconLogo;
         }
 
+        // --- GDI/USER handle hygiene (white-window-after-hours fix) ----------
+        // The 15s health poll rebuilt the tray icon and six menu dots on every
+        // tick, leaking a GDI/USER handle each time: Icon.FromHandle owns no
+        // handle, so the HICON from GetHicon() was never freed (DestroyIcon was
+        // never called anywhere), and the dot bitmaps were reassigned without
+        // disposing the old ones. Over ~4-5h the process crossed the ~10,000
+        // per-process GDI/USER cap and ALL drawing failed — the tray icon
+        // vanished and any window painted blank white until a relaunch reset
+        // the count. The fixes: free the transient HICON and hand out an owning
+        // clone, rebuild the icon only when the status changes, and cache the
+        // fixed set of status dots.
+        [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)]
+        private static extern bool DestroyIcon(IntPtr handle);
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern uint GetGuiResources(IntPtr hProcess, uint uiFlags);
+
+        private Color _lastIconColor = Color.Empty;
+        private bool _lastIconUpdateAvailable;
+        private bool _iconEverSet;
+        private readonly System.Collections.Generic.Dictionary<Color, Image> _dotCache
+            = new System.Collections.Generic.Dictionary<Color, Image>();
+        private int _handleLogTick;
+
+        /// <summary>Swap the tray icon, disposing the old one — and only when the
+        /// status actually changed. Icon transitions are rare, so this collapses
+        /// the per-poll icon churn to near zero. Disposing the old icon genuinely
+        /// frees its handle now, because CreateStatusIcon returns a self-owning
+        /// clone (not a FromHandle wrapper, whose Dispose frees nothing).</summary>
+        private void SetTrayIcon(Color statusColor, bool updateAvailable)
+        {
+            if (_iconEverSet && statusColor == _lastIconColor && updateAvailable == _lastIconUpdateAvailable)
+                return;
+            var old = _trayIcon.Icon;
+            _trayIcon.Icon = CreateStatusIcon(statusColor, updateAvailable);
+            old?.Dispose();
+            _lastIconColor = statusColor;
+            _lastIconUpdateAvailable = updateAvailable;
+            _iconEverSet = true;
+        }
+
+        /// <summary>A status dot of the given colour, created once and reused. Only
+        /// a few colours ever occur (green/red/gray/blue), so the cache is a fixed
+        /// handful of bitmaps for the process lifetime instead of six fresh,
+        /// undisposed bitmaps every 15s poll.</summary>
+        private Image Dot(Color color)
+        {
+            if (!_dotCache.TryGetValue(color, out var img))
+            {
+                img = CreateDot(color);
+                _dotCache[color] = img;
+            }
+            return img;
+        }
+
+        /// <summary>Once a minute, record the process GDI + USER object counts to
+        /// quickdock.log. Flat lines here prove the leak is gone; a steady climb
+        /// toward ~10,000 is the signature of the white-window regression.</summary>
+        private void MaybeLogHandleCounts()
+        {
+            if (++_handleLogTick % 4 != 0) return;   // poll is 15s -> ~once/minute
+            try
+            {
+                var h = System.Diagnostics.Process.GetCurrentProcess().Handle;
+                uint gdi = GetGuiResources(h, 0);   // GR_GDIOBJECTS
+                uint usr = GetGuiResources(h, 1);   // GR_USEROBJECTS
+                var dir = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "FalconPulsar");
+                Directory.CreateDirectory(dir);
+                File.AppendAllText(
+                    Path.Combine(dir, "quickdock.log"),
+                    $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} [handles] gdi={gdi} user={usr}{Environment.NewLine}");
+            }
+            catch { /* diagnostics must never crash the tray */ }
+        }
+
         private Icon CreateStatusIcon(Color statusColor, bool updateAvailable = false)
         {
             const int size = 32;
             const int dotSize = 12;
-            var bmp = new Bitmap(size, size);
+            using var bmp = new Bitmap(size, size);
             using (var g = Graphics.FromImage(bmp))
             {
                 g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
@@ -1888,7 +1966,7 @@ namespace FalconPulsar.Tray
                     g.FillEllipse(fallbackBrush, 2, 2, size - 4, size - 4);
                     using var font = new Font("Segoe UI", 14, FontStyle.Bold);
                     using var textBrush = new SolidBrush(Color.White);
-                    var sf = new StringFormat
+                    using var sf = new StringFormat
                     {
                         Alignment = StringAlignment.Center,
                         LineAlignment = StringAlignment.Center
@@ -1922,7 +2000,20 @@ namespace FalconPulsar.Tray
                     g.FillEllipse(upBrush, upX, upY, dotSize, dotSize);
                 }
             }
-            return Icon.FromHandle(bmp.GetHicon());
+            // GetHicon() mints a NEW unmanaged HICON that Icon.FromHandle does
+            // NOT own — its Dispose/finalizer never frees it, so the handle
+            // leaks unless DestroyIcon is called. Clone into a self-owning Icon,
+            // then free the transient handle. (Root cause of the white window.)
+            IntPtr hIcon = bmp.GetHicon();
+            try
+            {
+                using var tmp = Icon.FromHandle(hIcon);
+                return (Icon)tmp.Clone();
+            }
+            finally
+            {
+                DestroyIcon(hIcon);
+            }
         }
 
         private Image CreateDot(Color color)
@@ -2007,7 +2098,7 @@ namespace FalconPulsar.Tray
 
         private void ShowAbout()
         {
-            var aboutForm = new Form
+            using var aboutForm = new Form
             {
                 Text = "About FalconPulsar",
                 ClientSize = new Size(540, 528),
@@ -2660,6 +2751,7 @@ namespace FalconPulsar.Tray
             _updateDailyTimer?.Dispose();
             _taskbarWatcher?.Dispose();
             _trayIcon?.Dispose();
+            foreach (var img in _dotCache.Values) img?.Dispose();
             _http?.Dispose();
         }
     }

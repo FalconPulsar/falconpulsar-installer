@@ -110,19 +110,25 @@ URL=$Url
 
 New-UrlShortcut -Name 'Open FalconPulsar Web UI' -Url 'http://localhost'
 
-# Relaunch the tray manager (for when the user has quit/killed it).
+# Relaunch QuickDock (for when the user has quit/killed it).
 $trayExe = Join-Path $InstallDir 'FalconPulsarTray.exe'
 if (Test-Path $trayExe) {
-    $linkPath = Join-Path $groupDir 'FalconPulsar Tray Manager.lnk'
+    # The app is "QuickDock"; the shortcut used to be mis-named "FalconPulsar
+    # Tray Manager". This step only ADDS shortcuts (it never wipes the group),
+    # so on an in-place upgrade the old-named .lnk would linger next to the new
+    # one. Remove it explicitly before writing the correct name.
+    Remove-Item -Path (Join-Path $groupDir 'FalconPulsar Tray Manager.lnk') `
+        -Force -ErrorAction SilentlyContinue
+    $linkPath = Join-Path $groupDir 'FalconPulsar QuickDock.lnk'
     $sc = $shell.CreateShortcut($linkPath)
     $sc.TargetPath   = $trayExe
-    $sc.Description  = 'Relaunch the FalconPulsar tray manager (shows status + stack controls)'
+    $sc.Description  = 'Relaunch FalconPulsar QuickDock (shows status + stack controls)'
     $icoPath = Join-Path $InstallDir 'assets\falcon.ico'
     if (Test-Path $icoPath) {
         $sc.IconLocation = "$icoPath,0"
     }
     $sc.Save()
-    Write-Info 'Created shortcut: FalconPulsar Tray Manager'
+    Write-Info 'Created shortcut: FalconPulsar QuickDock'
 }
 
 # fp console -- opens cmd with the fp CLI ready. fp.exe is our wrapper that
