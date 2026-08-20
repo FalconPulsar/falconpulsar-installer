@@ -856,6 +856,16 @@ if [ -f "$ROOT_DOCKER_CFG" ] &&
     FP_DOCKER_CFG_DIR="$(mktemp -d /tmp/fp-docker-cfg.XXXXXX)"
     printf '{}\n' > "${FP_DOCKER_CFG_DIR}/config.json"
     chmod 0600 "${FP_DOCKER_CFG_DIR}/config.json"
+    # Keep `docker compose` discoverable: CLI plugins resolve from
+    # $DOCKER_CONFIG/cli-plugins, so an empty override dir would hide the
+    # compose plugin (fatal on Docker-Desktop-on-WSL, where it is not in a
+    # system path). Link the real plugins in. Harmless on a packaged Linux
+    # docker where the plugin also lives in /usr/lib/docker/cli-plugins.
+    for _plugbase in "${DOCKER_CONFIG:-}" "${HOME:-}/.docker" /root/.docker; do
+        [ -n "$_plugbase" ] || continue
+        [ -d "${_plugbase}/cli-plugins" ] || continue
+        ln -s "${_plugbase}/cli-plugins" "${FP_DOCKER_CFG_DIR}/cli-plugins" 2>/dev/null && break
+    done
     export DOCKER_CONFIG="$FP_DOCKER_CFG_DIR"
     log_info "using a helper-free Docker config for this run (${DOCKER_CONFIG})"
 fi

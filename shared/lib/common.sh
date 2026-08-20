@@ -289,6 +289,23 @@ fp_pull_docker_config() {
     local dir
     dir="$(mktemp -d /tmp/fp-dockercfg.XXXXXX)" || return 0
     printf '{}\n' > "${dir}/config.json"
+    # Carry the CLI PLUGINS forward. `docker compose` (and buildx) are docker
+    # CLI plugins, discovered from $DOCKER_CONFIG/cli-plugins — so overriding
+    # DOCKER_CONFIG to a fresh empty dir to drop the credential helper ALSO
+    # hides them, and the very next line (`docker compose pull`) dies with
+    #     docker: unknown command: docker compose
+    # On Docker Desktop (macOS, and WSL) the compose plugin lives ONLY under
+    # the invoking user's ~/.docker/cli-plugins — never a system path — so
+    # there is nothing to fall back to. Symlink the real cli-plugins dir into
+    # the override so the plugin binaries stay reachable (they live in the
+    # Docker.app bundle, readable by whoever runs the pull). Field report:
+    # macOS alpha.93, "docker: unknown command: docker compose".
+    local plugbase
+    for plugbase in "${DOCKER_CONFIG:-}" "${HOME:-}/.docker" /root/.docker; do
+        [ -n "$plugbase" ] || continue
+        [ -d "${plugbase}/cli-plugins" ] || continue
+        ln -s "${plugbase}/cli-plugins" "${dir}/cli-plugins" 2>/dev/null && break
+    done
     # World-readable on purpose: the pull runs as the SERVICE user, who cannot
     # read a 0700 directory owned by root. A file containing `{}` has nothing
     # to protect.
