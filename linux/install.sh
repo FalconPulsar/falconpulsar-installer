@@ -1176,7 +1176,18 @@ GATEWAY_DB_PREEXISTS=0
 if [ -f "${FP_GATEWAY_DATA_DIR}/ai_config.db" ]; then
     GATEWAY_DB_PREEXISTS=1
 fi
-sudo -u "$FP_USER" -g docker -H bash -c "cd '${FP_HOME}' && docker compose up -d"
+# THE SAME ENVIRONMENT AS THE FIRST INVOCATION — deliberately. The first
+# `up -d core` ran with FP_ADMIN_PASS set; compose interpolates it into
+# core's environment, so running this second `up` WITHOUT it changes
+# core's config hash and compose RECREATES core — four seconds after the
+# service token was minted against it. Reproduced end-to-end 2026-08-26
+# from one clean fresh install: "[ok] service token created" directly
+# followed by "Container falconpulsar-core Recreate", and every service
+# then carried a key core no longer accepted. fp_verify_service_credentials
+# below is the net; this line removes the trapeze.
+FP_ADMIN_PASS_ESC="${FP_ADMIN_PASS//\'/\'\\\'\'}"
+sudo -u "$FP_USER" -g docker -H bash -c "cd '${FP_HOME}' && FP_ADMIN_PASS='${FP_ADMIN_PASS_ESC}' docker compose up -d"
+unset FP_ADMIN_PASS_ESC
 # Hard gate: the AI Gateway is a mandatory component — an install whose
 # gateway never becomes healthy is a failed install, not a warning.
 fp_wait_for_gateway_ready "${FP_GATEWAY_PORT}" || \

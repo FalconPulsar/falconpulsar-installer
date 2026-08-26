@@ -813,7 +813,11 @@ if [ -f "${FP_GATEWAY_DATA_DIR}/ai_config.db" ]; then
     GATEWAY_DB_PREEXISTS=1
 fi
 log_info "starting ui and ai-gateway"
-( cd "$FP_HOME" && docker compose up -d )
+# Same env as the first invocation (5a) — without FP_ADMIN_PASS here,
+# compose sees a changed config for core and RECREATES it, eating the
+# service token minted moments ago. Reproduced 2026-08-26; see the Linux
+# installer's twin comment.
+( cd "$FP_HOME" && FP_ADMIN_PASS="${FP_ADMIN_PASS}" docker compose up -d )
 # Hard gate: the AI Gateway is a mandatory component — an install whose
 # gateway never becomes healthy is a failed install, not a warning.
 fp_wait_for_gateway_ready "${FP_GATEWAY_PORT}" || \
