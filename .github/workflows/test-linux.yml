@@ -157,6 +157,32 @@ jobs:
               [ "$ok" = 1 ] \
                 || { echo "ERROR: AI Gateway /health probe failed"; docker logs falconpulsar-ai-gateway; exit 1; }
               echo "AI Gateway container running and /health responding"
+
+              # ── Credentials must WORK, not merely exist ──────────────
+              # A 2026-08-26 fresh field install passed every gate here
+              # and shipped with a service key its core had no record of:
+              # gateway schema-cache 401s, empty Agent Builder pickers,
+              # no token in the admin UI. Nothing in this job would have
+              # caught it — these three assertions are that gap.
+              FPENV=$(find /home /opt -maxdepth 4 -name .env -path "*falconpulsar*" 2>/dev/null | head -1)
+              [ -n "$FPENV" ] || { echo "ERROR: no .env found"; exit 1; }
+              KEY=$(sed -n "s/^FP_API_KEY=//p" "$FPENV" | tail -n1)
+              [ -n "$KEY" ] || { echo "ERROR: .env has no FP_API_KEY"; exit 1; }
+
+              CODE=$(printf "Authorization: Bearer %s\n" "$KEY" | curl -s -o /dev/null -w "%{http_code}" --max-time 10 -H @- http://127.0.0.1:7433/api/v1/auth/me)
+              [ "$CODE" = "200" ] \
+                || { echo "ERROR: core rejects the minted service key (HTTP $CODE) — the install shipped a dead credential"; docker logs falconpulsar-core | tail -50; exit 1; }
+              echo "service key accepted by core"
+
+              ENG=$(docker exec falconpulsar-ai-engine printenv FP_CORE_TOKEN 2>/dev/null || true)
+              [ "$ENG" = "$KEY" ] \
+                || { echo "ERROR: the Engine is carrying a different Core credential than .env"; exit 1; }
+              echo "engine holds the same validated key"
+
+              SCODE=$(printf "Authorization: Bearer %s\n" "$KEY" | curl -s -o /dev/null -w "%{http_code}" --max-time 10 -H @- "http://127.0.0.1:7433/api/v1/series?limit=1")
+              [ "$SCODE" = "200" ] \
+                || { echo "ERROR: series list with the service key: HTTP $SCODE"; exit 1; }
+              echo "series list readable with the service key — the Agent Builder path works"
             '
         # The installer's own healthcheck loop fails the job if the stack
         # doesn't come up; the explicit checks above additionally pin the

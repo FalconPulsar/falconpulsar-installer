@@ -1192,6 +1192,13 @@ if [ "$GATEWAY_DB_PREEXISTS" = "0" ]; then
     fp_wipe_gateway_seed_defaults
 fi
 
+# ── 7c-bis. Credentials must WORK, not merely exist ───────────────────────
+# Liveness gates prove containers run; this proves the key they carry is
+# one core actually accepts — the gap a 2026-08-26 fresh install fell
+# through (mint succeeded, record gone by stack-up, everything green,
+# every Core-data feature dead). Re-mints once and fails loudly otherwise.
+fp_verify_service_credentials "${FP_HOME}/.env" "$FP_HOME" "$FP_USER" "$FP_REST_PORT"
+
 # ── 7d. Install the fp CLI under ${FP_HOME}/bin/ (self-contained stack) ───
 fp_install_cli "$FP_HOME" "${FP_VERSION:-0.1.0}"
 # Fix ownership (install.sh runs as root via sudo on Linux). Group is

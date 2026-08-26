@@ -146,6 +146,89 @@ fp_gateway_token_state() {
     esac
 }
 
+# fp_verify_service_credentials <env_file> <compose_dir> <compose_user> [rest_port]
+#
+# THE INSTALL DOES NOT END UNTIL THE CREDENTIALS PROVABLY WORK.
+#
+# Field incident 2026-08-26, a fresh Ubuntu server installed that morning:
+# the mint succeeded, the stack came up green, every health gate passed —
+# and the service key the containers were carrying was one Core had no
+# record of. The gateway logged schema-cache 401s; the Engine's Agent
+# Builder said "No matching series."; the operator had no token in the
+# admin UI and no way to know any of this was one credential. Every
+# existing gate checked LIVENESS (containers up, /health answering) and
+# none checked the CREDENTIAL end to end.
+#
+# This runs LAST, after the full stack is up: probe Core with the key the
+# .env actually holds. Rejected → re-mint once, recreate the consumers
+# (recreate, not restart — a restarted container keeps the environment it
+# was created with), and probe again. Still rejected → THE INSTALL FAILS,
+# because an install that completes with dead credentials is a support
+# case with a delay fuse, not a success. Unreachable stays a warning:
+# Core was health-gated moments ago, so this is a transient, and failing
+# an install on a transient teaches operators to ignore failures.
+fp_verify_service_credentials() {
+    local env_file="$1" compose_dir="$2" compose_user="$3" port="${4:-7433}"
+    local key code
+
+    _fp_cred_probe() {
+        key="$(sed -n 's/^FP_API_KEY=//p' "$env_file" 2>/dev/null | tail -n1)" || true
+        [ -n "$key" ] || { printf 'absent\n'; return 0; }
+        code=$(printf 'Authorization: Bearer %s\n' "$key" | \
+            curl -s -o /dev/null -w '%{http_code}' --max-time 10 -H @- \
+            "http://127.0.0.1:${port}/api/v1/auth/me" 2>/dev/null) || code=000
+        case "$code" in
+            200)     printf 'valid\n' ;;
+            401|403) printf 'invalid\n' ;;
+            *)       printf 'unknown\n' ;;
+        esac
+    }
+
+    log_step "verifying service credentials end to end"
+    local state
+    state="$(_fp_cred_probe)"
+    case "$state" in
+        valid)
+            log_success "service key verified against core — the stack's credential works" ;;
+        unknown)
+            log_warn "could not verify the service key (core did not answer the probe) — not failing the install on a transient"
+            return 0 ;;
+        absent|invalid)
+            log_warn "the service key the stack is carrying is ${state} on this core — re-minting once"
+            fp_bootstrap_gateway_token "$env_file"
+            # Recreate the consumers so they pick the new key up from .env.
+            # `restart` would hand back the same dead environment.
+            ( cd "$compose_dir" && run_as_user "$compose_user" docker compose up -d --force-recreate ai-gateway ai-engine 2>/dev/null ) ||                 ( cd "$compose_dir" && docker compose up -d --force-recreate ai-gateway ai-engine )
+            state="$(_fp_cred_probe)"
+            if [ "$state" != 'valid' ]; then
+                die "service credential verification FAILED after a re-mint (state: ${state}). The install is NOT healthy: the AI Gateway and Engine cannot read Core. Check 'docker logs falconpulsar-core' for token/auth errors and re-run the installer."
+            fi
+            log_success "service key re-minted and verified — consumers recreated with the working key" ;;
+    esac
+
+    # The Engine must be holding the SAME credential (compose defaults
+    # FP_CORE_TOKEN to FP_API_KEY). A container created before the mint —
+    # or behind an explicit stale line fp_reconcile_engine_token has since
+    # removed — diverges here, and this is the last moment it is cheap.
+    if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx 'falconpulsar-ai-engine'; then
+        local engine_tok
+        engine_tok="$(docker exec falconpulsar-ai-engine printenv FP_CORE_TOKEN 2>/dev/null)" || engine_tok=''
+        # Re-read from the file: _fp_cred_probe runs in a command substitution
+        # (a subshell), so its `key=` assignment never reaches this scope —
+        # found by the harness when this check silently never fired.
+        key="$(sed -n 's/^FP_API_KEY=//p' "$env_file" 2>/dev/null | tail -n1)" || true
+        if [ -n "$key" ] && [ "$engine_tok" != "$key" ]; then
+            local explicit
+            explicit="$(sed -n 's/^FP_CORE_TOKEN=//p' "$env_file" 2>/dev/null | tail -n1)" || true
+            if [ -z "$explicit" ]; then
+                log_warn "the Engine container is holding a different Core credential than .env — recreating it"
+                ( cd "$compose_dir" && run_as_user "$compose_user" docker compose up -d --force-recreate ai-engine 2>/dev/null ) ||                     ( cd "$compose_dir" && docker compose up -d --force-recreate ai-engine )
+            fi
+        fi
+    fi
+    return 0
+}
+
 # fp_reconcile_engine_token <env_file> [rest_port]
 #
 # The AI Engine's Core credential is FP_CORE_TOKEN, and the compose file

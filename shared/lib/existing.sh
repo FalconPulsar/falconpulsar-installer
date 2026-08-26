@@ -846,6 +846,13 @@ fp_try_upgrade_fastpath() {
         fp_reconcile_engine_token "${home}/.env" "${vrest_port:-${FP_REST_PORT:-7433}}"
     fi
 
+    # End-to-end credential gate — same reason as the fresh path: the probe
+    # above ran BEFORE `up -d`, and the up can recreate core. Verify what
+    # the stack is actually carrying now; re-mint once; fail loudly.
+    if declare -f fp_verify_service_credentials >/dev/null 2>&1; then
+        fp_verify_service_credentials "${home}/.env" "$home" "${FP_USER:-falconpulsar}" "${vrest_port:-${FP_REST_PORT:-7433}}"
+    fi
+
     # Hard gate: the AI Gateway must come up healthy, same bar as the
     # fresh-install paths. Honour a port remap from the existing .env:
     # it wins over FP_GATEWAY_PORT pre-defaulted by the installer shell,
