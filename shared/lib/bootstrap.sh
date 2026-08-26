@@ -197,8 +197,12 @@ fp_verify_service_credentials() {
             log_warn "the service key the stack is carrying is ${state} on this core — re-minting once"
             fp_bootstrap_gateway_token "$env_file"
             # Recreate the consumers so they pick the new key up from .env.
-            # `restart` would hand back the same dead environment.
-            ( cd "$compose_dir" && run_as_user "$compose_user" docker compose up -d --force-recreate ai-gateway ai-engine 2>/dev/null ) ||                 ( cd "$compose_dir" && docker compose up -d --force-recreate ai-gateway ai-engine )
+            # `restart` would hand back the same dead environment. --no-deps
+            # is load-bearing: without it, depends_on drags CORE into the
+            # recreate, invalidating the key minted two lines up — observed
+            # live at a plant, where this gate re-minted correctly and then
+            # sabotaged its own mint through the dependency graph.
+            ( cd "$compose_dir" && run_as_user "$compose_user" docker compose up -d --force-recreate --no-deps ai-gateway ai-engine 2>/dev/null ) ||                 ( cd "$compose_dir" && docker compose up -d --force-recreate --no-deps ai-gateway ai-engine )
             state="$(_fp_cred_probe)"
             if [ "$state" != 'valid' ]; then
                 die "service credential verification FAILED after a re-mint (state: ${state}). The install is NOT healthy: the AI Gateway and Engine cannot read Core. Check 'docker logs falconpulsar-core' for token/auth errors and re-run the installer."
@@ -222,7 +226,7 @@ fp_verify_service_credentials() {
             explicit="$(sed -n 's/^FP_CORE_TOKEN=//p' "$env_file" 2>/dev/null | tail -n1)" || true
             if [ -z "$explicit" ]; then
                 log_warn "the Engine container is holding a different Core credential than .env — recreating it"
-                ( cd "$compose_dir" && run_as_user "$compose_user" docker compose up -d --force-recreate ai-engine 2>/dev/null ) ||                     ( cd "$compose_dir" && docker compose up -d --force-recreate ai-engine )
+                ( cd "$compose_dir" && run_as_user "$compose_user" docker compose up -d --force-recreate --no-deps ai-engine 2>/dev/null ) ||                     ( cd "$compose_dir" && docker compose up -d --force-recreate --no-deps ai-engine )
             fi
         fi
     fi
