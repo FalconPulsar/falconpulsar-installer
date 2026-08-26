@@ -146,6 +146,44 @@ fp_gateway_token_state() {
     esac
 }
 
+# fp_reconcile_engine_token <env_file> [rest_port]
+#
+# The AI Engine's Core credential is FP_CORE_TOKEN, and the compose file
+# already defaults it to the gateway's freshly-validated FP_API_KEY
+# (`FP_CORE_TOKEN: ${FP_CORE_TOKEN:-${FP_API_KEY:-}}`). That fallback is the
+# healthy state: one validated credential, one consumer chain. The only way
+# the Engine ends up with a DEAD Core token is an explicit FP_CORE_TOKEN=
+# line in .env that outlived its mint — field incident 2026-08: the Engine
+# booted green, registered its env-core connection with the stale token, and
+# every series picker in the Agent Builder answered "No matching series."
+# until an amber box finally named the 401.
+#
+# So the reconcile is a DELETION, not a second mint: a rejected explicit
+# line is removed, and the compose fallback hands the Engine the gateway key
+# that the fp_gateway_token_state flow above has just verified or re-minted.
+# Valid and unverifiable lines are kept — never force convergence on a
+# transient (same rule as the gateway state probe).
+fp_reconcile_engine_token() {
+    local env_file="$1" port="${2:-7433}" key code
+    [ -f "$env_file" ] || return 0
+    key="$(sed -n 's/^FP_CORE_TOKEN=//p' "$env_file" 2>/dev/null | tail -n1)" || true
+    [ -n "$key" ] || return 0    # no explicit line: the FP_API_KEY fallback is in effect
+    code=$(printf 'Authorization: Bearer %s\n' "$key" | \
+        curl -s -o /dev/null -w '%{http_code}' --max-time 10 -H @- \
+        "http://127.0.0.1:${port}/api/v1/auth/me" 2>/dev/null) || code=000
+    case "$code" in
+        200)
+            log_info "engine Core token (FP_CORE_TOKEN) verified against core — keeping it" ;;
+        401|403)
+            log_warn "the explicit FP_CORE_TOKEN in .env is NOT valid on this core — removing it so the Engine falls back to the validated gateway key"
+            # Delete every occurrence: compose dotenv is last-wins, so one
+            # surviving stale line would still be the one the Engine gets.
+            sed -i.bak '/^FP_CORE_TOKEN=/d' "$env_file" && rm -f "${env_file}.bak" ;;
+        *)
+            log_warn "could not verify FP_CORE_TOKEN (core not reachable) — keeping it" ;;
+    esac
+}
+
 # Wait for /api/v1/health to return 200. Times out after 3 minutes.
 fp_wait_for_api_ready() {
     local port="${1:-7433}"

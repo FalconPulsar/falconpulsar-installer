@@ -839,6 +839,13 @@ fp_try_upgrade_fastpath() {
         fi
     fi
 
+    # Engine token convergence — mirror of the gateway validation above; a
+    # stale explicit FP_CORE_TOKEN is deleted so the compose fallback hands
+    # the Engine the key that was just verified or re-minted.
+    if declare -f fp_reconcile_engine_token >/dev/null 2>&1; then
+        fp_reconcile_engine_token "${home}/.env" "${vrest_port:-${FP_REST_PORT:-7433}}"
+    fi
+
     # Hard gate: the AI Gateway must come up healthy, same bar as the
     # fresh-install paths. Honour a port remap from the existing .env:
     # it wins over FP_GATEWAY_PORT pre-defaulted by the installer shell,

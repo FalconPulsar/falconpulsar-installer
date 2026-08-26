@@ -797,6 +797,12 @@ case "$GW_KEY_STATE" in
         fp_bootstrap_gateway_token "${FP_HOME}/.env" ;;
 esac
 
+# The Engine's Core credential converges on the key just validated above —
+# an explicit stale FP_CORE_TOKEN line is the one way it can diverge, and it
+# fails as silently as the gateway case did (field incident 2026-08: every
+# series picker empty, a 401 nobody could see). See fp_reconcile_engine_token.
+fp_reconcile_engine_token "${FP_HOME}/.env" "${FP_REST_PORT}"
+
 # 5c. Start the rest of the stack.
 # Record whether the gateway database predates this run BEFORE the stack
 # starts. If it does, the catalog holds user-configured providers/models
