@@ -52,6 +52,12 @@
 #   FP_UI_PORT          Web UI port (default 80)
 #   FP_LOG_LEVEL        debug, info, warn, error (default info)
 #
+# Compose profiles (opt-in; a default `docker compose up` does not start them):
+#   copilot  — Command Center (installer sets COMPOSE_PROFILES when enabled)
+#   lab      — 500-node OPC UA simulator on 127.0.0.1:4840. Not for plant
+#              hosts. From the installer git checkout:
+#                docker compose -f shared/compose.yml --profile lab up -d opcua-500
+#
 # LLM provider credentials (Anthropic, xAI, OpenAI, Ollama, etc.) are NOT
 # stored in this file or .env — they are configured via the Web UI
 # (Settings > AI Configuration) and persisted in the Core database, then
@@ -113,6 +119,9 @@ services:
       # value from the TOML so this env stays empty after first run.
       # Set to "false" for HTTP-only deployments on trusted LANs.
       FP_COOKIE_SECURE: ${FP_COOKIE_SECURE:-true}
+      # Browser / Expo web / Android emulator. Empty keeps Core's compiled
+      # defaults (desktop UI :5173 + Tauri). Set to add simulator origins.
+      FP_ALLOWED_ORIGINS: ${FP_ALLOWED_ORIGINS:-}
     healthcheck:
       # Bash /dev/tcp port-open check. The core process binds the REST port
       # only after init-auto completes, so this is effectively a readiness
@@ -383,6 +392,27 @@ services:
       timeout: 3s
       start_period: 15s
       retries: 3
+    networks:
+      - falconpulsar
+
+  # ── Lab OPC UA simulator (OPTIONAL) — 500-node commissioning fixture ─
+  # Profile "lab". Default stack does NOT start this. Do not add "lab" to
+  # COMPOSE_PROFILES on a plant host. Does not touch Core / UI / Gateway.
+  #
+  # From the installer git checkout (build context is next to this file):
+  #   docker compose -f shared/compose.yml --profile lab up -d opcua-500
+  #
+  # Host: opc.tcp://127.0.0.1:4840 only. Compose network: opc.tcp://opcua-500:4840
+  # Address space matches the Gateway fixture: plant/lineN/{press|temp}_iii
+  opcua-500:
+    profiles: ["lab"]
+    build:
+      context: ../lab/opcua-500
+    image: falconpulsar/opcua-500:lab
+    container_name: falconpulsar-opcua-500
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:4840:4840"
     networks:
       - falconpulsar
 

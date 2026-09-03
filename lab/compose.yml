@@ -1,0 +1,27 @@
+# Lab OPC UA simulator only. Does not define Core / UI / Gateway / Engine.
+# Default stack is unchanged. Project name is falconpulsar-lab so
+# `docker compose down` here cannot stop the plant stack.
+#
+#   docker compose -f lab/compose.yml --profile lab up -d
+#   docker compose -f lab/compose.yml --profile lab down
+#
+# Host: opc.tcp://127.0.0.1:4840
+# From a Core container on the falconpulsar network, use host.docker.internal:4840
+# (Docker Desktop) or attach this service via shared/compose.yml profile `lab`.
+
+name: falconpulsar-lab
+
+services:
+  opcua-500:
+    profiles: ["lab"]
+    build:
+      context: ./opcua-500
+    image: falconpulsar/opcua-500:lab
+    container_name: falconpulsar-opcua-500
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:4840:4840"
+
+networks:
+  default:
+    name: falconpulsar-lab
