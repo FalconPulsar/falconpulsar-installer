@@ -17,16 +17,19 @@ Template:
 | <stack>    |      |    |         |        |           |
 ```
 
-## Current row (useful-loops)
+## Current row
 
 | FP_VERSION | core | ui | gateway | engine | installer |
 |------------|------|----|---------|--------|-----------|
-| useful-loops | latest | useful-loops (unreleased) | useful-loops | useful-loops | useful-loops |
+| latest | latest | latest | latest | latest | latest |
+
+Official installs set `FP_VERSION=latest` and pull every image from the
+registry. Git branch names are not Hub tags.
 
 - **core** stays on `main` / the published `latest` image. Contracts
   (BrowseNext, permission bits, …) are written in falconpulsar-doc, not
-  implemented on this stack.
-- **ui** is the useful-loops branch, not a registry tag yet.
-- **gateway**, **engine**, **installer** are the useful-loops branches.
+  implemented in that image.
+- **ui**, **gateway**, **engine**, **installer** share the same `latest`
+  tag. Copilot is an optional profile and also pulls `latest`.
 
 The docs copy of this row: getting-started/compatibility.
