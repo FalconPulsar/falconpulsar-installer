@@ -51,6 +51,8 @@ func fakeStack(t *testing.T) Env {
 	write("ai-gateway-data/fastembed_cache/model.onnx", "1.3GB pretend") // must NOT travel
 	write("ai-engine-data/db/fp-agentics.db", "engine-bytes")
 	write("ai-engine-data/agentspecs/proc_x.spec.json", "{}")
+	write("ai-engine-data/fleet-vitals.jsonl", "{\"t\":1}\n")
+	write("ai-engine-data/fleet-vitals.jsonl.tmp", "half") // mid-rename: must NOT travel
 	write("copilot-data/command-center.db", "cc-bytes")
 	write("data/fp_database.hdr", "core-hdr")
 	write("data/wal/wal_1.fpw", "core-wal")
@@ -98,6 +100,7 @@ func TestBackupCarriesTheStoresAndOnlyTheStores(t *testing.T) {
 		"config/compose.yml", "config/.env", "config/gateway.yaml",
 		"gateway/conversations.db", "gateway/conversations.db-wal", "gateway/ssr.db",
 		"engine/db/fp-agentics.db", "engine/agentspecs/proc_x.spec.json",
+		"engine/fleet-vitals.jsonl",
 		"copilot/command-center.db",
 		"core/fp_database.hdr", "core/wal/wal_1.fpw",
 	} {
@@ -109,9 +112,15 @@ func TestBackupCarriesTheStoresAndOnlyTheStores(t *testing.T) {
 		if strings.Contains(name, "fastembed_cache") {
 			t.Errorf("the model cache must not travel: %s", name)
 		}
+		if strings.HasSuffix(name, ".jsonl.tmp") {
+			t.Errorf("a half-written vitals file must not travel: %s", name)
+		}
 	}
 	if got["gateway/conversations.db"] != "conv-bytes" {
 		t.Errorf("content mangled")
+	}
+	if got["engine/fleet-vitals.jsonl"] != "{\"t\":1}\n" {
+		t.Errorf("fleet vitals mangled: %q", got["engine/fleet-vitals.jsonl"])
 	}
 	if man.Semantics["gateway"] != "cold-copy" {
 		t.Errorf("stopped container must report cold-copy, got %q", man.Semantics["gateway"])

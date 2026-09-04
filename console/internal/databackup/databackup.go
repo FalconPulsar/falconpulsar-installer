@@ -9,7 +9,7 @@
 //	config/{compose.yml,.env,gateway.yaml}
 //	gateway/*.db                     the AI Gateway's seven SQLite stores
 //	engine/db/fp-agentics.db         the Engine's one database
-//	engine/{agentspecs,workorders,outbox,replay,models}/…
+//	engine/{agentspecs,workorders,outbox,replay,models}/… and engine/fleet-vitals.jsonl
 //	copilot/command-center.db
 //	core/…                           TimeSeries Core's whole data directory
 //
@@ -68,6 +68,11 @@ type target struct {
 	hostDir   string   // host path of the mounted data dir
 	dbs       []string // SQLite files, relative to hostDir
 	extras    []string // directories copied as-is, relative to hostDir
+	// Single files copied cold, relative to hostDir. For append-only or
+	// atomically-renamed logs (the engine writes <file>.tmp then renames),
+	// a reader always sees a complete file, so no in-container snapshot is
+	// needed even while the service runs.
+	files []string
 	// runner produces an in-container command that snapshots relSrc into
 	// relDst (both container-absolute); empty runner = cold copy only.
 	runner func(containerData, relSrc, relDst string) []string
@@ -117,6 +122,9 @@ func targets(e Env) []target {
 			name: "engine", container: "falconpulsar-ai-engine", hostDir: e.EngineDir,
 			dbs:    []string{"db/fp-agentics.db"},
 			extras: []string{"agentspecs", "workorders", "outbox", "replay", "models", "config"},
+			// The seven-day fleet vitals history (fleetVitals.ts). Named
+			// exactly so the transient fleet-vitals.jsonl.tmp never travels.
+			files:  []string{"fleet-vitals.jsonl"},
 			runner: func(cd, s, d string) []string { return nodeVacuum("/data", s, d) },
 		},
 		{
@@ -396,6 +404,16 @@ func backupTarget(ctx context.Context, e Env, tw *tar.Writer, t target) (string,
 			base := filepath.Base(p)
 			return base == ".DS_Store" || base == stagingDirName
 		}); err != nil {
+			return semantics, err
+		}
+	}
+
+	for _, f := range t.files {
+		src := filepath.Join(t.hostDir, f)
+		if !fileExists(src) {
+			continue // never written on this install
+		}
+		if err := addFile(tw, src, t.name+"/"+f); err != nil {
 			return semantics, err
 		}
 	}
