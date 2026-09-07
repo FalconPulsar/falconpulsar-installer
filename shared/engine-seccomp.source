@@ -1,0 +1,10 @@
+Derived from https://github.com/moby/profiles
+Revision: 3c28324314729dbade8287e868eef6338c42807a
+Source: seccomp/default.json (Apache-2.0; see engine-seccomp.LICENSE)
+Changes: appended unprivileged user-namespace clone rules and bubblewrap setup
+syscalls (unshare, mount, umount2, pivot_root, sethostname). Default deny and
+all upstream restrictions are retained. Run only with cap_drop: ALL and
+no-new-privileges:true. Kernel user namespaces must be enabled; Python fails
+closed when isolation cannot be established.
+Canonical copy: falconpulsar-ai-engine/docker/engine-seccomp.json
+Installer distribution copy: falconpulsar-installer/shared/engine-seccomp.json

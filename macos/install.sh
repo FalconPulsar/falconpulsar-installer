@@ -523,6 +523,9 @@ log_success "${FP_HOME} ready"
 log_step "step 4/6 — stack files"
 
 cp "${REPO_ROOT}/shared/compose.yml" "${FP_HOME}/compose.yml"
+for policy_file in engine-seccomp.json engine-seccomp.LICENSE engine-seccomp.source; do
+    cp "${REPO_ROOT}/shared/${policy_file}" "${FP_HOME}/${policy_file}"
+done
 cp "${REPO_ROOT}/shared/nginx.conf" "${FP_HOME}/nginx.conf"
 
 # Repair a Docker artifact first: if the stack was ever started while

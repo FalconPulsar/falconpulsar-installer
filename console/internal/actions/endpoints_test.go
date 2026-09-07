@@ -29,13 +29,16 @@ func TestEndpointURLsDefaultWithoutEnv(t *testing.T) {
 	if got := RestURL(); got != api.DefaultBaseURL {
 		t.Errorf("RestURL() = %q, want %q", got, api.DefaultBaseURL)
 	}
-	if got := UIURL(); got != "http://localhost:8080" {
+	if got := UIURL(); got != "http://localhost" {
 		t.Errorf("UIURL() = %q, want default", got)
+	}
+	if got := CopilotURL(); got != "http://localhost/workplace" {
+		t.Errorf("CopilotURL() = %q, want shell workplace route", got)
 	}
 	if got := GatewayURL(); got != "http://localhost:7436" {
 		t.Errorf("GatewayURL() = %q, want default", got)
 	}
-	if got := EngineURL(); got != "http://localhost:8085" {
+	if got := EngineURL(); got != "http://localhost/agents" {
 		t.Errorf("EngineURL() = %q, want default", got)
 	}
 }
@@ -55,8 +58,11 @@ func TestEndpointURLsHonorPortRemap(t *testing.T) {
 	if got := GatewayURL(); got != "http://localhost:17436" {
 		t.Errorf("GatewayURL() = %q, want remapped port", got)
 	}
-	if got := EngineURL(); got != "http://localhost:18085" {
+	if got := EngineURL(); got != "http://localhost:18080/agents" {
 		t.Errorf("EngineURL() = %q, want remapped port", got)
+	}
+	if got := CopilotURL(); got != "http://localhost:18080/workplace" {
+		t.Errorf("CopilotURL() = %q, want remapped shell workplace route", got)
 	}
 	if got := NewAPIClient().BaseURL; got != "http://localhost:17433" {
 		t.Errorf("NewAPIClient().BaseURL = %q, want remapped port", got)
@@ -72,13 +78,16 @@ func TestEndpointURLsIgnoreMalformedPorts(t *testing.T) {
 	if got := RestURL(); got != api.DefaultBaseURL {
 		t.Errorf("RestURL() = %q, want default for non-numeric port", got)
 	}
-	if got := UIURL(); got != "http://localhost:8080" {
+	if got := UIURL(); got != "http://localhost" {
 		t.Errorf("UIURL() = %q, want default for port 0", got)
+	}
+	if got := CopilotURL(); got != "http://localhost/workplace" {
+		t.Errorf("CopilotURL() = %q, want shell workplace route", got)
 	}
 	if got := GatewayURL(); got != "http://localhost:7436" {
 		t.Errorf("GatewayURL() = %q, want default for out-of-range port", got)
 	}
-	if got := EngineURL(); got != "http://localhost:8085" {
+	if got := EngineURL(); got != "http://localhost/agents" {
 		t.Errorf("EngineURL() = %q, want default for non-numeric port", got)
 	}
 }

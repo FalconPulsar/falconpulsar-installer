@@ -45,6 +45,7 @@ mkdir -p "$STAGING_DIR/falconpulsar-installer/macos" \
 cp "$REPO_ROOT/macos/install.sh"     "$STAGING_DIR/falconpulsar-installer/macos/"
 cp "$REPO_ROOT/macos/uninstall.sh"   "$STAGING_DIR/falconpulsar-installer/macos/"
 cp "$REPO_ROOT/shared/compose.yml"   "$STAGING_DIR/falconpulsar-installer/shared/"
+cp "$REPO_ROOT/shared/engine-seccomp."* "$STAGING_DIR/falconpulsar-installer/shared/"
 cp "$REPO_ROOT/shared/nginx.conf"    "$STAGING_DIR/falconpulsar-installer/shared/"
 cp "$REPO_ROOT/shared/gateway.yaml"  "$STAGING_DIR/falconpulsar-installer/shared/"
 cp "$REPO_ROOT/shared/lib/"*.sh      "$STAGING_DIR/falconpulsar-installer/shared/lib/"

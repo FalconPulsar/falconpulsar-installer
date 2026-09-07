@@ -254,7 +254,7 @@ func Export(ctx context.Context, output string, cli *api.Client, user, pass stri
 	var capturedSections []string
 
 	// config files
-	for _, name := range []string{"compose.yml", ".env", "gateway.yaml"} {
+	for _, name := range []string{"compose.yml", ".env", "gateway.yaml", "engine-seccomp.json"} {
 		p := filepath.Join(home, name)
 		if data, err := os.ReadFile(p); err == nil {
 			if err := writeZipFile(zw, "files/"+name, data); err != nil {
@@ -465,7 +465,7 @@ func Import(ctx context.Context, input string, cli *api.Client, user, pass strin
 	// Restore config files (compose.yml, .env, gateway.yaml). These aren't
 	// API-driven so failures don't go in the summary; we propagate them as
 	// hard errors because they block the stack from running.
-	for _, name := range []string{"compose.yml", ".env", "gateway.yaml"} {
+	for _, name := range []string{"compose.yml", ".env", "gateway.yaml", "engine-seccomp.json"} {
 		if f, ok := entries["files/"+name]; ok {
 			if err := extractTo(f, filepath.Join(home, name)); err != nil {
 				return summary, err
@@ -973,7 +973,7 @@ func Inspect(path, user, pass string) (InspectResult, error) {
 	}
 
 	// Stack files (files/*)
-	for _, name := range []string{"compose.yml", ".env", "gateway.yaml"} {
+	for _, name := range []string{"compose.yml", ".env", "gateway.yaml", "engine-seccomp.json"} {
 		f, ok := entries["files/"+name]
 		if !ok {
 			continue

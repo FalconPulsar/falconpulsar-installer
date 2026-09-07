@@ -577,7 +577,7 @@ namespace FalconPulsar.Tray
             {
                 var filesDir = Path.Combine(workDir, "files");
                 Directory.CreateDirectory(filesDir);
-                foreach (var name in new[] { "compose.yml", ".env", "gateway.yaml" })
+                foreach (var name in new[] { "compose.yml", ".env", "gateway.yaml", "engine-seccomp.json" })
                 {
                     var src = Path.Combine(FalconPulsarHomeDir, name);
                     if (File.Exists(src))
@@ -818,7 +818,7 @@ namespace FalconPulsar.Tray
                     var envPath = Path.Combine(FalconPulsarHomeDir, ".env");
                     var preservedEnv = ReadEnvValues(envPath, MachineSpecificEnvKeys);
 
-                    foreach (var name in new[] { "compose.yml", ".env", "gateway.yaml" })
+                    foreach (var name in new[] { "compose.yml", ".env", "gateway.yaml", "engine-seccomp.json" })
                     {
                         var src = Path.Combine(filesDir, name);
                         var dst = Path.Combine(FalconPulsarHomeDir, name);

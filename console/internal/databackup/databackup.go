@@ -114,7 +114,7 @@ func targets(e Env) []target {
 			name: "gateway", container: "falconpulsar-ai-gateway", hostDir: e.GatewayDir,
 			dbs: []string{
 				"conversations.db", "ssr.db", "user_memory.db", "ai_config.db",
-				"confirm_ids.db", "watches.db", "knowledge.db",
+				"confirm_ids.db", "watches.db", "knowledge.db", "proposals.db",
 			},
 			runner: func(cd, s, d string) []string { return pyVacuum("/app/data", s, d) },
 		},
@@ -329,7 +329,7 @@ func Backup(ctx context.Context, e Env, outPath string, opts BackupOptions) (Man
 		}
 	}
 
-	for _, f := range []string{"compose.yml", ".env", "gateway.yaml"} {
+	for _, f := range []string{"compose.yml", ".env", "gateway.yaml", "engine-seccomp.json"} {
 		p := filepath.Join(e.Home, f)
 		if fileExists(p) {
 			if err := addFile(tw, p, "config/"+f); err != nil {

@@ -568,7 +568,7 @@ enum ConfigBackup {
         // Files
         let filesDir = "\(workDir)/files"
         try fm.createDirectory(atPath: filesDir, withIntermediateDirectories: true)
-        for name in ["compose.yml", ".env", "gateway.yaml"] {
+        for name in ["compose.yml", ".env", "gateway.yaml", "engine-seccomp.json"] {
             let src = "\(homeDir)/\(name)"
             if fm.fileExists(atPath: src) {
                 try fm.copyItem(atPath: src, toPath: "\(filesDir)/\(name)")
@@ -728,7 +728,7 @@ enum ConfigBackup {
             // here -> Docker mounts an empty dir -> core crash-loops on first
             // run. Capture BEFORE the backup's .env overwrites the current one.
             let preservedEnv = Self.readEnvValues(keys: Self.machineSpecificEnvKeys)
-            for name in ["compose.yml", ".env", "gateway.yaml"] {
+            for name in ["compose.yml", ".env", "gateway.yaml", "engine-seccomp.json"] {
                 let src = "\(filesDir)/\(name)"
                 let dst = "\(homeDir)/\(name)"
                 if fm.fileExists(atPath: src) {

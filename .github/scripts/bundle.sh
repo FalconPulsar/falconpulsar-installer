@@ -140,6 +140,16 @@ if [ "$PLATFORM" != "linux-uninstall" ]; then
     printf '\n__FP_EOF_COMPOSE__\n\n'
 fi
 
+# Carry the sandbox policy and its upstream license in every installer payload.
+if [ "$PLATFORM" != "linux-uninstall" ]; then
+    for policy_file in engine-seccomp.json engine-seccomp.LICENSE engine-seccomp.source; do
+        [ -f "${REPO_ROOT}/shared/${policy_file}" ] || { echo "ERROR: missing ${policy_file}" >&2; exit 1; }
+        printf 'cat >"${__FP_BUNDLE_DIR}/shared/%s" <<'\''__FP_EOF_SECCOMP__'\''\n' "$policy_file"
+        cat "${REPO_ROOT}/shared/${policy_file}"
+        printf '\n__FP_EOF_SECCOMP__\n\n'
+    done
+fi
+
 # ── Embed shared/nginx.conf (install flavors only) ──────────────────────────
 # Step 6 of install.sh runs:
 #   install ... ${REPO_ROOT}/shared/nginx.conf ${FP_HOME}/nginx.conf

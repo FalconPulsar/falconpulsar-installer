@@ -65,6 +65,7 @@ func TestAllImplementationsKnowTheSameArchiveEntries(t *testing.T) {
 		"files/compose.yml",
 		"files/.env",
 		"files/gateway.yaml",
+		"files/engine-seccomp.json",
 		"files/ai_config.db",
 		"files/ssr.db",
 		"files/knowledge.db",

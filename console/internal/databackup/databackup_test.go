@@ -21,12 +21,12 @@ func fakeStack(t *testing.T) Env {
 	t.Helper()
 	home := t.TempDir()
 	e := Env{
-		Home:       home,
-		CoreDir:    filepath.Join(home, "data"),
-		GatewayDir: filepath.Join(home, "ai-gateway-data"),
-		EngineDir:  filepath.Join(home, "ai-engine-data"),
-		CopilotDir: filepath.Join(home, "copilot-data"),
-		FPVersion:  "test",
+		Home:             home,
+		CoreDir:          filepath.Join(home, "data"),
+		GatewayDir:       filepath.Join(home, "ai-gateway-data"),
+		EngineDir:        filepath.Join(home, "ai-engine-data"),
+		CopilotDir:       filepath.Join(home, "copilot-data"),
+		FPVersion:        "test",
 		ContainerRunning: func(context.Context, string) bool { return false },
 		DockerExec: func(context.Context, string, []string) error {
 			t.Fatal("cold path must not exec docker")
@@ -45,9 +45,12 @@ func fakeStack(t *testing.T) Env {
 	write("compose.yml", "services: {}")
 	write(".env", "FP_VERSION=test")
 	write("gateway.yaml", "gateway: {}")
+	write("engine-seccomp.json", "{\"defaultAction\":\"SCMP_ACT_ERRNO\"}")
 	write("ai-gateway-data/conversations.db", "conv-bytes")
 	write("ai-gateway-data/conversations.db-wal", "conv-wal")
 	write("ai-gateway-data/ssr.db", "ssr-bytes")
+	write("ai-gateway-data/proposals.db", "policy-ledger")
+	write("ai-gateway-data/proposals.db-wal", "policy-wal")
 	write("ai-gateway-data/fastembed_cache/model.onnx", "1.3GB pretend") // must NOT travel
 	write("ai-engine-data/db/fp-agentics.db", "engine-bytes")
 	write("ai-engine-data/agentspecs/proc_x.spec.json", "{}")
@@ -97,8 +100,9 @@ func TestBackupCarriesTheStoresAndOnlyTheStores(t *testing.T) {
 
 	for _, want := range []string{
 		"manifest.json",
-		"config/compose.yml", "config/.env", "config/gateway.yaml",
+		"config/compose.yml", "config/.env", "config/gateway.yaml", "config/engine-seccomp.json",
 		"gateway/conversations.db", "gateway/conversations.db-wal", "gateway/ssr.db",
+		"gateway/proposals.db", "gateway/proposals.db-wal",
 		"engine/db/fp-agentics.db", "engine/agentspecs/proc_x.spec.json",
 		"engine/fleet-vitals.jsonl",
 		"copilot/command-center.db",
@@ -115,6 +119,9 @@ func TestBackupCarriesTheStoresAndOnlyTheStores(t *testing.T) {
 		if strings.HasSuffix(name, ".jsonl.tmp") {
 			t.Errorf("a half-written vitals file must not travel: %s", name)
 		}
+	}
+	if got["gateway/proposals.db"] != "policy-ledger" {
+		t.Errorf("proposal ledger lost")
 	}
 	if got["gateway/conversations.db"] != "conv-bytes" {
 		t.Errorf("content mangled")

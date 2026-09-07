@@ -320,7 +320,7 @@ for lib in common.sh checks.sh prompts.sh bootstrap.sh registry_auth.sh fpcli.sh
     [ -f "shared/lib/$lib" ] || die "missing shared/lib/$lib (sourced by install.sh)"
     cp "shared/lib/$lib" "$RES_DIR/shared/lib/$lib"
 done
-for f in compose.yml nginx.conf gateway.yaml; do
+for f in compose.yml nginx.conf gateway.yaml engine-seccomp.json engine-seccomp.LICENSE engine-seccomp.source; do
     [ -f "shared/$f" ] || die "missing shared/$f (copied to \$FP_HOME by install.sh)"
     cp "shared/$f" "$RES_DIR/shared/$f"
 done

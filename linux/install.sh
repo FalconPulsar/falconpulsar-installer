@@ -729,6 +729,10 @@ prompt_admin_credentials
 install -m 0644 -o "$FP_USER" -g "$FP_USER" \
     "${REPO_ROOT}/shared/compose.yml" \
     "${FP_HOME}/compose.yml"
+for policy_file in engine-seccomp.json engine-seccomp.LICENSE engine-seccomp.source; do
+    install -m 0644 -o "$FP_USER" -g "$FP_USER" \
+        "${REPO_ROOT}/shared/${policy_file}" "${FP_HOME}/${policy_file}"
+done
 install -m 0644 -o "$FP_USER" -g "$FP_USER" \
     "${REPO_ROOT}/shared/nginx.conf" \
     "${FP_HOME}/nginx.conf"

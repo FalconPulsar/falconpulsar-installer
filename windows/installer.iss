@@ -124,6 +124,7 @@ FinishedLabel=FalconPulsar is now installed and running on your computer.%n%nOpe
 Source: "..\linux\install.sh";                              DestDir: "{app}\linux";          Flags: ignoreversion
 Source: "..\linux\uninstall.sh";                            DestDir: "{app}\linux";          Flags: ignoreversion
 Source: "..\linux\systemd\falconpulsar.service.template";   DestDir: "{app}\linux\systemd";  Flags: ignoreversion
+Source: "..\shared\engine-seccomp.*";                      DestDir: "{app}\shared";         Flags: ignoreversion
 Source: "..\shared\compose.yml";                            DestDir: "{app}\shared";         Flags: ignoreversion
 Source: "..\shared\gateway.yaml";                           DestDir: "{app}\shared";         Flags: ignoreversion
 Source: "..\shared\nginx.conf";                             DestDir: "{app}\shared";         Flags: ignoreversion

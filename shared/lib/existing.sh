@@ -488,6 +488,12 @@ fp_try_upgrade_fastpath() {
         # falconpulsar user. stat flags differ between GNU and BSD.
         local stack_owner
         stack_owner=$(stat -c '%U:%G' "${home}/compose.yml" 2>/dev/null || stat -f '%Su:%Sg' "${home}/compose.yml" 2>/dev/null || echo "")
+        for policy_file in engine-seccomp.json engine-seccomp.LICENSE engine-seccomp.source; do
+            cp "${shared_dir}/${policy_file}" "${home}/${policy_file}" \
+                || die "could not refresh ${home}/${policy_file}"
+            chmod 0644 "${home}/${policy_file}"
+            if [ -n "$stack_owner" ]; then chown "$stack_owner" "${home}/${policy_file}" 2>/dev/null || true; fi
+        done
         cp "${shared_dir}/compose.yml" "${home}/compose.yml" \
             || die "could not refresh ${home}/compose.yml"
         if [ -f "${shared_dir}/nginx.conf" ]; then

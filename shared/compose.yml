@@ -277,6 +277,10 @@ services:
     container_name: falconpulsar-ai-engine
     restart: unless-stopped
     user: "${FP_UID}:${FP_GID}"
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+      - seccomp=./engine-seccomp.json
     # AI Engine is a standard stack service (no compose profile) — always
     # installed alongside Core / Web UI / AI Gateway.
     # No published host port. Since the single-origin fold the Agents UI is
