@@ -692,78 +692,63 @@ func harvestPaginated(ctx context.Context, cli *api.Client, basePath, sectionKey
 			basePath, separator, pageLimit, offset)
 		raw, err := cli.GetRaw(ctx, pagedPath)
 		if err != nil {
-			if i == 0 {
-				// Couldn't fetch the first page — propagate.
-				return nil, err
-			}
-			// Mid-pagination failure: keep what we have, stop.
-			break
+			// A later page is just as necessary as the first. Returning the
+			// accumulated rows would make Export mark a truncated section as
+			// complete, so let it omit the section and record the failure.
+			return nil, fmt.Errorf("harvest %s at offset %d: %w", sectionKey, offset, err)
 		}
 
-		// Try the keyed envelope first.
-		var envelope struct {
-			Items      []any `json:"items"`
-			HasMore    bool  `json:"has_more"`
-			NextOffset int   `json:"next_offset"`
-		}
-		_ = json.Unmarshal(raw, &envelope)
-
-		// Pull out the section-keyed array (the common case).
-		var asMap map[string]any
-		_ = json.Unmarshal(raw, &asMap)
+		// Every successful page must contain a real array. Invalid JSON or
+		// an error-shaped HTTP 200 response must not become an empty section.
+		var fields map[string]json.RawMessage
 		var pageItems []any
-		if asMap != nil {
-			if arr, ok := asMap[sectionKey].([]any); ok {
-				pageItems = arr
-			} else if arr, ok := asMap[strings.ReplaceAll(sectionKey, "_", "-")].([]any); ok {
-				pageItems = arr
-			} else if arr, ok := asMap["items"].([]any); ok {
-				pageItems = arr
+		hasMore := false
+		nextOffset := 0
+		if err := json.Unmarshal(raw, &fields); err == nil && fields != nil {
+			for _, key := range []string{sectionKey, strings.ReplaceAll(sectionKey, "_", "-"), "items"} {
+				if value, ok := fields[key]; ok {
+					if err := json.Unmarshal(value, &pageItems); err != nil || pageItems == nil {
+						return nil, fmt.Errorf("harvest %s at offset %d: invalid %s array", sectionKey, offset, key)
+					}
+					break
+				}
 			}
-		}
-		// Fall back to bare array.
-		if pageItems == nil {
-			var bare []any
-			if err := json.Unmarshal(raw, &bare); err == nil {
-				pageItems = bare
+			if pageItems == nil {
+				return nil, fmt.Errorf("harvest %s at offset %d: missing item array", sectionKey, offset)
+			}
+			if value, ok := fields["has_more"]; ok {
+				var flag *bool
+				if err := json.Unmarshal(value, &flag); err != nil || flag == nil {
+					return nil, fmt.Errorf("harvest %s at offset %d: invalid has_more", sectionKey, offset)
+				}
+				hasMore = *flag
+			}
+			nextOffset = offset + len(pageItems)
+			if value, ok := fields["next_offset"]; ok {
+				var next *int
+				if err := json.Unmarshal(value, &next); err != nil || next == nil || *next < 0 {
+					return nil, fmt.Errorf("harvest %s at offset %d: invalid next_offset", sectionKey, offset)
+				}
+				nextOffset = *next
+			}
+		} else {
+			// Older endpoints can return a bare array without pagination.
+			if err := json.Unmarshal(raw, &pageItems); err != nil || pageItems == nil {
+				return nil, fmt.Errorf("harvest %s at offset %d: invalid JSON page", sectionKey, offset)
 			}
 		}
 
 		all = append(all, pageItems...)
-
-		// Decide whether to keep paginating. has_more is the canonical signal.
-		// If the server didn't include it (older Core, or endpoints that
-		// don't paginate), we stop after one page.
-		hasMore := false
-		nextOffset := offset + len(pageItems)
-		if asMap != nil {
-			if v, ok := asMap["has_more"].(bool); ok {
-				hasMore = v
-			}
-			if v, ok := asMap["next_offset"].(float64); ok {
-				nextOffset = int(v)
-			}
+		if !hasMore {
+			return json.Marshal(map[string]any{sectionKey: all, "count": len(all)})
 		}
-		// also reflect into the typed envelope so we honour either field name
-		if envelope.HasMore {
-			hasMore = true
-		}
-		if envelope.NextOffset > 0 {
-			nextOffset = envelope.NextOffset
-		}
-
-		// Guard: if the server lied (has_more=true but no progress), bail.
-		if !hasMore || nextOffset <= offset || len(pageItems) == 0 {
-			break
+		if nextOffset <= offset || len(pageItems) == 0 {
+			return nil, fmt.Errorf("harvest %s at offset %d: pagination did not advance", sectionKey, offset)
 		}
 		offset = nextOffset
 	}
 
-	out := map[string]any{
-		sectionKey: all,
-		"count":    len(all),
-	}
-	return json.Marshal(out)
+	return nil, fmt.Errorf("harvest %s: exceeded %d pages before completion", sectionKey, maxIterations)
 }
 
 // InspectResult is the structured output of Inspect — what's in a backup
@@ -781,6 +766,13 @@ type InspectResult struct {
 	Manifest map[string]any `json:"manifest"`
 	// StackFiles lists files/* entries with their decompressed size.
 	StackFiles []InspectFile `json:"stack_files"`
+	// ConfigBundle reports only the complete-server bundle's presence and size.
+	// Its contents include credentials and must never appear in inspect output.
+	ConfigBundle *InspectFile `json:"config_bundle,omitempty"`
+	// Warnings reports export failures recorded in an otherwise valid archive.
+	// No warnings does not establish completeness for legacy manifests that
+	// do not declare which contents were captured.
+	Warnings []string `json:"warnings,omitempty"`
 	// Sections lists api/* sections with their item counts.
 	Sections []InspectSection `json:"sections"`
 	// TotalItems is the sum of Sections[].Count.
@@ -825,6 +817,73 @@ type Coverage struct {
 	ExternalOrphans   int      `json:"external_orphans"`    // source_type=external AND no mapping → cleanup candidates
 	OrphanExamples    []string `json:"orphan_examples"`     // up to 10 example paths
 	RedundantMappings int      `json:"redundant_mappings"`  // total mappings - distinct mapped series (excess due to N:1 redundancy)
+}
+
+// inspectDeclaredContents checks only claims made by the manifest. Older
+// writers omitted these fields, and optional services need not have stores.
+// Reading a promised entry also verifies its ZIP checksum; listing its size
+// alone would make a damaged entry appear usable.
+func inspectDeclaredContents(manifest map[string]any, entries map[string]*zip.File) ([]string, error) {
+	var warnings []string
+	if incomplete, _ := manifest["incomplete"].(bool); incomplete {
+		warnings = append(warnings, "Export was marked INCOMPLETE in the manifest")
+	}
+	if problems, ok := manifest["errors"].([]any); ok {
+		for _, problem := range problems {
+			if message, ok := problem.(string); ok && message != "" {
+				warnings = append(warnings, "Export: "+message)
+			}
+		}
+	}
+
+	var expected, problems []string
+	if value, present := manifest["bundle"]; present && value != nil {
+		if bundle, ok := value.(bool); !ok {
+			problems = append(problems, "manifest bundle is not a boolean")
+		} else if bundle {
+			expected = append(expected, "api/config-bundle.json")
+		}
+	}
+	for _, field := range []string{"sections", "config_stores"} {
+		value, present := manifest[field]
+		if !present || value == nil {
+			continue
+		}
+		names, ok := value.([]any)
+		if !ok {
+			problems = append(problems, "manifest "+field+" is not an array")
+			continue
+		}
+		for _, value := range names {
+			name, ok := value.(string)
+			if !ok || name == "" {
+				problems = append(problems, "manifest "+field+" contains an invalid entry name")
+				continue
+			}
+			if field == "config_stores" {
+				expected = append(expected, "files/"+strings.ReplaceAll(name, "/", "_"))
+			} else {
+				if name == "asset_types" {
+					name = "asset-types"
+				}
+				expected = append(expected, "api/"+name+".json")
+			}
+		}
+	}
+	for _, name := range expected {
+		f, ok := entries[name]
+		if !ok {
+			problems = append(problems, "missing declared entry "+name)
+			continue
+		}
+		if _, err := readZipFile(f); err != nil {
+			problems = append(problems, fmt.Sprintf("unreadable declared entry %s: %v", name, err))
+		}
+	}
+	if len(problems) > 0 {
+		return warnings, fmt.Errorf("backup contents do not match manifest: %s", strings.Join(problems, "; "))
+	}
+	return warnings, nil
 }
 
 // extractStringField pulls a string from a JSON object, returning "" if
@@ -965,15 +1024,28 @@ func Inspect(path, user, pass string) (InspectResult, error) {
 
 	// Manifest
 	if f, ok := entries["manifest.json"]; ok {
-		if raw, err := readZipFile(f); err == nil {
-			var m map[string]any
-			_ = json.Unmarshal(raw, &m)
-			res.Manifest = m
+		raw, err := readZipFile(f)
+		if err != nil {
+			return res, fmt.Errorf("unreadable manifest.json: %w", err)
 		}
+		if err := json.Unmarshal(raw, &res.Manifest); err != nil {
+			return res, fmt.Errorf("invalid manifest.json: %w", err)
+		}
+		if res.Manifest == nil {
+			return res, errors.New("invalid manifest.json: expected a JSON object")
+		}
+	}
+	res.Warnings, err = inspectDeclaredContents(res.Manifest, entries)
+	if err != nil {
+		return res, err
 	}
 
 	// Stack files (files/*)
-	for _, name := range []string{"compose.yml", ".env", "gateway.yaml", "engine-seccomp.json"} {
+	stackNames := []string{"compose.yml", ".env", "gateway.yaml", "engine-seccomp.json"}
+	for _, store := range databackup.ConfigStores(databackup.Env{}) {
+		stackNames = append(stackNames, strings.ReplaceAll(store.Rel, "/", "_"))
+	}
+	for _, name := range stackNames {
 		f, ok := entries["files/"+name]
 		if !ok {
 			continue
@@ -982,6 +1054,9 @@ func Inspect(path, user, pass string) (InspectResult, error) {
 			Name: name,
 			Size: int64(f.UncompressedSize64),
 		})
+	}
+	if f, ok := entries["api/config-bundle.json"]; ok {
+		res.ConfigBundle = &InspectFile{Name: "config-bundle.json", Size: int64(f.UncompressedSize64)}
 	}
 
 	// API sections (api/*). The order here mirrors the import dependency
@@ -1051,6 +1126,17 @@ func (r InspectResult) HumanReadable() string {
 		if v, ok := r.Manifest["source_platform"].(string); ok {
 			fmt.Fprintf(&b, "  Source platform: %s\n", v)
 		}
+	}
+	if len(r.Warnings) > 0 {
+		fmt.Fprintf(&b, "\nWarnings:\n")
+		for _, warning := range r.Warnings {
+			fmt.Fprintf(&b, "  ! %s\n", warning)
+		}
+	}
+	if r.ConfigBundle != nil {
+		fmt.Fprintf(&b, "\nComplete-server config bundle: present (%s)\n", humanBytes(r.ConfigBundle.Size))
+	} else {
+		fmt.Fprintf(&b, "\nComplete-server config bundle: absent\n")
 	}
 	if len(r.StackFiles) > 0 {
 		fmt.Fprintf(&b, "\nStack files:\n")

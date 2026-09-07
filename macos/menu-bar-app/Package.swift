@@ -14,6 +14,11 @@ let package = Package(
             resources: [
                 .process("Assets.xcassets")
             ]
+        ),
+        .testTarget(
+            name: "ConfigBackupPaginationTests",
+            dependencies: ["FalconPulsarMenuBar"],
+            path: "Tests"
         )
     ]
 )

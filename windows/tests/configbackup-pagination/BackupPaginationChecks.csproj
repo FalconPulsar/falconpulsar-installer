@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- Exercise the production implementation without loading Windows Forms. -->
+    <Compile Include="../../tray-app/ConfigBackup.cs" Link="ConfigBackup.cs" />
+  </ItemGroup>
+</Project>

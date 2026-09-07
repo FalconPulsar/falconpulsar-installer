@@ -2,6 +2,7 @@
 // Copyright (c) 2026 FalconPulsar Contributors
 
 import Foundation
+import CoreFoundation
 import AppKit
 import CryptoKit
 
@@ -200,7 +201,7 @@ enum ConfigBackup {
         let sem = DispatchSemaphore(value: 0)
         URLSession.shared.dataTask(with: req) { data, response, err in
             if let err = err { error = err }
-            else if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
+            else if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
                 error = BackupError.apiError("HTTP \(http.statusCode)")
             }
             else {
@@ -960,62 +961,79 @@ enum ConfigBackup {
     /// Core caps at output_max_rows (default 1000) per page regardless of
     /// the client-supplied limit.
     ///
-    /// Throws only if the FIRST page fails — the section is then missing rather
-    /// than empty, and the caller records that instead of writing a stub.
-    /// Mid-pagination failures stop early and return what we collected so
-    /// far.
+    /// Any failed or malformed page fails the whole section so the caller
+    /// records an incomplete export instead of publishing truncated data.
     static func harvestPaginated(path: String, sectionKey: String, token: String) throws -> Data {
-        let pageLimit = 1000
-        let maxIterations = 10_000
-        var all: [Any] = []
-        var offset = 0
-        let separator = path.contains("?") ? "&" : "?"
-
-        for i in 0..<maxIterations {
-            let paged = "\(path)\(separator)limit=\(pageLimit)&offset=\(offset)"
+        try harvestPaginated(path: path, sectionKey: sectionKey) { paged in
             guard let url = URL(string: "\(coreBaseURL)\(paged)") else {
                 throw BackupError.apiError("could not build a URL for \(paged)")
             }
             var req = URLRequest(url: url)
             req.addValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-            var data = Data()
-            do {
-                (data, _) = try syncRequest(req)
-            } catch {
-                if i == 0 { throw error }
-                break
-            }
+            return try syncRequest(req).0
+        }
+    }
 
-            // Pull out the array from the response. Try keyed, then aliases,
-            // then "items", then bare array.
-            var pageItems: [Any] = []
+    static func harvestPaginated(path: String, sectionKey: String, maxIterations: Int = 10_000,
+                                 fetch: (String) throws -> Data) throws -> Data {
+        let pageLimit = 1000
+        var all: [Any] = []
+        var offset = 0
+        let separator = path.contains("?") ? "&" : "?"
+
+        for _ in 0..<max(0, maxIterations) {
+            let paged = "\(path)\(separator)limit=\(pageLimit)&offset=\(offset)"
+            let data = try fetch(paged)
+            let parsed = try JSONSerialization.jsonObject(with: data)
+            var pageItems: [Any]?
             var hasMore = false
-            var nextOffset = offset + 1
-            if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                if let arr = obj[sectionKey] as? [Any] {
-                    pageItems = arr
-                } else if let arr = obj[sectionKey.replacingOccurrences(of: "_", with: "-")] as? [Any] {
-                    pageItems = arr
-                } else if let arr = obj["items"] as? [Any] {
-                    pageItems = arr
+            var explicitOffset: Int?
+            if let obj = parsed as? [String: Any] {
+                for key in [sectionKey, sectionKey.replacingOccurrences(of: "_", with: "-"), "items"] {
+                    guard let value = obj[key] else { continue }
+                    guard let items = value as? [Any] else {
+                        throw BackupError.apiError("GET \(paged): invalid \(key) array")
+                    }
+                    pageItems = items
+                    break
                 }
-                if let m = obj["has_more"] as? Bool { hasMore = m }
-                if let n = obj["next_offset"] as? Int { nextOffset = n }
-                else if let n = obj["next_offset"] as? Double { nextOffset = Int(n) }
-            } else if let bare = try? JSONSerialization.jsonObject(with: data) as? [Any] {
+                if let more = obj["has_more"] {
+                    // NSNumber bridges numeric 0/1 to Bool too; require a JSON boolean.
+                    guard let flag = more as? NSNumber, CFGetTypeID(flag) == CFBooleanGetTypeID() else {
+                        throw BackupError.apiError("GET \(paged): invalid has_more")
+                    }
+                    hasMore = flag.boolValue
+                }
+                if let next = obj["next_offset"] {
+                    guard let number = next as? NSNumber,
+                          CFGetTypeID(number) != CFBooleanGetTypeID(),
+                          !["f", "d"].contains(String(cString: number.objCType)),
+                          let value = Int(number.stringValue), value >= 0 else {
+                        throw BackupError.apiError("GET \(paged): invalid next_offset")
+                    }
+                    explicitOffset = value
+                }
+            } else if let bare = parsed as? [Any] {
                 pageItems = bare
             }
-
-            all.append(contentsOf: pageItems)
-
-            if !hasMore || nextOffset <= offset || pageItems.isEmpty {
-                break
+            guard let items = pageItems else {
+                throw BackupError.apiError("GET \(paged): missing item array")
+            }
+            let (defaultOffset, overflow) = offset.addingReportingOverflow(items.count)
+            guard !overflow else {
+                throw BackupError.apiError("GET \(paged): pagination offset overflow")
+            }
+            let nextOffset = explicitOffset ?? defaultOffset
+            all.append(contentsOf: items)
+            if !hasMore {
+                return try JSONSerialization.data(withJSONObject: [sectionKey: all, "count": all.count])
+            }
+            guard nextOffset > offset, !items.isEmpty else {
+                throw BackupError.apiError("GET \(paged): pagination did not advance")
             }
             offset = nextOffset
         }
-
-        let out: [String: Any] = [sectionKey: all, "count": all.count]
-        return try JSONSerialization.data(withJSONObject: out)
+        throw BackupError.apiError("Harvest \(sectionKey): exceeded \(maxIterations) pages before completion")
     }
 
     /// Normalise a list-endpoint JSON response into a flat array of objects.

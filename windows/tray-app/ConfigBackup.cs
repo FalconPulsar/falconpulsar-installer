@@ -1050,15 +1050,13 @@ namespace FalconPulsar.Tray
         /// which Core caps at output_max_rows (default 1000) per page
         /// regardless of any client-supplied ?limit=.
         ///
-        /// Throws when the FIRST page fails: the caller records that section as
-        /// missing rather than writing an empty stub, which would be
-        /// indistinguishable from a stack that genuinely has none.
+        /// Any failed or malformed page fails the whole section so the caller
+        /// records an incomplete export instead of publishing truncated data.
         /// </summary>
-        private static async Task<byte[]> HarvestPaginatedAsync(
-            HttpClient http, string basePath, string sectionKey)
+        internal static async Task<byte[]> HarvestPaginatedAsync(
+            HttpClient http, string basePath, string sectionKey, int maxIterations = 10_000)
         {
             const int pageLimit = 1000;
-            const int maxIterations = 10_000;
             var all = new JsonArray();
             int offset = 0;
             string separator = basePath.Contains('?') ? "&" : "?";
@@ -1066,68 +1064,64 @@ namespace FalconPulsar.Tray
             for (int i = 0; i < maxIterations; i++)
             {
                 var paged = $"{basePath}{separator}limit={pageLimit}&offset={offset}";
-                HttpResponseMessage resp;
-                try { resp = await http.GetAsync($"{CoreBaseUrl}{paged}"); }
-                catch
-                {
-                    if (i == 0) throw;  // propagate first-page failure
-                    break;
-                }
+                using var resp = await http.GetAsync($"{CoreBaseUrl}{paged}");
                 if (!resp.IsSuccessStatusCode)
-                {
-                    if (i == 0)
-                        throw new BackupException(
-                            $"GET {paged}: HTTP {(int)resp.StatusCode}");
-                    break;
-                }
+                    throw new BackupException($"GET {paged}: HTTP {(int)resp.StatusCode}");
 
                 var raw = await resp.Content.ReadAsStringAsync();
                 JsonNode parsed;
                 try { parsed = JsonNode.Parse(raw); }
-                catch { break; }
+                catch (JsonException ex)
+                {
+                    throw new BackupException($"GET {paged}: invalid JSON page: {ex.Message}");
+                }
 
                 JsonArray pageItems = null;
                 bool hasMore = false;
-                int nextOffset = offset + 1;
-
+                int nextOffset;
                 if (parsed is JsonObject obj)
                 {
-                    foreach (var k in new[] {
-                        sectionKey,
-                        sectionKey.Replace("_", "-"),
-                        "items",
-                    })
+                    foreach (var key in new[] { sectionKey, sectionKey.Replace("_", "-"), "items" })
                     {
-                        if (obj[k] is JsonArray arr)
-                        {
-                            pageItems = arr;
-                            break;
-                        }
+                        if (!obj.TryGetPropertyValue(key, out var value)) continue;
+                        pageItems = value as JsonArray;
+                        if (pageItems == null)
+                            throw new BackupException($"GET {paged}: invalid {key} array");
+                        break;
                     }
-                    if (obj["has_more"]?.GetValue<bool>() is bool m) hasMore = m;
-                    if (obj["next_offset"]?.GetValue<int>() is int n) nextOffset = n;
+                    if (pageItems == null)
+                        throw new BackupException($"GET {paged}: missing item array");
+                    if (obj.TryGetPropertyValue("has_more", out var more))
+                    {
+                        if (more is not JsonValue flag || !flag.TryGetValue<bool>(out hasMore))
+                            throw new BackupException($"GET {paged}: invalid has_more");
+                    }
+                    nextOffset = checked(offset + pageItems.Count);
+                    if (obj.TryGetPropertyValue("next_offset", out var next))
+                    {
+                        if (next is not JsonValue number || !number.TryGetValue<int>(out nextOffset) || nextOffset < 0)
+                            throw new BackupException($"GET {paged}: invalid next_offset");
+                    }
                 }
                 else if (parsed is JsonArray bare)
                 {
                     pageItems = bare;
+                    nextOffset = checked(offset + pageItems.Count);
                 }
+                else
+                    throw new BackupException($"GET {paged}: invalid JSON page");
 
-                if (pageItems != null)
+                foreach (var item in pageItems) all.Add(item?.DeepClone());
+                if (!hasMore)
                 {
-                    foreach (var item in pageItems)
-                        all.Add(item?.DeepClone());
+                    var output = new JsonObject { [sectionKey] = all, ["count"] = all.Count };
+                    return Encoding.UTF8.GetBytes(output.ToJsonString());
                 }
-
-                if (!hasMore || nextOffset <= offset || (pageItems?.Count ?? 0) == 0)
-                    break;
+                if (nextOffset <= offset || pageItems.Count == 0)
+                    throw new BackupException($"GET {paged}: pagination did not advance");
                 offset = nextOffset;
             }
-
-            var outObj = new JsonObject {
-                [sectionKey] = all,
-                ["count"]    = all.Count,
-            };
-            return Encoding.UTF8.GetBytes(outObj.ToJsonString());
+            throw new BackupException($"Harvest {sectionKey}: exceeded {maxIterations} pages before completion");
         }
 
         /// <summary>
