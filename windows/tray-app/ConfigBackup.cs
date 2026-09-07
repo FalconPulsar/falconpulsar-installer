@@ -157,21 +157,22 @@ namespace FalconPulsar.Tray
 
         // ---- Auth + admin check ----
 
-        public static async Task<AdminCredentials> AuthenticateAsAdminAsync(string user, string pass)
+        public static async Task<AdminCredentials> AuthenticateAsAdminAsync(string user, string pass, string baseUrl = null)
         {
+            var endpoint = baseUrl ?? CoreBaseUrl;
             using var http = new HttpClient();
             var loginBody = JsonSerializer.Serialize(new { username = user, password = pass });
             HttpResponseMessage loginResp;
             try
             {
                 loginResp = await http.PostAsync(
-                    $"{CoreBaseUrl}/api/v1/auth/login",
+                    $"{endpoint}/api/v1/auth/login",
                     new StringContent(loginBody, Encoding.UTF8, "application/json"));
             }
             catch (HttpRequestException)
             {
                 throw new BackupException(
-                    $"Cannot reach FalconPulsar Core at {CoreBaseUrl}.");
+                    $"Cannot reach FalconPulsar Core at {endpoint}.");
             }
 
             if (!loginResp.IsSuccessStatusCode)
@@ -190,7 +191,7 @@ namespace FalconPulsar.Tray
             if (string.IsNullOrEmpty(token))
                 throw new BackupException("No token returned by server.");
 
-            using var meReq = new HttpRequestMessage(HttpMethod.Get, $"{CoreBaseUrl}/api/v1/auth/me");
+            using var meReq = new HttpRequestMessage(HttpMethod.Get, $"{endpoint}/api/v1/auth/me");
             meReq.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
             var meResp = await http.SendAsync(meReq);
             if (!meResp.IsSuccessStatusCode)
@@ -621,7 +622,7 @@ namespace FalconPulsar.Tray
                         ("roles.json",         "/api/v1/roles",                                "roles"),
                         ("users.json",         "/api/v1/users",                                "users"),
                         ("asset-types.json",   "/api/v1/asset-types",                          "asset_types"),
-                        ("assets.json",        "/api/v1/assets",                               "assets"),
+                        ("assets.json",        "/api/v1/assets?include_system=1",              "assets"),
                         ("datasources.json",   "/api/v1/datasources",                          "datasources"),
                         ("series.json",        "/api/v1/series?include_engineering=true",      "series"),
                         ("mappings.json",      "/api/v1/mappings",                             "mappings"),
@@ -948,6 +949,15 @@ namespace FalconPulsar.Tray
                                 bundleApplied = true;
                         }
                         catch { /* best-effort; fall through to the REST sections */ }
+                    }
+
+                    // Restored accounts have their original UUIDs and roles;
+                    // replace the token issued to the temporary target account.
+                    if (bundleApplied)
+                    {
+                        creds = await AuthenticateAsAdminAsync(creds.Username, creds.Password, baseUrl);
+                        http.DefaultRequestHeaders.Authorization =
+                            new AuthenticationHeaderValue("Bearer", creds.Token);
                     }
 
                     var sections = new (string file, string path, string key)[] {

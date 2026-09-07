@@ -4,11 +4,82 @@
 package configbackup
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/falconpulsar/falconpulsar-installer/console/internal/api"
 )
+
+func TestImportStoresStayAtTargetPaths(t *testing.T) {
+	for _, relocated := range []bool{false, true} {
+		t.Run(map[bool]string{false: "default-target", true: "relocated-target"}[relocated], func(t *testing.T) {
+			home, source := t.TempDir(), t.TempDir()
+			t.Setenv("FP_HOME", home)
+			entries := map[string]string{"manifest.json": `{}`}
+			var sourceEnv, targetEnv strings.Builder
+			for _, store := range []struct{ key, dir, rel, entry string }{
+				{"FP_GATEWAY_DATA_DIR", "ai-gateway-data", "ai_config.db", "ai_config.db"},
+				{"FP_ENGINE_DATA_DIR", "ai-engine-data", "db/fp-agentics.db", "db_fp-agentics.db"},
+				{"FP_COPILOT_DATA_DIR", "copilot-data", "command-center.db", "command-center.db"},
+			} {
+				src := filepath.Join(source, store.dir, store.rel)
+				if err := os.MkdirAll(filepath.Dir(src), 0700); err != nil {
+					t.Fatal(err)
+				}
+				for _, suffix := range []string{"", "-wal", "-shm"} {
+					if err := os.WriteFile(src+suffix, []byte("source-untouched"), 0600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				sourceEnv.WriteString(store.key + "=" + filepath.Join(source, store.dir) + "\n")
+				dir := filepath.Join(home, store.dir)
+				if relocated {
+					dir = filepath.Join(home, "relocated", store.dir)
+					targetEnv.WriteString(store.key + "=" + dir + "\n")
+				}
+				dst := filepath.Join(dir, store.rel)
+				if err := os.MkdirAll(filepath.Dir(dst), 0700); err != nil {
+					t.Fatal(err)
+				}
+				for _, suffix := range []string{"", "-wal", "-shm"} {
+					if err := os.WriteFile(dst+suffix, []byte("old-target"), 0600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				entries["files/"+store.entry] = "restored-config"
+				defer func() {
+					for _, suffix := range []string{"", "-wal", "-shm"} {
+						if got := mustRead(t, src+suffix); got != "source-untouched" {
+							t.Errorf("source changed: %s", src+suffix)
+						}
+					}
+					if got := mustRead(t, dst); got != "restored-config" {
+						t.Errorf("target not restored: %s", dst)
+					}
+					for _, suffix := range []string{"-wal", "-shm"} {
+						if _, err := os.Stat(dst + suffix); !os.IsNotExist(err) {
+							t.Errorf("target sidecar remains: %s", dst+suffix)
+						}
+					}
+				}()
+			}
+			entries["files/.env"] = sourceEnv.String()
+			if err := os.WriteFile(filepath.Join(home, ".env"), []byte(targetEnv.String()), 0600); err != nil {
+				t.Fatal(err)
+			}
+			archive := writeInspectFixture(t, entries, "", FormatVersion)
+			if _, err := Import(context.Background(), archive, api.New(), "fixture-admin", "fixture-password"); err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(mustRead(t, filepath.Join(home, ".env")), source) {
+				t.Error("source data paths survived into the target configuration")
+			}
+		})
+	}
+}
 
 // envMap parses a KEY=VALUE .env body into a map (skips comments/blanks).
 func envMap(body string) map[string]string {

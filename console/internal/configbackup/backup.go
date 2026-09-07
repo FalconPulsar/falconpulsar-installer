@@ -328,7 +328,7 @@ func Export(ctx context.Context, output string, cli *api.Client, user, pass stri
 		{"roles.json", "/api/v1/roles", "roles"},
 		{"users.json", "/api/v1/users", "users"},
 		{"asset-types.json", "/api/v1/asset-types", "asset_types"},
-		{"assets.json", "/api/v1/assets", "assets"},
+		{"assets.json", "/api/v1/assets?include_system=1", "assets"},
 		{"datasources.json", "/api/v1/datasources", "datasources"},
 		{"series.json", "/api/v1/series?include_engineering=true", "series"},
 		{"mappings.json", "/api/v1/mappings", "mappings"},
@@ -461,6 +461,21 @@ func Import(ctx context.Context, input string, cli *api.Client, user, pass strin
 	// on first-run init. Capture the TARGET's values BEFORE the backup's .env
 	// overwrites them; sanitizeRestoredEnv re-applies them below.
 	preservedEnv := readEnvValues(filepath.Join(home, ".env"), machineSpecificEnvKeys)
+	// Resolve the target BEFORE extracting the source .env. Keep implicit
+	// target defaults too: omitted FP_*_DATA_DIR keys must not adopt source
+	// paths and overwrite that installation's databases or WAL sidecars.
+	restoreEnv := databackup.LoadEnv(home)
+	for key, value := range map[string]string{
+		"FP_HOME": home, "FP_DATA_DIR": restoreEnv.CoreDir,
+		"FP_GATEWAY_DATA_DIR": restoreEnv.GatewayDir,
+		"FP_ENGINE_DATA_DIR":  restoreEnv.EngineDir,
+		"FP_COPILOT_DATA_DIR": restoreEnv.CopilotDir,
+		"FP_GATEWAY_CONFIG":   filepath.Join(home, "gateway.yaml"),
+	} {
+		if preservedEnv[key] == "" {
+			preservedEnv[key] = value
+		}
+	}
 
 	// Restore config files (compose.yml, .env, gateway.yaml). These aren't
 	// API-driven so failures don't go in the summary; we propagate them as
@@ -485,7 +500,6 @@ func Import(ctx context.Context, input string, cli *api.Client, user, pass strin
 	//     restored one (silently reverting it) or rejected as corrupt.
 	// These land while the stack is up; the caller tells the user to restart,
 	// which is when the containers actually re-open them.
-	restoreEnv := databackup.LoadEnv(home)
 	for _, store := range databackup.ConfigStores(restoreEnv) {
 		arcName := "files/" + strings.ReplaceAll(store.Rel, "/", "_")
 		f, ok := entries[arcName]
@@ -527,6 +541,13 @@ func Import(ctx context.Context, input string, cli *api.Client, user, pass strin
 				bundleApplied = true
 				summary.Sections["config-bundle"] = SectionStats{Created: 1}
 				summary.TotalCreated++
+				// The bundle replaces user UUIDs and role assignments. A token
+				// issued before that replacement still refers to the bootstrap
+				// identity; authenticate against the restored account before
+				// importing the remaining configuration.
+				if err := cli.Login(ctx, user, pass); err != nil {
+					return summary, fmt.Errorf("configuration bundle restored, but login with the restored administrator failed: %w", err)
+				}
 			} else {
 				summary.Sections["config-bundle"] = SectionStats{
 					Errors:       1,

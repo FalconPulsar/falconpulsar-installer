@@ -143,8 +143,9 @@ enum ConfigBackup {
     /// Validates credentials against Core (coreBaseURL) and verifies
     /// the user has the admin role. Returns an AdminCredentials with the auth
     /// token on success; throws BackupError otherwise.
-    static func authenticateAsAdmin(username: String, password: String) throws -> AdminCredentials {
-        let loginURL = URL(string: "\(coreBaseURL)/api/v1/auth/login")!
+    static func authenticateAsAdmin(username: String, password: String, baseURL: String? = nil) throws -> AdminCredentials {
+        let endpoint = baseURL ?? coreBaseURL
+        let loginURL = URL(string: "\(endpoint)/api/v1/auth/login")!
         var req = URLRequest(url: loginURL)
         req.httpMethod = "POST"
         req.addValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -170,7 +171,7 @@ enum ConfigBackup {
                 "Cannot reach FalconPulsar Core (\(msg)). Check that the stack is running.")
         } catch {
             throw BackupError.loginFailed(
-                "Cannot reach FalconPulsar Core at \(coreBaseURL).")
+                "Cannot reach FalconPulsar Core at \(endpoint).")
         }
         guard let tokenString = token ?? (try? JSONSerialization.jsonObject(with: data)
                                     as? [String: Any])?["token"] as? String,
@@ -179,7 +180,7 @@ enum ConfigBackup {
         }
 
         // Verify role
-        let meURL = URL(string: "\(coreBaseURL)/api/v1/auth/me")!
+        let meURL = URL(string: "\(endpoint)/api/v1/auth/me")!
         var meReq = URLRequest(url: meURL)
         meReq.addValue("Bearer \(tokenString)", forHTTPHeaderField: "Authorization")
         let (meData, _) = try syncRequest(meReq)
@@ -615,7 +616,7 @@ enum ConfigBackup {
             ("roles.json",         "/api/v1/roles",                                "roles"),
             ("users.json",         "/api/v1/users",                                "users"),
             ("asset-types.json",   "/api/v1/asset-types",                          "asset_types"),
-            ("assets.json",        "/api/v1/assets",                               "assets"),
+            ("assets.json",        "/api/v1/assets?include_system=1",              "assets"),
             ("datasources.json",   "/api/v1/datasources",                          "datasources"),
             ("series.json",        "/api/v1/series?include_engineering=true",      "series"),
             ("mappings.json",      "/api/v1/mappings",                             "mappings"),
@@ -702,6 +703,7 @@ enum ConfigBackup {
 
     static func importBackup(from inputPath: String, creds: AdminCredentials) throws {
         lastImportErrorCount = 0
+        var activeCreds = creds
         // Core's address, captured ONCE. coreBaseURL re-reads FP_REST_PORT from
         // .env, and the restore below overwrites that .env part-way through —
         // every call made after that point would otherwise be aimed at whatever
@@ -728,7 +730,21 @@ enum ConfigBackup {
             // verbatim repoints core's bind mount at a path that doesn't exist
             // here -> Docker mounts an empty dir -> core crash-loops on first
             // run. Capture BEFORE the backup's .env overwrites the current one.
-            let preservedEnv = Self.readEnvValues(keys: Self.machineSpecificEnvKeys)
+            var preservedEnv = Self.readEnvValues(keys: Self.machineSpecificEnvKeys)
+            // Capture target destinations before the source .env is extracted,
+            // including defaults that the target has not written explicitly.
+            let dirs = Self.stackDirs()
+            let targetDefaults = [
+                "FP_HOME": homeDir,
+                "FP_DATA_DIR": envValue("FP_DATA_DIR") ?? "\(homeDir)/data",
+                "FP_GATEWAY_DATA_DIR": dirs.gateway,
+                "FP_ENGINE_DATA_DIR": dirs.engine,
+                "FP_COPILOT_DATA_DIR": dirs.copilot,
+                "FP_GATEWAY_CONFIG": "\(homeDir)/gateway.yaml"
+            ]
+            for (key, value) in targetDefaults where preservedEnv[key, default: ""].isEmpty {
+                preservedEnv[key] = value
+            }
             for name in ["compose.yml", ".env", "gateway.yaml", "engine-seccomp.json"] {
                 let src = "\(filesDir)/\(name)"
                 let dst = "\(homeDir)/\(name)"
@@ -750,7 +766,6 @@ enum ConfigBackup {
             // replaced underneath a running container, and a stale WAL
             // belonging to the OLD database would either be replayed over the
             // restored one (silently reverting it) or rejected as corrupt.
-            let dirs = Self.stackDirs()
             for store in Self.configStores(dirs) {
                 let src = "\(workDir)/\(Self.storeEntryName(store.rel))"
                 guard fm.fileExists(atPath: src), !store.hostDir.isEmpty else { continue }
@@ -792,11 +807,12 @@ enum ConfigBackup {
             let bundleURL = URL(string: "\(baseURL)/api/v1/admin/config-bundle")!
             var req = URLRequest(url: bundleURL)
             req.httpMethod = "POST"
-            req.addValue("Bearer \(creds.token)", forHTTPHeaderField: "Authorization")
+            req.addValue("Bearer \(activeCreds.token)", forHTTPHeaderField: "Authorization")
             req.addValue("application/json", forHTTPHeaderField: "Content-Type")
             req.httpBody = bundleData
             if (try? syncRequest(req)) != nil {
                 bundleApplied = true
+                activeCreds = try authenticateAsAdmin(username: creds.username, password: creds.password, baseURL: baseURL)
                 NSLog("FalconPulsar: config-bundle restored (users w/ passwords, MFA, API tokens, roles, layouts) — skipping REST users+roles sections")
             } else {
                 NSLog("FalconPulsar: config-bundle POST FAILED — users/passwords/tokens/layouts NOT restored; falling back to REST users+roles")
@@ -843,7 +859,7 @@ enum ConfigBackup {
             // /api/v1/series (which requires an "asset" field the export never
             // emits and drops the limits/thresholds entirely).
             if sec.key == "series" {
-                Self.importSeriesBulk(items: items, creds: creds, coreBaseURL: baseURL)
+                Self.importSeriesBulk(items: items, creds: activeCreds, coreBaseURL: baseURL)
                 continue
             }
             for raw in items {
@@ -860,7 +876,7 @@ enum ConfigBackup {
                 let url = URL(string: "\(baseURL)\(sec.path)")!
                 var req = URLRequest(url: url)
                 req.httpMethod = "POST"
-                req.addValue("Bearer \(creds.token)", forHTTPHeaderField: "Authorization")
+                req.addValue("Bearer \(activeCreds.token)", forHTTPHeaderField: "Authorization")
                 req.addValue("application/json", forHTTPHeaderField: "Content-Type")
                 req.httpBody = try? JSONSerialization.data(withJSONObject: item)
                 // Count (don't swallow) a server rejection so the caller can warn
@@ -871,7 +887,7 @@ enum ConfigBackup {
 
         // The datasources were created without their secrets (the public export
         // masks them). Put the real credentials back now that the rows exist.
-        Self.restoreDatasourceSecrets(bundle: bundleRaw, creds: creds, coreBaseURL: baseURL)
+        Self.restoreDatasourceSecrets(bundle: bundleRaw, creds: activeCreds, coreBaseURL: baseURL)
     }
 
     /// .env keys tied to the HOST the stack runs on — absolute host paths and
