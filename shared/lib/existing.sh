@@ -438,9 +438,45 @@ fp_migrate_ui_port_80() {
     return 0
 }
 
-# Upgrade fast-path: when the user chose "upgrade" AND the existing compose.yml
-# is intact, skip the full install and just migrate+pull+recreate. Returns 0 if
-# it completed the upgrade (caller should exit success); 1 if not applicable.
+# Wait on Docker's application healthcheck, including restart-loop detection.
+# The old image is retained until every enabled service passes this gate.
+fp_wait_upgrade_container() {
+    local container="$1" attempts="${2:-90}" state
+    while [ "$attempts" -gt 0 ]; do
+        state=$(docker inspect --format '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "$container" 2>/dev/null) || state='missing'
+        case "$state" in
+            'running healthy') return 0 ;;
+            restarting*|exited*|dead*|'running unhealthy'|'running missing'|missing)
+                log_error "Upgrade health check failed for ${container}: ${state}. Previous images are retained."
+                return 1 ;;
+        esac
+        attempts=$((attempts - 1))
+        sleep 2
+    done
+    log_error "Timed out waiting for ${container} to become healthy. Previous images are retained."
+    return 1
+}
+
+fp_core_upgrade_preflight() {
+    local stack_home="$1" image runtime_user script
+    script="${REPO_ROOT}/shared/core-upgrade-preflight.sh"
+    [ -f "$script" ] || { log_error "Core upgrade compatibility checker is missing from this installer bundle."; return 1; }
+    image=$(cd "$stack_home" && docker compose config --images core) || return 1
+    runtime_user=$(docker inspect --format '{{.Config.User}}' falconpulsar-core) || {
+        log_error "Cannot inspect the existing Core container; upgrade compatibility could not be checked."
+        return 1
+    }
+    # Use the existing container mounts and UID, with read-only access and no
+    # network. Starting the server here would mutate the database during a check.
+    docker run --rm -i --pull never --network none --read-only \
+        --cap-drop ALL --security-opt no-new-privileges \
+        --volumes-from falconpulsar-core:ro --user "${runtime_user:-0}" \
+        --entrypoint sh "$image" -s -- /data < "$script"
+}
+
+# Upgrade fast-path: migrate the stack configuration, check compatibility,
+# then pull/recreate and verify. Returns 0 on success, 1 if not applicable,
+# and 2 on failure. A failure must never fall through into reinstall.
 #
 # Besides pulling images, the fast-path migrates legacy installs to the
 # mandatory AI Gateway: it refreshes the product-managed stack files
@@ -469,7 +505,7 @@ fp_try_upgrade_fastpath() {
     if declare -f fp_registry_ensure_access >/dev/null 2>&1; then
         if ! fp_registry_ensure_access; then
             log_error "registry access could not be established; aborting upgrade"
-            return 1
+            return 2
         fi
     fi
 
@@ -745,14 +781,18 @@ fp_try_upgrade_fastpath() {
 
     log_step "Upgrade in place: pulling latest images"
     if declare -f fp_compose_pull_with_retry >/dev/null 2>&1; then
-        fp_compose_pull_with_retry "$home" || return 1
+        fp_compose_pull_with_retry "$home" || return 2
     else
         # shellcheck disable=SC2086
-        ( cd "$home" && docker compose $_fp_profiles pull ) || return 1
+        ( cd "$home" && docker compose $_fp_profiles pull ) || return 2
     fi
+    log_step "Upgrade in place: checking Core storage compatibility"
+    fp_core_upgrade_preflight "$home" || return 2
     log_step "Upgrade in place: recreating containers"
     # shellcheck disable=SC2086
-    ( cd "$home" && docker compose $_fp_profiles up -d ) || return 1
+    ( cd "$home" && docker compose $_fp_profiles up -d ) || return 2
+
+    fp_wait_upgrade_container falconpulsar-core || return 2
 
     # ── Gateway bootstrap for migrated installs ─────────────────────────
     # Legacy installs that declined the (formerly optional) AI Gateway
@@ -830,7 +870,7 @@ fp_try_upgrade_fastpath() {
             bootstrapped_gateway=1
             # Recreate so the gateway container picks up the fresh key.
             # shellcheck disable=SC2086
-            ( cd "$home" && docker compose $_fp_profiles up -d ) || return 1
+            ( cd "$home" && docker compose $_fp_profiles up -d ) || return 2
         else
             ai_setup_incomplete=1
             log_warn "cannot mint the AI Gateway service token without admin credentials"
@@ -882,6 +922,18 @@ fp_try_upgrade_fastpath() {
        && declare -f fp_wipe_gateway_seed_defaults >/dev/null 2>&1; then
         fp_wipe_gateway_seed_defaults falconpulsar-ai-gateway "${gw_port}"
     fi
+
+    # Check the full enabled stack after credential bootstrap. A failed Core,
+    # UI, Engine or Command Center must not be reported as a successful update.
+    local upgraded_services upgraded_container
+    # shellcheck disable=SC2086
+    upgraded_services=$(cd "$home" && docker compose $_fp_profiles config --services) || return 2
+    for svc in $upgraded_services; do
+        # shellcheck disable=SC2086
+        upgraded_container=$(cd "$home" && docker compose $_fp_profiles ps -a -q "$svc") || return 2
+        [ -n "$upgraded_container" ] || { log_error "No upgraded container for ${svc}"; return 2; }
+        fp_wait_upgrade_container "$upgraded_container" || return 2
+    done
 
     # Post-upgrade cleanup: remove each snapshotted previous image ID that
     # is now fully untagged (no RepoTags pointing to it = displaced by the

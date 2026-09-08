@@ -140,6 +140,15 @@ if [ "$PLATFORM" != "linux-uninstall" ]; then
     printf '\n__FP_EOF_COMPOSE__\n\n'
 fi
 
+# The compatibility guard must travel with the downloadable upgrade bundle.
+if [ "$PLATFORM" != "linux-uninstall" ]; then
+    guard="${REPO_ROOT}/shared/core-upgrade-preflight.sh"
+    [ -f "$guard" ] || { echo "ERROR: missing Core upgrade checker" >&2; exit 1; }
+    printf 'cat >"${__FP_BUNDLE_DIR}/shared/core-upgrade-preflight.sh" <<'\''__FP_EOF_UPGRADE_GUARD__'\''\n'
+    cat "$guard"
+    printf '\n__FP_EOF_UPGRADE_GUARD__\n\n'
+fi
+
 # Carry the sandbox policy and its upstream license in every installer payload.
 if [ "$PLATFORM" != "linux-uninstall" ]; then
     for policy_file in engine-seccomp.json engine-seccomp.LICENSE engine-seccomp.source; do

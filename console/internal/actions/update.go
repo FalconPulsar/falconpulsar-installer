@@ -229,7 +229,7 @@ func CheckUpdates(ctx context.Context, fpVersion string) UpdateCheckResult {
 
 	for _, spec := range componentsForCheck() {
 		row := ComponentUpdateStatus{Name: spec.displayName}
-		ref := registry + "/" + spec.imageBaseName + ":" + tag
+		ref := componentImageRef(registry, tag, spec.imageBaseName)
 		row.ImageRef = ref
 
 		// Local digest: from the running container, if running. If not
@@ -256,6 +256,16 @@ func CheckUpdates(ctx context.Context, fpVersion string) UpdateCheckResult {
 
 	checkHostComponents(ctx, fpVersion, &out)
 	return out
+}
+
+// Match Compose's per-component override when checking the remote digest.
+func componentImageRef(registry, tag, component string) string {
+	if component == "copilot" {
+		if override := envFromDotEnv("FP_COPILOT_IMAGE_TAG"); override != "" {
+			tag = override
+		}
+	}
+	return registry + "/" + component + ":" + tag
 }
 
 // installerVersionURL is the shields-endpoint gist the release pipeline

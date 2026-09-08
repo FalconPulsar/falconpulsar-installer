@@ -456,6 +456,11 @@ if fp_has_existing_install; then
         fp_install_cli "$FP_HOME" "${FP_VERSION:-0.1.0}"
         chown -R "${FP_USER}:${FP_USER}" "${FP_HOME}/bin" 2>/dev/null || true
         exit 0
+    else
+        upgrade_status=$?
+        if [ "$upgrade_status" -ne 1 ]; then
+            die "Upgrade failed. Existing data and previous images are retained; inspect the error above before retrying."
+        fi
     fi
 
     # The fast-path fell through to the FULL installer, which reconfigures

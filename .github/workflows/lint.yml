@@ -77,7 +77,11 @@ jobs:
             shared/lib/registry_auth.sh \
             shared/lib/auth.sh \
             shared/lib/fpcli.sh \
+            shared/core-upgrade-preflight.sh \
             shared/lib/existing.sh
+
+      - name: Upgrade guard regression tests
+        run: python3 scripts/test_upgrade_guards.py
 
       - name: shellcheck coverage
         # The list above is hand-maintained, which is exactly how four
