@@ -5,7 +5,10 @@
 # deliberately conservative: legacy history needs an explicit recovery choice.
 set -eu
 root=${1:-/data}
-[ -d "$root" ] && [ -r "$root" ] || { echo 'Cannot read the Core data directory.' >&2; exit 2; }
+if [ ! -d "$root" ] || [ ! -r "$root" ]; then
+  echo 'Cannot read the Core data directory.' >&2
+  exit 2
+fi
 [ -d "$root/fractal" ] || exit 0
 find "$root/fractal" -type f -name '*.fpf' -exec sh -c '
   for partition do
