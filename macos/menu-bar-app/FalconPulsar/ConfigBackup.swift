@@ -1231,15 +1231,36 @@ enum ConfigBackup {
             let batch = items[start..<end].map { ensureSeriesAsset(stripServerIDs($0)) }
             start = end
             let payload: [String: Any] = ["series": batch]
-            guard let body = try? JSONSerialization.data(withJSONObject: payload) else { continue }
+            guard let body = try? JSONSerialization.data(withJSONObject: payload) else {
+                Self.lastImportErrorCount += batch.count
+                continue
+            }
             let url = URL(string: "\(coreBaseURL)/api/v1/series/bulk")!
             var req = URLRequest(url: url)
             req.httpMethod = "POST"
             req.addValue("Bearer \(creds.token)", forHTTPHeaderField: "Authorization")
             req.addValue("application/json", forHTTPHeaderField: "Content-Type")
             req.httpBody = body
-            if Self.isImportFailure(Self.requestStatus(req)) { Self.lastImportErrorCount += 1 }
+            do {
+                let (data, _) = try Self.syncRequest(req)
+                Self.lastImportErrorCount += Self.countSeriesImportErrors(data, expectedCount: batch.count)
+            } catch {
+                Self.lastImportErrorCount += batch.count
+            }
         }
+    }
+
+    /// HTTP 200 does not mean every series was restored. Validate every result.
+    static func countSeriesImportErrors(_ data: Data, expectedCount: Int) -> Int {
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let results = json["results"] as? [[String: Any]], results.count == expectedCount,
+              results.allSatisfy({ $0["status"] is String }) else {
+            return expectedCount
+        }
+        return results.filter { row in
+            guard let status = row["status"] as? String else { return true }
+            return status != "created" && status != "exists"
+        }.count
     }
 }
 

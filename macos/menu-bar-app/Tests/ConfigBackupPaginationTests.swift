@@ -6,6 +6,20 @@ import XCTest
 @testable import FalconPulsarMenuBar
 
 final class ConfigBackupPaginationTests: XCTestCase {
+    func testSeriesImportCountsFailuresInsideSuccessfulBulkResponses() {
+        let cases: [(String, Int)] = [
+            (#"{"results":[{"status":"created"},{"status":"exists"}]}"#, 0),
+            (#"{"results":[{"status":"created"},{"status":"error","error":"storage type conflict"}]}"#, 1),
+            (#"{"results":[{"status":"updated"},{"status":"exists"}]}"#, 1),
+            (#"{"results":[{"status":"created"}]}"#, 2),
+            (#"{"results":null}"#, 2), ("{}", 2), ("{", 2),
+            (#"{"results":[{"status":1},{"status":"exists"}]}"#, 2),
+        ]
+        for (json, failures) in cases {
+            XCTAssertEqual(ConfigBackup.countSeriesImportErrors(Data(json.utf8), expectedCount: 2), failures, json)
+        }
+    }
+
     private func harvest(_ pages: [String], key: String = "series", cap: Int = 10_000) throws -> [String: Any] {
         var index = 0
         let data = try ConfigBackup.harvestPaginated(path: "/series", sectionKey: key, maxIterations: cap) { _ in

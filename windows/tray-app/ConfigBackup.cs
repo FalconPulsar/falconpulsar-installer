@@ -1239,17 +1239,30 @@ namespace FalconPulsar.Tray
             if (batch.Count > 0) await PostSeriesBatchAsync(http, baseUrl, batch);
         }
 
-        private static async Task PostSeriesBatchAsync(HttpClient http, string baseUrl, JsonArray batch)
+        internal static async Task PostSeriesBatchAsync(HttpClient http, string baseUrl, JsonArray batch)
         {
             var payload = new JsonObject { ["series"] = batch };
             var body = new StringContent(payload.ToJsonString(), Encoding.UTF8, "application/json");
             try
             {
-                var resp = await http.PostAsync($"{baseUrl}/api/v1/series/bulk", body);
-                if (!resp.IsSuccessStatusCode && (int)resp.StatusCode != 409)
-                    LastImportErrorCount++;
+                using var resp = await http.PostAsync($"{baseUrl}/api/v1/series/bulk", body);
+                LastImportErrorCount += resp.IsSuccessStatusCode
+                    ? CountSeriesImportErrors(await resp.Content.ReadAsByteArrayAsync(), batch.Count)
+                    : batch.Count;
             }
-            catch { LastImportErrorCount++; }
+            catch { LastImportErrorCount += batch.Count; }
+        }
+
+        // A bulk request returns HTTP 200 even when individual series fail.
+        internal static int CountSeriesImportErrors(byte[] data, int expectedCount)
+        {
+            try
+            {
+                if (JsonNode.Parse(data)?["results"] is not JsonArray rows || rows.Count != expectedCount)
+                    return expectedCount;
+                return rows.Count(row => row?["status"]?.GetValue<string>() is not ("created" or "exists"));
+            }
+            catch { return expectedCount; }
         }
 
         /// <summary>

@@ -374,7 +374,7 @@ func Export(ctx context.Context, output string, cli *api.Client, user, pass stri
 	// contains rather than what the export intended to collect.
 	manifest := map[string]any{
 		"format_version":       FormatVersion,
-		"falconpulsar_version": "0.1.4-alpha.104",
+		"falconpulsar_version": "0.1.4-alpha.105",
 		"exported_at":          time.Now().UTC().Format(time.RFC3339),
 		"source_host":          hostname(),
 		"source_platform":      runtime.GOOS,
@@ -1497,10 +1497,11 @@ func importSeriesBulk(ctx context.Context, cli *api.Client, items []any, st *Sec
 				Error  string `json:"error"`
 			} `json:"results"`
 		}
-		if json.Unmarshal(raw, &resp) != nil || len(resp.Results) == 0 {
-			// HTTP succeeded but the body didn't parse — assume the batch created.
-			st.Created += len(arr)
-			summary.TotalCreated += len(arr)
+		if json.Unmarshal(raw, &resp) != nil || len(resp.Results) != len(arr) {
+			// HTTP 200 alone does not establish that any series was restored.
+			st.Errors += len(arr)
+			summary.TotalErrors += len(arr)
+			st.ErrorDetails = appendCapped(st.ErrorDetails, "series/bulk: malformed or incomplete result; could not verify restored series", 5)
 			continue
 		}
 		for _, r := range resp.Results {
@@ -1516,6 +1517,8 @@ func importSeriesBulk(ctx context.Context, cli *api.Client, items []any, st *Sec
 				summary.TotalErrors++
 				if r.Error != "" {
 					st.ErrorDetails = appendCapped(st.ErrorDetails, r.Error, 5)
+				} else {
+					st.ErrorDetails = appendCapped(st.ErrorDetails, "series/bulk: unexpected result status "+r.Status, 5)
 				}
 			}
 		}

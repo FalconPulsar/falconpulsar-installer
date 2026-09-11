@@ -20,6 +20,7 @@ internal static class Program
         ConfigBackup.FalconPulsarHomeDir = isolatedHome;
         try
         {
+            await SeriesImportResults();
             await Success("default offset advances by item count",
                 ["{\"series\":[{\"id\":1},{\"id\":2}],\"has_more\":true}",
                  "{\"series\":[{\"id\":3}],\"has_more\":true}",
@@ -102,6 +103,29 @@ internal static class Program
         for (int i = 0; i < offsets.Length; i++)
             Require(handler.Requests[i].PathAndQuery == $"{path}{separator}limit=1000&offset={offsets[i]}",
                 name + ": wrong pagination query at page " + i);
+        passed++;
+    }
+
+    private static async Task SeriesImportResults()
+    {
+        var cases = new (string Json, int Errors)[] {
+            ("{\"results\":[{\"status\":\"created\"},{\"status\":\"exists\"}]}", 0),
+            ("{\"results\":[{\"status\":\"created\"},{\"status\":\"error\",\"error\":\"storage type conflict\"}]}", 1),
+            ("{\"results\":[{\"status\":\"updated\"},{\"status\":\"exists\"}]}", 1),
+            ("{\"results\":[{\"status\":\"created\"}]}", 2),
+            ("{\"results\":null}", 2), ("{}", 2), ("{", 2),
+            ("{\"results\":[{\"status\":1},{\"status\":\"exists\"}]}", 2),
+        };
+        foreach (var (json, errors) in cases)
+        {
+            Require(ConfigBackup.CountSeriesImportErrors(Encoding.UTF8.GetBytes(json), 2) == errors, "bulk result: " + json);
+            passed++;
+        }
+        using var handler = new FakeHandler(_ => Reply(cases[1].Json));
+        using var http = new HttpClient(handler);
+        ConfigBackup.LastImportErrorCount = 0;
+        await ConfigBackup.PostSeriesBatchAsync(http, "https://test.invalid", new JsonArray(new JsonObject(), new JsonObject()));
+        Require(ConfigBackup.LastImportErrorCount == 1, "HTTP 200 hid a failed series restore");
         passed++;
     }
 
