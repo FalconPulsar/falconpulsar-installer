@@ -1260,7 +1260,10 @@ namespace FalconPulsar.Tray
             {
                 if (JsonNode.Parse(data)?["results"] is not JsonArray rows || rows.Count != expectedCount)
                     return expectedCount;
-                return rows.Count(row => row?["status"]?.GetValue<string>() is not ("created" or "exists"));
+                var errors = 0;
+                foreach (var row in rows)
+                    if (row?["status"]?.GetValue<string>() is not ("created" or "exists")) errors++;
+                return errors;
             }
             catch { return expectedCount; }
         }
