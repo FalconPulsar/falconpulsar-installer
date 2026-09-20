@@ -541,7 +541,8 @@ func (a *App) confirmUninstall() {
 		})
 	list.AddItem("Cancel", "", 0, func() { a.pages.RemovePage("modal") })
 
-	a.pushModal("Uninstall FalconPulsar", list, 72, 9)
+	// A list: Enter picks the highlighted row, arrows move.
+	a.pushModalHint("Uninstall FalconPulsar", list, 72, 9, "↑/↓: choose · Enter: select · Esc: cancel")
 }
 
 // confirmPurge demands the word DELETE before wiping everything.
@@ -918,7 +919,8 @@ func (a *App) showHelp() {
 		}
 		return ev
 	})
-	a.pushModal("Keyboard Shortcuts", tv, 64, 27)
+	// Read-only: no fields, so it must not offer Tab.
+	a.pushModalHint("Keyboard Shortcuts", tv, 64, 27, "Enter or Esc: close")
 }
 
 // checkForUpdates probes the configured registry (FP_REGISTRY) for newer
@@ -1197,5 +1199,6 @@ func (a *App) showAbout() {
 	// + Endpoints sections) and slightly wider (longer URLs and the
 	// "AI Capabilities  X.Y.Z (sha)" line want ~50 cols of content +
 	// chrome). 70x24 fits comfortably.
-	a.pushModal("About FalconPulsar", tv, 70, 24)
+	// Read-only: no fields, so it must not offer Tab.
+	a.pushModalHint("About FalconPulsar", tv, 70, 24, "Enter or Esc: close")
 }
