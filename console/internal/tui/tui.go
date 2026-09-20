@@ -773,27 +773,44 @@ func (a *App) showMessage(title, body string, dismissable bool) {
 	a.pages.AddPage("modal", m, true, true)
 }
 
-// keyHint is the standard footer shown on form-based modals. It's added
-// as a bottom frame text so it doesn't share width with the title, and
-// it appears on every form prompt for free.
+// keyHint is the footer for form-based modals — the ones that really do
+// have fields to tab between and a button to confirm. A modal without
+// fields must pass its own hint to pushModalHint: printing this one on a
+// read-only panel tells the operator to press keys that do nothing, which
+// is exactly how the update dialog came to look broken.
 const keyHint = "Tab: next field · Enter: confirm · Esc: cancel"
 
+// modalChromeRows is what tview's Frame costs above the content: border
+// top and bottom, the padding row on each side, the title row, the footer
+// row — and one more that Frame keeps between the content and the footer.
+// Sizing at six lost the bottom line of every modal. modal_test.go holds
+// this against a simulation screen rather than against this comment.
+const modalChromeRows = 7
+
 func (a *App) pushModal(title string, content tview.Primitive, w, h int) {
+	a.pushModalHint(title, content, w, h, keyHint)
+}
+
+func (a *App) pushModalHint(title string, content tview.Primitive, w, h int, hint string) {
 	frame := tview.NewFrame(content).
 		SetBorders(1, 1, 1, 1, 2, 2).
 		AddText(title, true, tview.AlignCenter, theme.Accent).
-		AddText(keyHint, false, tview.AlignCenter, theme.TextMuted)
+		AddText(hint, false, tview.AlignCenter, theme.TextMuted)
 	frame.SetBackgroundColor(theme.Panel)
 	frame.SetBorder(true).SetBorderColor(theme.BorderFocus)
-	// h is the inner content height; we add 5 rows of chrome:
-	// border-top(1) + title-text(1) + padding-top(1) + padding-bottom(1) +
-	// footer-text(1) + border-bottom(1) ≈ 6. Use h+6 so the form's button
-	// row is never clipped even when the footer hint is rendered.
+	// h is the inner content height. The chrome around it is SEVEN rows,
+	// not the six this once assumed: border-top(1) + padding-top(1) +
+	// title(1) + footer(1) + padding-bottom(1) + border-bottom(1) is six,
+	// and tview's Frame keeps one more between the content and the footer
+	// text. At h+6 the LAST line of content never reached the screen — on
+	// the update dialog that was the line naming the key to press, so the
+	// operator saw a panel whose only documented key was Esc.
+	// tests/modal_height_test.go pins this against a simulation screen.
 	flex := tview.NewFlex().
 		AddItem(nil, 0, 1, false).
 		AddItem(tview.NewFlex().SetDirection(tview.FlexRow).
 			AddItem(nil, 0, 1, false).
-			AddItem(frame, h+6, 0, true).
+			AddItem(frame, h+modalChromeRows, 0, true).
 			AddItem(nil, 0, 1, false),
 			w, 0, true).
 		AddItem(nil, 0, 1, false)
@@ -1010,19 +1027,48 @@ func (a *App) renderUpdateCheckModal(res actions.UpdateCheckResult) {
 	tv := tview.NewTextView().SetDynamicColors(true).SetWrap(false)
 	tv.SetBackgroundColor(theme.Panel)
 	tv.SetText(b.String())
+	// Enter does whatever this panel's one action is. It used to do
+	// nothing at all — the frame's footer said "Enter: confirm", the
+	// operator pressed it, and the dialog sat there. Esc was the only key
+	// that answered, so the update looked impossible to apply.
+	apply := func() bool {
+		if res.Any && !res.AnyError {
+			// Drop the panel first: applyUpdates suspends the TUI to run
+			// the pull, and coming back to a list that still says
+			// "update available" reads as though nothing happened.
+			a.pages.RemovePage("modal")
+			a.applyUpdates()
+			return true
+		}
+		return false
+	}
+	retry := func() bool {
+		if res.AnyError {
+			a.checkForUpdates()
+			return true
+		}
+		return false
+	}
 	tv.SetInputCapture(func(ev *tcell.EventKey) *tcell.EventKey {
 		switch {
 		case ev.Key() == tcell.KeyEscape:
 			a.pages.RemovePage("modal")
 			return nil
+		case ev.Key() == tcell.KeyEnter:
+			// Apply if there is something to apply, retry if the probe
+			// failed, otherwise Enter just closes — the same thing the
+			// Shortcuts and About panels do.
+			if apply() || retry() {
+				return nil
+			}
+			a.pages.RemovePage("modal")
+			return nil
 		case ev.Rune() == 'a' || ev.Rune() == 'A':
-			if res.Any && !res.AnyError {
-				a.applyUpdates()
+			if apply() {
 				return nil
 			}
 		case ev.Rune() == 'r' || ev.Rune() == 'R':
-			if res.AnyError {
-				a.checkForUpdates()
+			if retry() {
 				return nil
 			}
 		}
@@ -1039,7 +1085,14 @@ func (a *App) renderUpdateCheckModal(res actions.UpdateCheckResult) {
 	if contentH > 28 {
 		contentH = 28
 	}
-	a.pushModal("Check for updates", tv, 76, contentH)
+	hint := "Enter: close · Esc: close"
+	switch {
+	case res.AnyError:
+		hint = "Enter or r: retry · Esc: close"
+	case res.Any:
+		hint = "Enter or a: apply now · Esc: close"
+	}
+	a.pushModalHint("Check for updates", tv, 76, contentH, hint)
 
 	// Auto-apply countdown — only fires if mode=auto, updates available,
 	// no probe errors, and the modal is still on top after 30s. Operator
