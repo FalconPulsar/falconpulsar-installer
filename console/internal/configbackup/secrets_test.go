@@ -31,7 +31,7 @@ func TestStripMaskedSecretsRemovesEveryMaskedKey(t *testing.T) {
 	item := map[string]any{
 		"name": "plc1",
 		"config": map[string]any{
-			"endpoint":    "opc.tcp://10.0.0.5:4840",
+			"endpoint":    "opc.tcp://192.0.2.10:4840",
 			"username":    "scada",
 			"password":    secretMask,
 			"token":       secretMask,
@@ -48,7 +48,7 @@ func TestStripMaskedSecretsRemovesEveryMaskedKey(t *testing.T) {
 		}
 	}
 	// Non-secret fields must be untouched, or the datasource loses its identity.
-	if cfg["endpoint"] != "opc.tcp://10.0.0.5:4840" {
+	if cfg["endpoint"] != "opc.tcp://192.0.2.10:4840" {
 		t.Errorf("endpoint was altered: %v", cfg["endpoint"])
 	}
 	if cfg["username"] != "scada" {

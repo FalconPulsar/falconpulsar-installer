@@ -1,0 +1,72 @@
+name: no-customer-data
+
+# Every FalconPulsar repository is, or will be, published, and its tests with it. This guard
+# keeps customer identifiers and internal hosts out of tracked files. It scans tracked files
+# only: testing against real data locally is fine, committing it is not.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Scan tracked files for customer identifiers
+        run: python3 tools/check_no_customer_data.py
+
+      # A guard that cannot fail is worse than no guard: it reports success either way.
+      # Prove the scanner still fires before trusting the run above.
+      #
+      # The planted data is SYNTHETIC: three canaries whose digests are added for this run
+      # only (FP_GUARD_EXTRA_DIGESTS). An earlier self-test planted a real customer path,
+      # base64-encoded, which published the very names the guard protects. The canaries
+      # cover each path the guard has: a long token, a three-character token in upper case
+      # inside a series path (case folding, underscore splitting, the minimum token length),
+      # and an address (the address digests).
+      - name: Self-test — the guard must reject planted canaries
+        run: |
+          set -euo pipefail
+          LONG=fpguardcanary
+          SHORT=qzx
+          ADDR=192.0.2.77
+          EXTRA=$(python3 -c 'import hashlib, sys; print(",".join(hashlib.sha256(t.encode()).hexdigest()[:16] for t in sys.argv[1:]))' "$LONG" "$SHORT" "$ADDR")
+          PLANT=_guard_selftest.txt
+          printf 'series: h2s_%s_%s@line1\nendpoint: opc.tcp://%s:4840\n' "$LONG" "QZX" "$ADDR" > "$PLANT"
+          git add -N -f "$PLANT"
+          set +e
+          OUT=$(FP_GUARD_EXTRA_DIGESTS="$EXTRA" python3 tools/check_no_customer_data.py 2>&1)
+          RC=$?
+          set -e
+          git rm -q --cached "$PLANT"
+          rm -f "$PLANT"
+          echo "$OUT"
+          if [ "$RC" -eq 0 ]; then
+            echo "::error::guard did NOT reject planted canaries — it is not protecting this repo"
+            exit 1
+          fi
+          for t in "'$LONG'" "'QZX'" "'$ADDR'"; do
+            if ! grep -qF "$t" <<<"$OUT"; then
+              echo "::error::guard missed the planted canary $t"
+              exit 1
+            fi
+          done
+          echo "guard rejected every planted canary"
+
+      - name: Self-test — the guard still holds its lists
+        run: |
+          python3 - <<'PY'
+          import sys
+          sys.path.insert(0, "tools")
+          import check_no_customer_data as guard
+          ok = len(guard._DIGESTS) >= 10 and len(guard._ADDRESS_DIGESTS) >= 3 and guard._MIN_TOKEN <= 3
+          print(f"names {len(guard._DIGESTS)}, addresses {len(guard._ADDRESS_DIGESTS)}, min token {guard._MIN_TOKEN}")
+          if not ok:
+              print("::error::the guard's lists were emptied or its minimum token raised")
+              sys.exit(1)
+          PY
