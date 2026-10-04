@@ -147,7 +147,7 @@ func backupCore(ctx context.Context, e Env, tw *tar.Writer, opts BackupOptions) 
 
 	why, cause, mayStop := "", CauseNoKey, true
 	if e.BackupKey == "" {
-		why = "there is no backup key (" + BackupKeyEnv + ") in the stack's .env: run fp backup once in a terminal to create it, or re-run the installer"
+		why, cause = keyless(ctx, e, "there is no backup key ("+BackupKeyEnv+") in the stack's .env: run fp backup once in a terminal to create it, or re-run the installer")
 	} else {
 		cl := newCoreClient(e.CoreURL, e.BackupKey)
 		pctx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -180,9 +180,9 @@ func backupCore(ctx context.Context, e Env, tw *tar.Writer, opts BackupOptions) 
 				why, cause = "Core did not answer the request for a backup lease: "+err.Error(), CauseUnreachable
 			}
 		case errors.Is(err, ErrNoLease):
-			why, cause = "this Core cannot make a consistent live copy: it has no backup lease (it is older than the release that adds one)", CauseNoLease
+			why, cause = noLeaseReason, CauseNoLease
 		case errors.As(err, &ae) && (ae.Status == http.StatusUnauthorized || ae.Status == http.StatusForbidden):
-			why = fmt.Sprintf("Core refused the backup key in .env (HTTP %d): it was revoked, or minted on another Core; run fp backup in a terminal to make a new one", ae.Status)
+			why, cause = keyless(ctx, e, fmt.Sprintf("Core refused the backup key in .env (HTTP %d): it was revoked, or minted on another Core; run fp backup in a terminal to make a new one", ae.Status))
 		default:
 			why, cause = "Core did not answer the backup lease probe: "+err.Error(), CauseUnreachable
 		}
@@ -195,6 +195,29 @@ func backupCore(ctx context.Context, e Env, tw *tar.Writer, opts BackupOptions) 
 		return capture, err
 	}
 	return CoreCapture{Mode: CoreNotCaptured, Reason: why, Cause: cause}, nil
+}
+
+const noLeaseReason = "this Core cannot make a consistent live copy: it has no backup lease (it is older than the release that adds one)"
+
+// keyless says why Core cannot be copied live when fp backup has no key that
+// Core accepts. The lease probe needs a key, so without one it cannot tell an
+// older Core from a Core that would take a key; Core's public capability
+// document can. On an older Core the key is not what is missing: no key is
+// ever made there (one minted on it would be a full admin key), and a run in
+// a terminal offers none. What is missing is the lease, and the operator is
+// told so (and to update Core).
+func keyless(ctx context.Context, e Env, keyReason string) (why, cause string) {
+	cctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	_, advertised, err := LeaseAdvertised(cctx, e.CoreURL)
+	var ae *APIError
+	switch {
+	case advertised:
+		return keyReason, CauseNoKey
+	case err == nil, errors.As(err, &ae) && ae.Status == http.StatusNotFound:
+		return noLeaseReason, CauseNoLease
+	}
+	return fmt.Sprintf("Core did not answer its public capability document (%v), so fp backup cannot tell whether it can copy Core live; also, %s", err, keyReason), CauseUnreachable
 }
 
 // releaseOrphan releases a lease whose begin answer never arrived: the
@@ -597,31 +620,36 @@ func coldCopyStopping(ctx context.Context, e Env, tw *tar.Writer, opts BackupOpt
 		return notCaptured("its staging directory could not be made: " + err.Error())
 	}
 	defer os.RemoveAll(stage)
+	if err := ctx.Err(); err != nil {
+		return capture, err // interrupted at the prompt: Core is not stopped
+	}
 
 	logf(opts, "core: %s", why)
 	logf(opts, "core: stopping Core for a cold copy of %s (it is down until the local copy is made)", humanBytes(size))
 	t0 := time.Now()
 	restarted := false
 	var startErr error
-	restart := func() {
+	restart := func() bool {
 		if restarted {
-			return
+			return false
 		}
 		restarted = true
-		sctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-		defer cancel()
-		startErr = e.StartCore(sctx)
+		startErr = startCoreAgain(e, opts)
+		return true
 	}
-	// Core is started again on every way out, signals included.
+	// Core is started again on every way out, signals included, and checked
+	// to be up: a start that met Core still closing did nothing.
 	defer func() {
-		restart()
+		if restart() && startErr == nil {
+			logf(opts, "core: Core is running again")
+		}
 		if startErr != nil && err == nil {
 			capture.restartErr = startErr
 		} else if startErr != nil {
-			err = fmt.Errorf("%w; and Core did not start again: %v — start it now with fp start", err, startErr)
+			err = &CoreDownError{Err: err, StartErr: startErr}
 		}
 	}()
-	if err := e.StopCore(ctx); err != nil {
+	if err := stopCore(ctx, e, opts); err != nil {
 		return capture, fmt.Errorf("stopping Core for a cold copy: %w", err)
 	}
 	if e.ContainerRunning(context.WithoutCancel(ctx), coreContainer) {
@@ -631,9 +659,6 @@ func coldCopyStopping(ctx context.Context, e Env, tw *tar.Writer, opts BackupOpt
 		return capture, fmt.Errorf("cold copy: %w", err)
 	}
 	restart()
-	if startErr == nil {
-		waitCoreHealthy(ctx, e.CoreURL, 3*time.Minute)
-	}
 	down := int(time.Since(t0).Round(time.Second) / time.Second)
 	if down < 1 {
 		down = 1
@@ -647,6 +672,107 @@ func coldCopyStopping(ctx context.Context, e Env, tw *tar.Writer, opts BackupOpt
 	}
 	return CoreCapture{Mode: CoreCold, StoppedSeconds: down, Reason: why, Files: files, Bytes: n}, nil
 }
+
+// stopCore stops Core for a cold copy and waits for its close to end, even
+// when the operator interrupts meanwhile. A docker stop cut short does not
+// stop the close (the daemon carries on), and a start issued while Core is
+// still closing does nothing to a container that is still running, so Core
+// would be down for good once the close ends. The stop is therefore not tied
+// to the operator's context (and realStopCore keeps the terminal's Ctrl-C off
+// the docker CLI): an interrupt waits for the close, then Core is started.
+func stopCore(ctx context.Context, e Env, opts BackupOptions) error {
+	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), coreStopTimeout+time.Minute)
+	defer cancel()
+	stopped, watcher := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(watcher)
+		select {
+		case <-ctx.Done():
+			logf(opts, "core: interrupted while Core is closing; fp backup waits for the close to end (up to %d s), then starts Core again",
+				int(coreStopTimeout/time.Second))
+		case <-stopped:
+		}
+	}()
+	err := e.StopCore(sctx)
+	close(stopped)
+	<-watcher
+	return err
+}
+
+// coreUpWithin bounds how long fp backup waits for Core to answer after a
+// cold copy, and corePollEvery is how often it looks. Vars for tests.
+var (
+	coreUpWithin  = 3 * time.Minute
+	corePollEvery = time.Second
+)
+
+// startCoreAgain starts Core after a cold copy and checks that it is up. It
+// runs on every way out, an interrupt included, so it never uses the
+// operator's context. Whenever the container is not running it is started
+// (again: a start that met a close still under way did nothing), until the
+// container runs and Core answers /api/v1/health. A container that runs but
+// whose Core has not answered by the deadline is reported and accepted (a
+// large Core can take long to open); one that is not running is an error.
+func startCoreAgain(e Env, opts BackupOptions) error {
+	ctx, cancel := context.WithTimeout(context.Background(), coreUpWithin)
+	defer cancel()
+	var startErr error
+	for ctx.Err() == nil {
+		running := e.ContainerRunning(ctx, coreContainer)
+		if !running {
+			if startErr = e.StartCore(ctx); startErr == nil {
+				running = e.ContainerRunning(ctx, coreContainer)
+			}
+		}
+		if running && coreAnswers(ctx, e.CoreURL) {
+			return nil
+		}
+		select {
+		case <-time.After(corePollEvery):
+		case <-ctx.Done():
+		}
+	}
+	fctx, fcancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer fcancel()
+	if e.ContainerRunning(fctx, coreContainer) {
+		logf(opts, "warning: Core is running again but has not answered within %s; check: docker logs %s", coreUpWithin, coreContainer)
+		return nil
+	}
+	if startErr != nil {
+		return startErr
+	}
+	return fmt.Errorf("%s is not running %s after it was started", coreContainer, coreUpWithin)
+}
+
+// coreAnswers reports whether Core's health route answers 200 now. Without a
+// URL there is nothing to ask, and a running container is taken as up.
+func coreAnswers(ctx context.Context, baseURL string) bool {
+	if baseURL == "" {
+		return true
+	}
+	cctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(cctx, http.MethodGet, strings.TrimRight(baseURL, "/")+"/api/v1/health", nil)
+	if err != nil {
+		return false
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return false
+	}
+	resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
+}
+
+// CoreDownError: a cold copy failed or was interrupted after Core was
+// stopped, and Core did not start again. It unwraps to the failure.
+type CoreDownError struct{ Err, StartErr error }
+
+func (e *CoreDownError) Error() string {
+	return fmt.Sprintf("%v; and Core did not start again (%v): Core is DOWN — start it now with fp start", e.Err, e.StartErr)
+}
+
+func (e *CoreDownError) Unwrap() error { return e.Err }
 
 // WaitCoreHealthy waits until Core's public health route answers 200, or the
 // time is up. It reports whether Core answered.
@@ -690,8 +816,17 @@ func realStartCore(ctx context.Context) error {
 	return runDocker(ctx, "start", coreContainer)
 }
 
+// dockerCommand is the docker CLI in its own process group (detach), so a
+// terminal's Ctrl-C, which goes to the whole foreground group, does not kill
+// a docker stop or start midway: fp decides what an interrupt does to Core.
+func dockerCommand(ctx context.Context, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, "docker", args...)
+	detach(cmd)
+	return cmd
+}
+
 func runDocker(ctx context.Context, args ...string) error {
-	out, err := exec.CommandContext(ctx, "docker", args...).CombinedOutput()
+	out, err := dockerCommand(ctx, args...).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("docker %s: %v — %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
 	}

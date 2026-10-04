@@ -38,6 +38,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -107,6 +108,9 @@ type Env struct {
 	Owner *FileOwner
 	// DockerExec runs `docker exec <container> <argv…>`; nil = real docker.
 	DockerExec func(ctx context.Context, container string, argv []string) error
+	// DockerOutput runs `docker exec <container> <argv…>` and returns its
+	// standard output; nil = real docker.
+	DockerOutput func(ctx context.Context, container string, argv []string) (string, error)
 	// ContainerRunning reports whether the named container is up; nil = real docker.
 	ContainerRunning func(ctx context.Context, container string) bool
 	// StopCore stops Core's container for a cold copy, giving it time to
@@ -372,7 +376,11 @@ func Backup(ctx context.Context, e Env, outPath string, opts BackupOptions) (man
 	// asked whether to stop Core is asked before anything else is copied.
 	core, err := backupCore(ctx, e, tw, opts)
 	if err != nil {
-		if ctx.Err() != nil {
+		var down *CoreDownError
+		switch {
+		case ctx.Err() != nil && errors.As(err, &down):
+			return man, fmt.Errorf("interrupted: %w", err) // the operator must hear that Core is down
+		case ctx.Err() != nil:
 			return man, fmt.Errorf("interrupted: %w", ctx.Err())
 		}
 		return man, fmt.Errorf("core: %w", err)

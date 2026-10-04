@@ -8,11 +8,14 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 // writeArchive builds an archive by hand: entries in order, manifest last.
@@ -250,4 +253,157 @@ func TestMountPointDetection(t *testing.T) {
 	if p := os.Getenv("FP_TEST_MOUNT_POINT"); p != "" && !mountPoint(p) {
 		t.Errorf("%s is a mount point", p)
 	}
+}
+
+// ── Finding: the restored Core reads the restored directory ─────────────────
+
+// restoredCore restores a Core archive over fakeStack's Core and writes the
+// marker, as fp restore does before it starts the stack. It returns the
+// directory set aside.
+func restoredCore(t *testing.T, e Env) (aside, marker string) {
+	t.Helper()
+	archive := writeArchive(t, leaseManifest(), map[string]string{"core/fp_database.hdr": "RESTORED", "core/wal/wal_00000009.fpw": "w9"},
+		[]string{"core/fp_database.hdr", "core/wal/wal_00000009.fpw"})
+	asides, err := Restore(context.Background(), e, archive, RestoreOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range asides {
+		if strings.HasPrefix(a, e.CoreDir+".pre-restore-") {
+			aside = a
+		}
+	}
+	if aside == "" {
+		t.Fatalf("Core's directory was not set aside: %v", asides)
+	}
+	if marker, err = MarkRestoredCore(e); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(e.CoreDir, marker)); err != nil {
+		t.Fatalf("the marker must be in the restored directory: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(aside, marker)); !os.IsNotExist(err) {
+		t.Fatalf("the marker must not be in the directory set aside")
+	}
+	return aside, marker
+}
+
+// coreView is Core's container as Docker Desktop can leave it: `ls -a /data`
+// lists whichever host directory the container sees, and stop/start are
+// recorded. After freshAfter starts, the container sees the restored one.
+type coreView struct {
+	e          *Env
+	aside      string
+	freshAfter int // -1 = never
+	starts     int
+	events     []string
+	stopErr    error
+}
+
+func (v *coreView) install(e *Env) {
+	v.e = e
+	e.DockerOutput = func(_ context.Context, container string, argv []string) (string, error) {
+		if container != coreContainer || strings.Join(argv, " ") != "ls -a /data" {
+			return "", fmt.Errorf("unexpected docker exec %s %v", container, argv)
+		}
+		dir := v.aside
+		if v.freshAfter >= 0 && v.starts >= v.freshAfter {
+			dir = v.e.CoreDir
+		}
+		ents, err := os.ReadDir(dir)
+		if err != nil {
+			return "", err
+		}
+		names := []string{".", ".."}
+		for _, en := range ents {
+			names = append(names, en.Name())
+		}
+		return strings.Join(names, "\n") + "\n", nil
+	}
+	e.StopCore = func(context.Context) error { v.events = append(v.events, "stop"); return v.stopErr }
+	e.StartCore = func(context.Context) error { v.starts++; v.events = append(v.events, "start"); return nil }
+}
+
+func fastViewRetries(t *testing.T) {
+	t.Helper()
+	old := coreViewRetries
+	coreViewRetries = []time.Duration{time.Millisecond, time.Millisecond}
+	t.Cleanup(func() { coreViewRetries = old })
+}
+
+func TestRestoreChecksThatCoreReadsTheRestoredDirectory(t *testing.T) {
+	fastViewRetries(t)
+	t.Run("Core reads it", func(t *testing.T) {
+		e := fakeStack(t)
+		aside, marker := restoredCore(t, e)
+		v := &coreView{aside: aside, freshAfter: 0}
+		v.install(&e)
+		if err := VerifyCoreReadsRestore(context.Background(), e, marker, nil); err != nil {
+			t.Fatal(err)
+		}
+		if len(v.events) != 0 {
+			t.Errorf("a Core that reads the restored data must be left alone: %v", v.events)
+		}
+		UnmarkRestoredCore(e, marker)
+		if _, err := os.Stat(filepath.Join(e.CoreDir, marker)); !os.IsNotExist(err) {
+			t.Errorf("the marker must be removed")
+		}
+	})
+	t.Run("Core reads the directory set aside, then the restored one after a restart", func(t *testing.T) {
+		e := fakeStack(t)
+		aside, marker := restoredCore(t, e)
+		v := &coreView{aside: aside, freshAfter: 1}
+		v.install(&e)
+		if err := VerifyCoreReadsRestore(context.Background(), e, marker, nil); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Join(v.events, ",") != "stop,start" {
+			t.Errorf("events %v", v.events)
+		}
+	})
+	t.Run("Core keeps reading the directory set aside", func(t *testing.T) {
+		e := fakeStack(t)
+		aside, marker := restoredCore(t, e)
+		v := &coreView{aside: aside, freshAfter: -1}
+		v.install(&e)
+		err := VerifyCoreReadsRestore(context.Background(), e, marker, nil)
+		var stale *StaleCoreViewError
+		if !errors.As(err, &stale) || !strings.Contains(err.Error(), "Docker Desktop") || !strings.Contains(err.Error(), e.CoreDir) {
+			t.Fatalf("want the stale view named, got %v", err)
+		}
+		// Core is left STOPPED: it must write nothing more into the data set aside.
+		if got := strings.Join(v.events, ","); got != "stop,start,stop,start,stop" {
+			t.Errorf("events %s: Core must end stopped", got)
+		}
+		if b, _ := os.ReadFile(filepath.Join(e.CoreDir, "fp_database.hdr")); string(b) != "RESTORED" {
+			t.Errorf("the restored data must stay in place: %q", b)
+		}
+	})
+	t.Run("Core cannot be stopped", func(t *testing.T) {
+		e := fakeStack(t)
+		aside, marker := restoredCore(t, e)
+		v := &coreView{aside: aside, freshAfter: -1, stopErr: errors.New("daemon busy")}
+		v.install(&e)
+		err := VerifyCoreReadsRestore(context.Background(), e, marker, nil)
+		var stale *StaleCoreViewError
+		if !errors.As(err, &stale) || !strings.Contains(err.Error(), "stop it NOW") {
+			t.Fatalf("want the operator told to stop Core, got %v", err)
+		}
+	})
+	t.Run("the check cannot be made", func(t *testing.T) {
+		e := fakeStack(t)
+		_, marker := restoredCore(t, e)
+		e.DockerOutput = func(context.Context, string, []string) (string, error) {
+			return "", errors.New("container is restarting")
+		}
+		e.StopCore = func(context.Context) error {
+			t.Fatal("Core must not be stopped on a check that was not made")
+			return nil
+		}
+		err := VerifyCoreReadsRestore(context.Background(), e, marker, nil)
+		var stale *StaleCoreViewError
+		if err == nil || errors.As(err, &stale) {
+			t.Fatalf("want a failed check, not a verdict: %v", err)
+		}
+	})
 }

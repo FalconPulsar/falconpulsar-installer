@@ -36,9 +36,21 @@ type fakeCore struct {
 	files      []LeaseFile
 	snapshot   map[string]string // restore_as -> content written at catalog time
 	mintPerms  []string          // what POST /tokens answers with
+	health     func() bool       // nil = /api/v1/health answers 200
+
+	// beginLost makes begin's answer never arrive: "hang" (the lease begins,
+	// onBegin runs, the answer waits until the client hangs up), "drop" (the
+	// lease begins, the connection is closed), "drop-unprocessed" (the
+	// connection is closed before any lease begins).
+	beginLost string
+	onBegin   func()
+	// stampAtCatalog overwrites every listed file's listed bytes with '#'
+	// when the catalog is taken: a copy made after that instant shows it.
+	stampAtCatalog bool
 
 	mu       sync.Mutex
 	id       string
+	current  map[string]any // GET /api/v1/_system/backup: the active lease, nil = none
 	released []string
 	revoked  []string
 	calls    []string
@@ -66,6 +78,10 @@ func (fc *fakeCore) serve(w http.ResponseWriter, r *http.Request) {
 	p := r.URL.Path
 	switch {
 	case p == "/api/v1/health":
+		if fc.health != nil && !fc.health() {
+			w.WriteHeader(503)
+			return
+		}
 		w.WriteHeader(200)
 		return
 	case p == "/api/v1/capabilities":
@@ -115,9 +131,28 @@ func (fc *fakeCore) serve(w http.ResponseWriter, r *http.Request) {
 			fc.json(w, fc.beginCode, map[string]any{"error": fc.beginMsg})
 			return
 		}
+		if fc.beginLost == "drop-unprocessed" {
+			fc.hangUp(w)
+			return
+		}
 		fc.mu.Lock()
 		fc.id = "0123456789abcdef0123456789abcdef"
+		fc.current = map[string]any{"id": fc.id, "state": "active", "since": time.Now().UTC().Format(time.RFC3339)}
 		fc.mu.Unlock()
+		switch fc.beginLost {
+		case "hang":
+			_, _ = io.Copy(io.Discard, r.Body) // the server notices a hang-up only once the body is read
+			fc.onBegin()
+			select {
+			case <-r.Context().Done():
+			case <-time.After(10 * time.Second):
+				fc.t.Error("the client never hung up on a begin it stopped waiting for")
+			}
+			return
+		case "drop":
+			fc.hangUp(w)
+			return
+		}
 		var total int64
 		for _, f := range fc.files {
 			total += f.Length
@@ -128,12 +163,28 @@ func (fc *fakeCore) serve(w http.ResponseWriter, r *http.Request) {
 			"total_bytes": total, "files": fc.files,
 			"exclude": []string{".fp-backup/", "logs/", "meta/catalog.fpm", "meta/catalog.fpm-journal", "meta/wal-held/"}})
 	case rest == "" && r.Method == http.MethodGet:
-		fc.json(w, 200, map[string]any{"backup": nil})
+		fc.mu.Lock()
+		cur := fc.current
+		fc.mu.Unlock()
+		fc.json(w, 200, map[string]any{"backup": cur})
 	case strings.HasSuffix(rest, "/catalog"):
 		id := strings.TrimSuffix(rest, "/catalog")
 		if fc.catalogErr != 0 {
 			fc.json(w, fc.catalogErr, map[string]any{"error": "catalog changes would have waited past 10000 ms", "state": "aborted"})
 			return
+		}
+		if fc.stampAtCatalog {
+			for _, f := range fc.files {
+				hf, err := os.OpenFile(filepath.Join(fc.dataDir, filepath.FromSlash(f.Path)), os.O_WRONLY, 0)
+				if err != nil {
+					fc.t.Error(err)
+					continue
+				}
+				if _, err := hf.WriteAt([]byte(strings.Repeat("#", int(f.Length))), 0); err != nil {
+					fc.t.Error(err)
+				}
+				hf.Close()
+			}
 		}
 		files := []map[string]string{}
 		for as, content := range fc.snapshot {
@@ -157,12 +208,25 @@ func (fc *fakeCore) serve(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodDelete:
 		fc.mu.Lock()
 		fc.released = append(fc.released, rest)
+		if fc.current != nil && fc.current["id"] == rest {
+			fc.current = nil
+		}
 		fc.mu.Unlock()
 		_ = os.RemoveAll(filepath.Join(fc.dataDir, ".fp-backup", rest))
 		fc.json(w, 200, map[string]any{"id": rest, "released": true})
 	default:
 		fc.json(w, 404, map[string]any{"error": "No such backup route"})
 	}
+}
+
+// hangUp closes the connection without an answer.
+func (fc *fakeCore) hangUp(w http.ResponseWriter) {
+	conn, _, err := w.(http.Hijacker).Hijack()
+	if err != nil {
+		fc.t.Error(err)
+		return
+	}
+	conn.Close()
 }
 
 func (fc *fakeCore) releasedIDs() []string {
@@ -695,5 +759,289 @@ func TestLeaseAnswersAreCheckedBeforeCopying(t *testing.T) {
 	s = Snapshot{Files: []SnapshotFile{{Path: ".fp-backup/0123456789abcdef0123456789abcdef/meta/catalog.fpm", RestoreAs: ".fp-backup/x"}}}
 	if s.check("0123456789abcdef0123456789abcdef", nil) == nil {
 		t.Errorf("accepted a restore into the backup area")
+	}
+}
+
+// ── Finding: the catalog is taken last ─────────────────────────────────────
+
+func TestTheCatalogIsTakenAfterEveryListedFileIsCopied(t *testing.T) {
+	// Core's guarantee is about one instant: every series with data in the
+	// copy has a record in the catalog snapshot, and wal_next_lsn is above
+	// every LSN copied, only if every listed file was copied BEFORE the
+	// catalog was taken. The fake makes that instant visible: it stamps every
+	// listed file when the catalog is taken, so a file copied after it
+	// carries the stamp.
+	e, fc := liveStack(t)
+	fc.stampAtCatalog = true
+	out := filepath.Join(t.TempDir(), "b.tar.gz")
+	if _, err := Backup(context.Background(), e, out, BackupOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	_, got := archiveEntries(t, out)
+	want := map[string]string{
+		"fp_database.hdr":            "core-hdr",
+		"fractal/1/7/2026-10-04.fpf": "PARTITION-COMMITTED",
+		"wal/wal_1.fpw":              "core-wal",
+		"wal/wal_00000001.fpw":       "WAL-RECORDS",
+		"blobs/7/2026-10-04.fpb":     "BLOBS",
+	}
+	for _, f := range fc.files {
+		if got["core/"+f.Path] != want[f.Path] {
+			t.Errorf("%s = %q, want %q: it was copied after the catalog was taken", f.Path, got["core/"+f.Path], want[f.Path])
+		}
+	}
+	// And the catalog call is the last lease call before the release.
+	var catalogAt, releaseAt = -1, -1
+	for i, c := range fc.calls {
+		switch {
+		case strings.HasSuffix(c, "/catalog"):
+			catalogAt = i
+		case strings.HasPrefix(c, "DELETE "):
+			releaseAt = i
+		}
+	}
+	if catalogAt < 0 || releaseAt != catalogAt+1 {
+		t.Errorf("calls %v: the catalog must be taken once, after the copy, just before the release", fc.calls)
+	}
+}
+
+// ── Finding: a lease whose begin answer was lost is released ─────────────
+
+func TestALeaseWhoseBeginAnswerWasLostIsReleased(t *testing.T) {
+	t.Run("interrupted while begin is answered", func(t *testing.T) {
+		e, fc := liveStack(t)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		fc.beginLost, fc.onBegin = "hang", cancel // Ctrl-C after Core began the lease
+		out := filepath.Join(t.TempDir(), "b.tar.gz")
+		_, err := Backup(ctx, e, out, BackupOptions{})
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("want the interrupt, got %v", err)
+		}
+		if got := fc.releasedIDs(); len(got) != 1 || got[0] != fc.id {
+			t.Fatalf("Core would hold WAL for this lease until its TTL: released %v, want [%s]", got, fc.id)
+		}
+		noArchiveLeft(t, out)
+	})
+	t.Run("connection dropped before the answer", func(t *testing.T) {
+		e, fc := liveStack(t)
+		fc.beginLost = "drop"
+		man, err := Backup(context.Background(), e, filepath.Join(t.TempDir(), "b.tar.gz"), BackupOptions{})
+		var nc *CoreNotCapturedError
+		if !errors.As(err, &nc) || man.Core.Cause != CauseUnreachable {
+			t.Fatalf("want core not captured (unreachable), got %v", err)
+		}
+		if got := fc.releasedIDs(); len(got) != 1 || got[0] != fc.id {
+			t.Fatalf("released %v, want [%s]", got, fc.id)
+		}
+	})
+	t.Run("another backup's earlier lease is left alone", func(t *testing.T) {
+		e, fc := liveStack(t)
+		fc.beginLost = "drop-unprocessed"
+		fc.current = map[string]any{"id": "fedcba9876543210fedcba9876543210", "state": "active",
+			"since": time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)}
+		if _, err := Backup(context.Background(), e, filepath.Join(t.TempDir(), "b.tar.gz"), BackupOptions{}); err == nil {
+			t.Fatal("want core not captured")
+		}
+		if got := fc.releasedIDs(); len(got) != 0 {
+			t.Fatalf("released another backup's lease: %v", got)
+		}
+	})
+}
+
+// ── Finding: an older Core without a working key is named as older ───────
+
+func TestAnOlderCoreWithoutAWorkingKeyIsNamedAsOlder(t *testing.T) {
+	// The installer never mints a key on an older Core, so no key is the
+	// normal state there. The reason is the missing lease, not the key, and
+	// the operator is not sent to a terminal run that offers no key.
+	for _, mode := range []string{"older404", "older200"} {
+		for _, key := range []string{"", "fp_minted_elsewhere"} {
+			t.Run(fmt.Sprintf("%s/key=%q", mode, key), func(t *testing.T) {
+				e, fc := liveStack(t)
+				fc.mode = mode
+				e.BackupKey = key
+				var asked string
+				man, err := Backup(context.Background(), e, filepath.Join(t.TempDir(), "b.tar.gz"),
+					BackupOptions{ConfirmStop: func(why string) bool { asked = why; return false }})
+				var nc *CoreNotCapturedError
+				if !errors.As(err, &nc) || man.Core.Cause != CauseNoLease {
+					t.Fatalf("want core not captured for want of a lease, got %v (cause %q)", err, man.Core.Cause)
+				}
+				for what, s := range map[string]string{"reason": nc.Reason, "manifest": man.Semantics["core"], "question": asked} {
+					if !strings.Contains(s, "no backup lease") || strings.Contains(s, "key") {
+						t.Errorf("the %s must name the missing lease, not a key: %q", what, s)
+					}
+				}
+			})
+		}
+	}
+	t.Run("Core does not answer", func(t *testing.T) {
+		e, _ := liveStack(t)
+		e.BackupKey = ""
+		e.CoreURL = "http://127.0.0.1:1"
+		man, err := Backup(context.Background(), e, filepath.Join(t.TempDir(), "b.tar.gz"), BackupOptions{})
+		var nc *CoreNotCapturedError
+		if !errors.As(err, &nc) || man.Core.Cause != CauseUnreachable {
+			t.Fatalf("want core not captured (unreachable), got %v (cause %q)", err, man.Core.Cause)
+		}
+	})
+}
+
+// ── Finding: Core is up after a cold copy, whenever the interrupt came ────
+
+// closingDocker is Docker as fp backup met it on 2026-10-04: docker stop asks
+// the daemon to close Core and waits for the close; killing the CLI (its
+// context ends) does not stop the close. A start while Core is still closing
+// does nothing to a container that is still running, so Core is down once
+// the close ends. Core answers /health while running and not closing, or
+// also while closing when answersWhileClosing (its listener closes last).
+type closingDocker struct {
+	mu                  sync.Mutex
+	running             bool
+	closing             bool
+	answersWhileClosing bool
+	closeFor            time.Duration
+	closed              chan struct{}
+	events              []string
+	onStop              func() // runs once docker stop has asked for the close
+	startErr            error
+}
+
+func (d *closingDocker) install(e *Env, fc *fakeCore) {
+	d.running, d.closed = true, make(chan struct{})
+	e.ContainerRunning = func(_ context.Context, name string) bool {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		return name == coreContainer && d.running
+	}
+	e.StopCore = func(ctx context.Context) error {
+		d.beginClose()
+		if d.onStop != nil {
+			d.onStop()
+		}
+		select {
+		case <-d.closed:
+			return nil
+		case <-ctx.Done():
+			return errors.New("docker stop: signal: killed")
+		}
+	}
+	e.StartCore = func(context.Context) error {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		switch {
+		case d.startErr != nil:
+			d.events = append(d.events, "start failed")
+			return d.startErr
+		case d.running:
+			d.events = append(d.events, "start (no-op: still running)")
+			return nil
+		}
+		d.running = true
+		d.events = append(d.events, "start")
+		return nil
+	}
+	fc.health = func() bool {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		return d.running && (!d.closing || d.answersWhileClosing)
+	}
+}
+
+// beginClose is the daemon's side of docker stop: the close runs to its end
+// whatever happens to the CLI.
+func (d *closingDocker) beginClose() {
+	d.mu.Lock()
+	d.events = append(d.events, "stop")
+	d.closing = true
+	d.mu.Unlock()
+	go func() {
+		time.Sleep(d.closeFor)
+		d.mu.Lock()
+		d.running, d.closing = false, false
+		d.mu.Unlock()
+		close(d.closed)
+	}()
+}
+
+func (d *closingDocker) state() (bool, string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.running, strings.Join(d.events, ",")
+}
+
+func fastRestart(t *testing.T, within time.Duration) {
+	t.Helper()
+	oldWithin, oldEvery := coreUpWithin, corePollEvery
+	coreUpWithin, corePollEvery = within, 5*time.Millisecond
+	t.Cleanup(func() { coreUpWithin, corePollEvery = oldWithin, oldEvery })
+}
+
+func TestAnInterruptWhileCoreClosesStillLeavesCoreRunning(t *testing.T) {
+	// Reproduced on 2026-10-04 with a real Core: SIGINT 0.7 s into docker
+	// stop, docker start ran while Core was still closing, and Core stayed
+	// down. Whether or not Core still answers /health while it closes, it
+	// must be running once fp backup has returned.
+	for _, answers := range []bool{false, true} {
+		t.Run(fmt.Sprintf("answers while closing=%v", answers), func(t *testing.T) {
+			fastRestart(t, 5*time.Second)
+			e, fc := liveStack(t)
+			fc.mode = "older404"
+			d := &closingDocker{closeFor: 300 * time.Millisecond, answersWhileClosing: answers}
+			d.install(&e, fc)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			d.onStop = cancel // Ctrl-C while docker stop waits for Core to close
+			out := filepath.Join(t.TempDir(), "b.tar.gz")
+			_, err := Backup(ctx, e, out, BackupOptions{StopCore: true})
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("want the interrupt, got %v", err)
+			}
+			select {
+			case <-d.closed:
+			case <-time.After(5 * time.Second):
+				t.Fatal("the close never ended")
+			}
+			time.Sleep(50 * time.Millisecond)
+			if running, events := d.state(); !running {
+				t.Fatalf("Core is down after an interrupted cold copy (events %s): the start met Core still closing", events)
+			}
+			noArchiveLeft(t, out)
+		})
+	}
+}
+
+func TestStartingCoreAgainOutlastsAStopStillUnderWay(t *testing.T) {
+	// Even if a stop is cut short anyway, the restart starts Core once the
+	// close ends and waits until it answers.
+	fastRestart(t, 5*time.Second)
+	e, fc := liveStack(t)
+	d := &closingDocker{closeFor: 200 * time.Millisecond}
+	d.install(&e, fc)
+	d.beginClose() // the daemon is closing Core; nobody waits for it
+	if err := startCoreAgain(e, BackupOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	running, events := d.state()
+	if !running || !strings.HasSuffix(events, ",start") {
+		t.Fatalf("Core must be started after its close ends: running %v, events %s", running, events)
+	}
+}
+
+func TestAnInterruptedColdCopyWhoseCoreStaysDownSaysSo(t *testing.T) {
+	fastRestart(t, 200*time.Millisecond)
+	e, fc := liveStack(t)
+	fc.mode = "older404"
+	d := &closingDocker{closeFor: 10 * time.Millisecond, startErr: errors.New("docker start: the daemon refused")}
+	d.install(&e, fc)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	d.onStop = cancel
+	_, err := Backup(ctx, e, filepath.Join(t.TempDir(), "b.tar.gz"), BackupOptions{StopCore: true})
+	var down *CoreDownError
+	if !errors.Is(err, context.Canceled) || !errors.As(err, &down) ||
+		!strings.Contains(err.Error(), "Core is DOWN") || !strings.Contains(err.Error(), "fp start") {
+		t.Fatalf("an interrupt that leaves Core down must say so, got %v", err)
 	}
 }

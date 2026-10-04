@@ -650,9 +650,45 @@ func cmdRestore() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("restore: %w (already-replaced items are set aside as *.pre-restore-*)", err)
 			}
+			asideNote := "Set aside (delete when satisfied):"
+			if olderCore {
+				asideNote = "Set aside (keep until you have checked Core's open state, then delete):"
+			}
+			// Core must read the restored directory, not the one set aside:
+			// Docker Desktop can keep its view of the renamed directory. A marker
+			// goes in now and is looked for inside Core's container once it runs.
+			marker, keepMarker := "", false
+			if restoringCore {
+				if m, err := databackup.MarkRestoredCore(env); err != nil {
+					fmt.Fprintf(os.Stderr, "%s fp restore cannot check that Core reads the restored data: %v\n", colorText("⚠", colorYellow), err)
+				} else {
+					marker = m
+					defer func() {
+						if !keepMarker {
+							databackup.UnmarkRestoredCore(env, marker)
+						}
+					}()
+				}
+			}
 			if err := actions.Compose(ctx, os.Stdout, os.Stderr, "start"); err != nil {
-				printAsides(asides, env.CoreDir, olderCore)
+				printAsides(asides, env.CoreDir, asideNote)
 				return fmt.Errorf("stack restored but failed to start: %w", err)
+			}
+			if restoringCore && marker != "" {
+				err := databackup.VerifyCoreReadsRestore(ctx, env, marker, os.Stdout)
+				var stale *databackup.StaleCoreViewError
+				switch {
+				case errors.As(err, &stale):
+					printAsides(asides, env.CoreDir, "Set aside (Core ran on it until it was stopped; keep it until Core reads the restored data):")
+					return err
+				case err != nil:
+					keepMarker = true
+					fmt.Printf("%s fp restore could not check that Core reads the restored data (%v).\n", colorText("⚠", colorYellow), err)
+					fmt.Printf("  Check it: docker exec %s ls /data/%s must find that file (then delete %s).\n",
+						"falconpulsar-core", marker, filepath.Join(env.CoreDir, marker))
+					fmt.Println("  If it does not, Core runs on the data set aside: stop it (docker stop -t 180 falconpulsar-core),")
+					fmt.Println("  quit Docker Desktop and open it again, then run fp start.")
+				}
 			}
 			if restoringCore {
 				fmt.Println("Waiting for Core to open the restored data …")
@@ -667,7 +703,7 @@ func cmdRestore() *cobra.Command {
 					}
 				}
 			}
-			printAsides(asides, env.CoreDir, olderCore)
+			printAsides(asides, env.CoreDir, asideNote)
 			fmt.Println("Restore complete.")
 			return nil
 		},
@@ -677,15 +713,11 @@ func cmdRestore() *cobra.Command {
 	return c
 }
 
-func printAsides(asides []string, coreDir string, olderCore bool) {
+func printAsides(asides []string, coreDir string, note string) {
 	if len(asides) == 0 {
 		return
 	}
-	if olderCore {
-		fmt.Println("Set aside (keep until you have checked Core's open state, then delete):")
-	} else {
-		fmt.Println("Set aside (delete when satisfied):")
-	}
+	fmt.Println(note)
 	for _, a := range asides {
 		fmt.Println("  " + a)
 		if filepath.Dir(a) == filepath.Clean(coreDir) {
