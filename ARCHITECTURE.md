@@ -587,6 +587,7 @@ installer does the `docker login --password-stdin` for you.
 | `fp_wait_for_gateway_ready` | Loop on the AI Gateway `/health` endpoint (`127.0.0.1:${FP_GATEWAY_PORT}`, default 7436) until 200 or 180 s timeout. Returns non-zero instead of dying so the caller can point at the container logs. Used by both installers as a hard gate after `docker compose up -d`. |
 | `_fp_json_str` | Tiny grep-based JSON field extractor (not a real parser — avoid complex payloads) |
 | `fp_bootstrap_gateway_token` | POST `/api/v1/auth/login` → JWT → POST `/api/v1/tokens` → service token for AI Gateway → append `FP_API_KEY=<token>` to `.env`. **Preserves the existing file mode** (stat + chmod) so the 0640 / 0600 chosen by the installer survives — do not hard-code a mode here. |
+| `fp_bootstrap_backup_key` | `fp backup`'s key: an API key scoped to `SYSTEM_BACKUP` alone (Core confines it to `/api/v1/_system/backup`), stored as `FP_BACKUP_KEY` so scheduled backups copy Core live under a backup lease. Runs after the credential gate, only with an admin login at hand. Mints ONLY after `GET /api/v1/_system/backup/capability` answers `"lease":1` (a bare 200 is an older Core's `GET /api/v1/_system`), and keeps the key only if Core's answer lists exactly `["SYSTEM_BACKUP"]` — an older Core ignores the unknown name and mints a full admin key, which is revoked at once. A refused key is replaced; never fatal. |
 | `fp_wipe_gateway_seed_defaults` | Delete the LLM providers/models the gateway image self-seeds on first boot, so a clean install starts with an empty AI configuration. Runs after the health gate; non-fatal on failure. |
 
 ### `auth.sh` — admin-password authentication gate
@@ -654,6 +655,7 @@ bold.
 | **`FP_REGISTRY_PASS`** | unset | `registry_auth.sh` | Optional password / token for registry login. |
 | **`FP_REGISTRY_SKIP`** | `0` | `registry_auth.sh` | Set to `1` to bypass the registry probe entirely (air-gapped or pre-pulled images). |
 | `FP_API_KEY` | empty until first run | `bootstrap.sh`, `compose.yml` | AI Gateway service token (written to `.env` after bootstrap) |
+| `FP_BACKUP_KEY` | empty until minted | `bootstrap.sh`, `fp backup` | API key scoped to `SYSTEM_BACKUP` alone: `fp backup` uses it to copy Core live under a backup lease. Minted at install/upgrade when an admin login is at hand, otherwise by the first `fp backup` run in a terminal (admin login, once). |
 | `FP_AI_GATEWAY_ENABLED` | `true` (always) | nothing (legacy compat) | Written to `.env` as `true` so pre-mandatory-gateway `fp` / tray binaries that still read the key keep working; upgrades scrub any legacy `false` to `true`. Never read by current code and not user-settable — the AI Gateway is a mandatory service. |
 | **`FP_ASSUME_YES`** | `0` | `common.sh`, `prompts.sh`, `checks.sh` | Skip all interactive prompts (CI / unattended mode) |
 | **`FP_LEGAL_ACCEPTED`** | `0` | `prompts.sh` | Pre-accept legal documents (set to `1`) |

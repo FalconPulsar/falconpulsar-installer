@@ -64,7 +64,8 @@ use that component’s README (manual Docker and from-source steps):
 
 Compose file used by all platforms: [`shared/compose.yml`](shared/compose.yml).
 Important secrets (generated or preserved by install): `FP_API_KEY`,
-`FP_BRIDGE_TOKEN`, `FP_GATEWAY_SECRET`, `FP_CONFIRM_SECRET`, and
+`FP_BACKUP_KEY` (`fp backup`'s key, which can run a Core backup and nothing
+else), `FP_BRIDGE_TOKEN`, `FP_GATEWAY_SECRET`, `FP_CONFIRM_SECRET`, and
 `FP_REQUIRE_SECRETS=1` so the gateway refuses to start without encryption/bridge
 secrets in production.
 

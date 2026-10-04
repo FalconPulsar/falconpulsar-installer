@@ -899,6 +899,15 @@ fp_try_upgrade_fastpath() {
         fp_verify_service_credentials "${home}/.env" "$home" "${FP_USER:-falconpulsar}" "${vrest_port:-${FP_REST_PORT:-7433}}"
     fi
 
+    # The backup key (FP_BACKUP_KEY) for fp backup's live copy of Core, minted
+    # when this upgrade holds an admin login and Core offers the backup lease.
+    # Without a login it is left to the first interactive fp backup. Never fatal.
+    if declare -f fp_bootstrap_backup_key >/dev/null 2>&1; then
+        local bk_port
+        bk_port="$(sed -n 's/^FP_REST_PORT=//p' "${home}/.env" 2>/dev/null | tail -n1)"
+        fp_bootstrap_backup_key "${home}/.env" "${bk_port:-${FP_REST_PORT:-7433}}"
+    fi
+
     # Hard gate: the AI Gateway must come up healthy, same bar as the
     # fresh-install paths. Honour a port remap from the existing .env:
     # it wins over FP_GATEWAY_PORT pre-defaulted by the installer shell,

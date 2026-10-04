@@ -1219,6 +1219,12 @@ fi
 # every Core-data feature dead). Re-mints once and fails loudly otherwise.
 fp_verify_service_credentials "${FP_HOME}/.env" "$FP_HOME" "$FP_USER" "$FP_REST_PORT"
 
+# The backup key: fp backup copies Core live under a Core backup lease with an
+# API key that can run a backup and nothing else (FP_BACKUP_KEY). Minted here,
+# with the admin login the install already holds, after the stack is up for
+# good. Never fatal; see fp_bootstrap_backup_key.
+fp_bootstrap_backup_key "${FP_HOME}/.env" "$FP_REST_PORT"
+
 # ── 7d. Install the fp CLI under ${FP_HOME}/bin/ (self-contained stack) ───
 fp_install_cli "$FP_HOME" "${FP_VERSION:-0.1.0}"
 # Fix ownership (install.sh runs as root via sudo on Linux). Group is

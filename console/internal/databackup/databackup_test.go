@@ -132,8 +132,18 @@ func TestBackupCarriesTheStoresAndOnlyTheStores(t *testing.T) {
 	if man.Semantics["gateway"] != "cold-copy" {
 		t.Errorf("stopped container must report cold-copy, got %q", man.Semantics["gateway"])
 	}
-	if !strings.Contains(man.Semantics["core"], "crash-consistent") {
-		t.Errorf("core semantics missing: %q", man.Semantics["core"])
+	// fakeStack's Core is not running: its directory is copied cold, and the
+	// manifest never claims "crash-consistent" again.
+	if man.Semantics["core"] != "cold-copy (Core was not running)" {
+		t.Errorf("core semantics: %q", man.Semantics["core"])
+	}
+	if man.Core == nil || man.Core.Mode != CoreCold || !man.Core.WasStopped {
+		t.Errorf("core capture: %+v", man.Core)
+	}
+	for name := range got {
+		if strings.Contains(name, "crash") {
+			t.Errorf("unexpected entry %s", name)
+		}
 	}
 }
 

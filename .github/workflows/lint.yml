@@ -78,10 +78,17 @@ jobs:
             shared/lib/auth.sh \
             shared/lib/fpcli.sh \
             shared/core-upgrade-preflight.sh \
-            shared/lib/existing.sh
+            shared/lib/existing.sh \
+            console/internal/databackup/testdata/e2e/stop-core.sh \
+            console/internal/databackup/testdata/e2e/start-core.sh
 
       - name: Upgrade guard regression tests
         run: python3 scripts/test_upgrade_guards.py
+
+      - name: Backup key bootstrap tests
+        # The installer mints fp backup's SYSTEM_BACKUP-only key. An older
+        # Core would mint a full admin key instead; these pin the guards.
+        run: python3 scripts/test_backup_key_bootstrap.py
 
       - name: shellcheck coverage
         # The list above is hand-maintained, which is exactly how four

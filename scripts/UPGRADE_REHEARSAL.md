@@ -56,7 +56,7 @@ No production stop, backup, restore or deployment is performed by the rehearsal 
 
 4. Keep the original archive and independent rollback copy. Resume the old installation only through the agreed maintenance procedure.
 
-`fp backup` does **not** quiesce Core itself: its implementation walks the Core directory. Its manifest's current `crash-consistent` label is not evidence of a clean checkpoint, even when the operator actually captured stopped files. The inspection report deliberately leaves `core_clean_checkpoint_verified` false. The operator's separate verified checkpoint evidence is mandatory for legacy migration.
+`fp backup` does **not** leave Core at a clean checkpoint. It copies Core live under a Core backup lease (manifest: `live, consistent (Core backup lease …)`), which a restore opens by replaying the WAL, or, with `--stop-core`, cold (`cold-copy (Core stopped N s)`). Archives from fp backup releases before the lease say `crash-consistent`, which was not true: they may be torn. Neither label is evidence of a clean checkpoint, so the inspection report deliberately leaves `core_clean_checkpoint_verified` false. The operator's separate verified checkpoint evidence is mandatory for legacy migration.
 
 ## Run the isolated rehearsal
 

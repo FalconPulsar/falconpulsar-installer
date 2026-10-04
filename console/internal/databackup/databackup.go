@@ -18,10 +18,15 @@
 // that writer makes the copy), which yields a point-in-time, WAL-free,
 // defragmented database regardless of live traffic. A stopped container's
 // files are copied cold (db + -wal + -shm), which is equally consistent.
-// Core has its own write-ahead log (wal/*.fpw): its directory is copied
-// live, which is CRASH-consistent — on restore Core replays its WAL exactly
-// as it would after a power cut. The manifest records which semantics each
-// entry got.
+// Core's data directory is copied under a Core BACKUP LEASE while Core runs
+// (corelease.go, corecopy.go): Core holds every deletion and rewrite that
+// could tear the copy, lists each file with the bytes to copy, and snapshots
+// its catalog under its own lock at the end. A Core without the lease is
+// copied cold only with the operator's consent (--stop-core or the prompt),
+// and is otherwise left out and named as missing. A file-by-file live copy
+// of Core is NOT crash-consistent (WAL reclaimed mid-copy, a catalog read
+// while commits land), so fp backup never makes one. The manifest records
+// which semantics each entry got.
 //
 // RESTORE never destroys: everything it replaces is set aside as
 // <name>.pre-restore-<stamp> beside the original, and the operator is told
@@ -39,6 +44,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -51,8 +57,12 @@ type Manifest struct {
 	FPVersion  string            `json:"fp_version,omitempty"`
 	Host       string            `json:"host,omitempty"`
 	Services   []string          `json:"services"`
-	Semantics  map[string]string `json:"semantics"` // service -> point-in-time | crash-consistent | cold-copy
+	Semantics  map[string]string `json:"semantics"` // service -> point-in-time | live, consistent | cold-copy | not captured
 	SkipedCore bool              `json:"skipped_core,omitempty"`
+	// Core says how Core's data directory was captured, or why it was not.
+	// Absent in archives made before the backup lease: those copied Core
+	// live with no fence, and their "crash-consistent" label was not true.
+	Core *CoreCapture `json:"core,omitempty"`
 }
 
 const (
@@ -87,11 +97,26 @@ type Env struct {
 	EngineDir  string
 	CopilotDir string
 	FPVersion  string
+	// CoreURL is Core's REST API on this host (FP_REST_PORT honoured).
+	CoreURL string
+	// BackupKey is the API key scoped to SYSTEM_BACKUP alone (FP_BACKUP_KEY),
+	// the one credential a backup needs. Empty = none minted yet.
+	BackupKey string
+	// Owner is FP_UID:FP_GID, the user every service container runs as; nil
+	// when .env does not say. A restore run as root gives restored files to it.
+	Owner *FileOwner
 	// DockerExec runs `docker exec <container> <argv…>`; nil = real docker.
 	DockerExec func(ctx context.Context, container string, argv []string) error
 	// ContainerRunning reports whether the named container is up; nil = real docker.
 	ContainerRunning func(ctx context.Context, container string) bool
+	// StopCore stops Core's container for a cold copy, giving it time to
+	// close (docker stop -t 180); StartCore starts it again. nil = real docker.
+	StopCore  func(ctx context.Context) error
+	StartCore func(ctx context.Context) error
 }
+
+// FileOwner is a numeric uid:gid.
+type FileOwner struct{ UID, GID int }
 
 func pyVacuum(containerData, src, dst string) []string {
 	return []string{"python", "-c", fmt.Sprintf(
@@ -235,6 +260,16 @@ func LoadEnv(home string) Env {
 		return def
 	}
 	base := filepath.Dir(coreDir)
+	restPort := "7433"
+	if n, err := strconv.Atoi(vals["FP_REST_PORT"]); err == nil && n > 0 && n < 65536 {
+		restPort = vals["FP_REST_PORT"]
+	}
+	var owner *FileOwner
+	uid, uerr := strconv.Atoi(vals["FP_UID"])
+	gid, gerr := strconv.Atoi(vals["FP_GID"])
+	if uerr == nil && gerr == nil && uid >= 0 && gid >= 0 {
+		owner = &FileOwner{UID: uid, GID: gid}
+	}
 	return Env{
 		Home:       home,
 		CoreDir:    coreDir,
@@ -242,6 +277,9 @@ func LoadEnv(home string) Env {
 		EngineDir:  orDefault("FP_ENGINE_DATA_DIR", filepath.Join(base, "ai-engine-data")),
 		CopilotDir: orDefault("FP_COPILOT_DATA_DIR", filepath.Join(base, "copilot-data")),
 		FPVersion:  vals["FP_VERSION"],
+		CoreURL:    "http://localhost:" + restPort,
+		BackupKey:  vals[BackupKeyEnv],
+		Owner:      owner,
 	}
 }
 
@@ -263,21 +301,49 @@ func parseDotEnv(path string) map[string]string {
 	return out
 }
 
-// Options for Backup.
+// BackupOptions for Backup.
 type BackupOptions struct {
+	// SkipCore leaves Core's data directory out (--skip-core).
 	SkipCore bool
+	// StopCore is the operator's consent (--stop-core) to stop Core for a
+	// cold copy when it cannot make a consistent live one.
+	StopCore bool
+	// ConfirmStop asks the operator whether to stop Core for a cold copy;
+	// why says what stands in the way of a live copy. nil = never ask
+	// (unattended runs), and Core is left out.
+	ConfirmStop func(why string) bool
+	// LeaseTTL is the backup lease's time to live; 0 = Core's default (2 h).
+	LeaseTTL time.Duration
+	// Log receives progress lines; nil = silent.
+	Log io.Writer
+
+	// afterCoreFile runs after each listed Core file is copied (tests).
+	afterCoreFile func(i, n int, path string)
 }
 
 // Backup writes a .tar.gz at outPath and returns its manifest.
-func Backup(ctx context.Context, e Env, outPath string, opts BackupOptions) (Manifest, error) {
+//
+// The archive is written to a temporary file beside outPath and renamed into
+// place only when it is complete; on any failure, or an interrupt, the
+// partial file is deleted, so outPath never holds a half-written archive.
+//
+// When Core could not be captured the archive is still written (every other
+// service is in it) and the error is a *CoreNotCapturedError naming why.
+func Backup(ctx context.Context, e Env, outPath string, opts BackupOptions) (man Manifest, err error) {
 	if e.DockerExec == nil {
 		e.DockerExec = realDockerExec
 	}
 	if e.ContainerRunning == nil {
 		e.ContainerRunning = realContainerRunning
 	}
+	if e.StopCore == nil {
+		e.StopCore = realStopCore
+	}
+	if e.StartCore == nil {
+		e.StartCore = realStartCore
+	}
 
-	man := Manifest{
+	man = Manifest{
 		Kind: manifestKind, Version: manifestVersion,
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
 		FPVersion: e.FPVersion, Semantics: map[string]string{},
@@ -287,30 +353,36 @@ func Backup(ctx context.Context, e Env, outPath string, opts BackupOptions) (Man
 		man.Host = h
 	}
 
-	out, err := os.Create(outPath)
+	out, err := os.CreateTemp(filepath.Dir(outPath), "."+filepath.Base(outPath)+".partial-*")
 	if err != nil {
 		return man, err
 	}
-	defer out.Close()
-	gz := gzip.NewWriter(out)
-	defer gz.Close()
-	tw := tar.NewWriter(gz)
-	defer tw.Close()
-
-	// The manifest is finalized before any data is walked so its byte size
-	// is known up front — services list first.
-	for _, t := range targets(e) {
-		if dirExists(t.hostDir) {
-			man.Services = append(man.Services, t.name)
+	tmpPath := out.Name()
+	committed := false
+	defer func() {
+		if !committed {
+			out.Close()
+			os.Remove(tmpPath)
 		}
+	}()
+	gz := gzip.NewWriter(out)
+	tw := tar.NewWriter(gz)
+
+	// Core first: its lease is held for the shortest time, and an operator
+	// asked whether to stop Core is asked before anything else is copied.
+	core, err := backupCore(ctx, e, tw, opts)
+	if err != nil {
+		if ctx.Err() != nil {
+			return man, fmt.Errorf("interrupted: %w", ctx.Err())
+		}
+		return man, fmt.Errorf("core: %w", err)
 	}
-	if !opts.SkipCore && dirExists(e.CoreDir) {
-		man.Services = append(man.Services, "core")
-		man.Semantics["core"] = "crash-consistent (Core replays its own WAL on restore)"
-	}
-	man.Services = append(man.Services, "config")
+	man.Core = &core
 
 	for _, t := range targets(e) {
+		if err := ctx.Err(); err != nil {
+			return man, fmt.Errorf("interrupted: %w", err)
+		}
 		if !dirExists(t.hostDir) {
 			continue
 		}
@@ -318,15 +390,15 @@ func Backup(ctx context.Context, e Env, outPath string, opts BackupOptions) (Man
 		if err != nil {
 			return man, fmt.Errorf("%s: %w", t.name, err)
 		}
+		man.Services = append(man.Services, t.name)
 		man.Semantics[t.name] = sem
 	}
-
-	if !opts.SkipCore && dirExists(e.CoreDir) {
-		if err := addTree(tw, e.CoreDir, "core", func(p string) bool {
-			return filepath.Base(p) == ".DS_Store"
-		}); err != nil {
-			return man, fmt.Errorf("core: %w", err)
-		}
+	switch {
+	case core.Captured():
+		man.Services = append(man.Services, "core")
+		man.Semantics["core"] = core.Semantics()
+	case core.Mode == CoreNotCaptured:
+		man.Semantics["core"] = core.Semantics()
 	}
 
 	for _, f := range []string{"compose.yml", ".env", "gateway.yaml", "engine-seccomp.json"} {
@@ -337,7 +409,10 @@ func Backup(ctx context.Context, e Env, outPath string, opts BackupOptions) (Man
 			}
 		}
 	}
+	man.Services = append(man.Services, "config")
 
+	// The manifest is the LAST entry: Peek, and so restore, refuses an
+	// archive that does not reach it.
 	mb, _ := json.MarshalIndent(man, "", "  ")
 	if err := tw.WriteHeader(&tar.Header{
 		Name: "manifest.json", Mode: 0o600, Size: int64(len(mb)),
@@ -347,6 +422,30 @@ func Backup(ctx context.Context, e Env, outPath string, opts BackupOptions) (Man
 	}
 	if _, err := tw.Write(mb); err != nil {
 		return man, err
+	}
+	if err := tw.Close(); err != nil {
+		return man, err
+	}
+	if err := gz.Close(); err != nil {
+		return man, err
+	}
+	if err := out.Sync(); err != nil {
+		return man, err
+	}
+	if err := out.Close(); err != nil {
+		return man, err
+	}
+	if err := os.Rename(tmpPath, outPath); err != nil {
+		return man, err
+	}
+	committed = true
+	_ = syncDir(filepath.Dir(outPath))
+
+	if core.restartErr != nil {
+		return man, &CoreRestartError{Err: core.restartErr}
+	}
+	if core.Mode == CoreNotCaptured {
+		return man, &CoreNotCapturedError{Reason: core.Reason}
 	}
 	return man, nil
 }
@@ -424,6 +523,9 @@ func backupTarget(ctx context.Context, e Env, tw *tar.Writer, t target) (string,
 type RestoreOptions struct {
 	// Only restricts restoration to these service names (empty = all in archive).
 	Only []string
+	// Warn receives what the operator must know but that does not stop the
+	// restore (ownership it could not give); nil = discard.
+	Warn func(string)
 }
 
 // Peek reads just the manifest from an archive.
@@ -464,10 +566,37 @@ func Peek(archive string) (Manifest, error) {
 	return man, fmt.Errorf("no manifest.json in archive")
 }
 
+// CoreFromOlderBackup reports whether an archive carries a Core directory
+// copied by an fp backup older than the backup lease: live, file by file,
+// with no fence. Such a copy may be torn (a catalog read while commits
+// landed, WAL reclaimed mid-copy) although its manifest said
+// "crash-consistent".
+func (m Manifest) CoreFromOlderBackup() bool {
+	if m.Core != nil {
+		return false
+	}
+	for _, s := range m.Services {
+		if s == "core" {
+			return true
+		}
+	}
+	return false
+}
+
+// isMountPoint is mountPoint, replaceable in tests.
+var isMountPoint = mountPoint
+
 // Restore places an archive's contents back onto the stack directories.
 // The caller is responsible for stopping the affected services first and
 // starting them after — the CLI layer owns that choreography (and the
 // confirmation). Everything replaced is set aside, never deleted.
+//
+// Restored files and the directories made for them are given to the user
+// the services run as (FP_UID:FP_GID) when the restore runs as root, so a
+// restore under sudo does not leave Core a data directory it cannot write.
+// Configuration files keep the owner and mode of the file they replace.
+// Every restored file and directory is fsynced. Core's .fp-backup/ area is
+// never restored.
 func Restore(ctx context.Context, e Env, archive string, opts RestoreOptions) ([]string, error) {
 	man, err := Peek(archive)
 	if err != nil {
@@ -481,6 +610,11 @@ func Restore(ctx context.Context, e Env, archive string, opts RestoreOptions) ([
 	} else {
 		for _, s := range opts.Only {
 			want[s] = true
+		}
+	}
+	warn := func(format string, args ...any) {
+		if opts.Warn != nil {
+			opts.Warn(fmt.Sprintf(format, args...))
 		}
 	}
 
@@ -505,33 +639,133 @@ func Restore(ctx context.Context, e Env, archive string, opts RestoreOptions) ([
 		return p, true
 	}
 
+	serviceRoot := func(service string) string {
+		switch service {
+		case "gateway":
+			return e.GatewayDir
+		case "engine":
+			return e.EngineDir
+		case "copilot":
+			return e.CopilotDir
+		case "core":
+			return e.CoreDir
+		case "config":
+			return e.Home
+		}
+		return ""
+	}
+
 	dest := func(arcPath string) (string, bool) {
 		service, rest, ok := strings.Cut(arcPath, "/")
 		if !ok || !want[service] {
 			return "", false
 		}
-		switch service {
-		case "gateway":
-			return contained(e.GatewayDir, rest)
-		case "engine":
-			return contained(e.EngineDir, rest)
-		case "copilot":
-			return contained(e.CopilotDir, rest)
-		case "core":
-			return contained(e.CoreDir, rest)
-		case "config":
-			return contained(e.Home, rest)
+		if service == "core" && underBackupDir(rest) {
+			return "", false // Core's backup area is never restored
 		}
-		return "", false
+		root := serviceRoot(service)
+		if root == "" {
+			return "", false
+		}
+		return contained(root, rest)
+	}
+
+	// Who restored files belong to. Only root can give a file away; anyone
+	// else writes files they own, which is right when they ARE the service
+	// user and is reported when they are not.
+	asRoot := os.Geteuid() == 0
+	serviceOwner := func(service string) *FileOwner {
+		if service == "config" {
+			return nil // per file: the owner of the file it replaces
+		}
+		if e.Owner != nil {
+			return e.Owner
+		}
+		if uid, gid := ownerOf(serviceRoot(service)); uid >= 0 {
+			return &FileOwner{uid, gid}
+		}
+		return nil
+	}
+	owners := map[string]*FileOwner{}
+	for _, s := range []string{"core", "gateway", "engine", "copilot"} {
+		owners[s] = serviceOwner(s) // before anything is set aside
+	}
+	warnedOwner := map[string]bool{}
+	chown := func(service, p string, o *FileOwner) {
+		if o == nil {
+			return
+		}
+		if asRoot {
+			if err := os.Lchown(p, o.UID, o.GID); err != nil {
+				warn("could not give %s to %d:%d: %v", p, o.UID, o.GID, err)
+			}
+			return
+		}
+		if o.UID != os.Geteuid() && !warnedOwner[service] {
+			warnedOwner[service] = true
+			warn("%s's restored files belong to you (uid %d), not to the user the service runs as (%d:%d); "+
+				"run fp restore with sudo, or: sudo chown -R %d:%d %s",
+				service, os.Geteuid(), o.UID, o.GID, o.UID, o.GID, serviceRoot(service))
+		}
 	}
 
 	stamp := time.Now().Format("20060102-150405")
 	asides := []string{}
 	asided := map[string]bool{} // top-level paths already set aside this run
+	touchedDirs := map[string]bool{}
+	syncRoots := map[string]bool{} // the service directories written into
 
-	setAside := func(p string) error {
-		if asided[p] || !pathExists(p) {
-			asided[p] = true
+	// recreate makes a set-aside directory again, as it was: its mode and
+	// its owner.
+	recreate := func(service, dir string, mode os.FileMode, o *FileOwner) error {
+		if err := os.MkdirAll(dir, mode.Perm()); err != nil {
+			return err
+		}
+		_ = os.Chmod(dir, mode.Perm())
+		chown(service, dir, o)
+		touchedDirs[dir] = true
+		touchedDirs[filepath.Dir(dir)] = true
+		return nil
+	}
+
+	setAside := func(service, p string) error {
+		if asided[p] {
+			return nil
+		}
+		asided[p] = true
+		st, err := os.Lstat(p)
+		if err != nil {
+			return nil // nothing there to keep
+		}
+		owner := owners[service]
+		if service == "config" || owner == nil {
+			if uid, gid := ownerOf(p); uid >= 0 {
+				owner = &FileOwner{uid, gid}
+			}
+		}
+		if st.IsDir() && isMountPoint(p) {
+			// A mount point (a dedicated data volume) cannot be renamed aside.
+			// Its CONTENTS go aside, into a directory on the same volume.
+			aside := filepath.Join(p, ".pre-restore-"+stamp)
+			if err := os.Mkdir(aside, 0o700); err != nil {
+				return err
+			}
+			entries, err := os.ReadDir(p)
+			if err != nil {
+				return err
+			}
+			for _, en := range entries {
+				name := en.Name()
+				if name == "lost+found" || strings.HasPrefix(name, ".pre-restore-") {
+					continue // the volume's own, or an earlier restore's aside
+				}
+				if err := os.Rename(filepath.Join(p, name), filepath.Join(aside, name)); err != nil {
+					return err
+				}
+			}
+			_ = syncDir(aside)
+			touchedDirs[p] = true
+			asides = append(asides, aside)
 			return nil
 		}
 		aside := p + ".pre-restore-" + stamp
@@ -545,8 +779,45 @@ func Restore(ctx context.Context, e Env, archive string, opts RestoreOptions) ([
 				_ = os.Rename(p+ext, aside+ext)
 			}
 		}
+		touchedDirs[filepath.Dir(p)] = true
 		asides = append(asides, aside)
-		asided[p] = true
+		if st.IsDir() {
+			return recreate(service, p, st.Mode(), owner)
+		}
+		return nil
+	}
+
+	// mkdirs makes the missing directories between top and dir, each given to
+	// the service's user.
+	mkdirs := func(service, top, dir string, o *FileOwner) error {
+		if _, err := os.Lstat(top); err != nil {
+			if err := os.MkdirAll(top, 0o755); err != nil {
+				return err
+			}
+			chown(service, top, o)
+			touchedDirs[top] = true
+			touchedDirs[filepath.Dir(top)] = true
+		}
+		if dir == top {
+			return nil
+		}
+		if !strings.HasPrefix(dir, top+string(os.PathSeparator)) {
+			return os.MkdirAll(dir, 0o755)
+		}
+		rel, _ := filepath.Rel(top, dir)
+		cur := top
+		for _, part := range strings.Split(rel, string(os.PathSeparator)) {
+			cur = filepath.Join(cur, part)
+			if _, err := os.Lstat(cur); err == nil {
+				continue
+			}
+			if err := os.Mkdir(cur, 0o755); err != nil && !os.IsExist(err) {
+				return err
+			}
+			chown(service, cur, o)
+			touchedDirs[filepath.Dir(cur)] = true
+			touchedDirs[cur] = true
+		}
 		return nil
 	}
 
@@ -579,6 +850,9 @@ func Restore(ctx context.Context, e Env, archive string, opts RestoreOptions) ([
 	}
 
 	for {
+		if err := ctx.Err(); err != nil {
+			return asides, err
+		}
 		hdr, err := tr.Next()
 		if err == io.EOF {
 			break
@@ -593,13 +867,38 @@ func Restore(ctx context.Context, e Env, archive string, opts RestoreOptions) ([
 		if !ok {
 			continue
 		}
-		if err := setAside(topOf(hostPath, hdr.Name)); err != nil {
+		service, _, _ := strings.Cut(hdr.Name, "/")
+		top := topOf(hostPath, hdr.Name)
+
+		// A replaced configuration file keeps its owner and mode (.env is
+		// 0640 falconpulsar:docker on Linux, 0600 on macOS).
+		var keepMode os.FileMode
+		owner := owners[service]
+		if service == "config" {
+			if st, err := os.Lstat(hostPath); err == nil {
+				keepMode = st.Mode().Perm()
+				if uid, gid := ownerOf(hostPath); uid >= 0 {
+					owner = &FileOwner{uid, gid}
+				}
+			} else if uid, gid := ownerOf(e.Home); uid >= 0 {
+				owner = &FileOwner{uid, gid}
+			}
+		}
+
+		if err := setAside(service, top); err != nil {
 			return asides, err
 		}
-		if err := os.MkdirAll(filepath.Dir(hostPath), 0o755); err != nil {
+		root := serviceRoot(service)
+		if err := mkdirs(service, root, filepath.Dir(hostPath), owner); err != nil {
 			return asides, err
 		}
-		out, err := os.OpenFile(hostPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, os.FileMode(hdr.Mode)&0o777)
+		mode := os.FileMode(hdr.Mode).Perm()
+		if service != "config" {
+			mode |= 0o600 // the service must be able to read and write its own files
+		} else if keepMode != 0 {
+			mode = keepMode
+		}
+		out, err := os.OpenFile(hostPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode)
 		if err != nil {
 			return asides, err
 		}
@@ -607,7 +906,39 @@ func Restore(ctx context.Context, e Env, archive string, opts RestoreOptions) ([
 			out.Close()
 			return asides, err
 		}
-		out.Close()
+		if syncEachFile {
+			if err := out.Sync(); err != nil {
+				out.Close()
+				return asides, err
+			}
+		}
+		if err := out.Close(); err != nil {
+			return asides, err
+		}
+		_ = os.Chmod(hostPath, mode) // the umask narrowed it at create
+		chown(service, hostPath, owner)
+		touchedDirs[filepath.Dir(hostPath)] = true
+		syncRoots[root] = true
+	}
+
+	// Durable before the caller starts the services: every restored file,
+	// and every name in every directory it went into or was set aside from.
+	if !syncEachFile {
+		for root := range syncRoots {
+			if err := syncFilesystem(root); err != nil {
+				return asides, fmt.Errorf("sync %s: %w", root, err)
+			}
+		}
+	}
+	dirs := make([]string, 0, len(touchedDirs))
+	for d := range touchedDirs {
+		dirs = append(dirs, d)
+	}
+	sort.Strings(dirs)
+	for _, d := range dirs {
+		if err := syncDir(d); err != nil && !os.IsNotExist(err) {
+			return asides, fmt.Errorf("sync %s: %w", d, err)
+		}
 	}
 	sort.Strings(asides)
 	return asides, nil

@@ -5,14 +5,17 @@
 package cli
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/falconpulsar/falconpulsar-installer/console/internal/actions"
@@ -20,6 +23,7 @@ import (
 	"github.com/falconpulsar/falconpulsar-installer/console/internal/configbackup"
 	"github.com/falconpulsar/falconpulsar-installer/console/internal/databackup"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
 
 // Version is the human-visible release version of the fp binary,
@@ -389,29 +393,68 @@ func cmdConfigImport() *cobra.Command {
 // `fp config export` carries CONFIGURATION (encrypted .fpconfig). These two
 // carry the DATA: every service's SQLite stores (snapshotted point-in-time
 // with VACUUM INTO inside the owning container — the stack keeps running),
-// the Engine's file assets, TimeSeries Core's whole data directory
-// (crash-consistent; Core replays its own WAL on restore), and the config
-// trio. Restore sets everything it replaces aside — it never deletes.
+// the Engine's file assets, TimeSeries Core's data directory, and the config
+// trio. Core is copied live under a Core backup lease (consistent, ingest
+// never refused); a Core without the lease is copied cold only when the
+// operator agrees to stop it (--stop-core, or yes at the prompt), and is
+// otherwise left out, named in the output and the manifest, with a non-zero
+// exit. Restore sets everything it replaces aside — it never deletes.
 
 func cmdBackup() *cobra.Command {
-	var skipCore bool
+	var skipCore, stopCore bool
 	c := &cobra.Command{
 		Use:   "backup [file]",
-		Short: "Back up all FalconPulsar data to one archive (stack keeps running)",
-		Args:  cobra.MaximumNArgs(1),
+		Short: "Back up all FalconPulsar data to one archive (the stack keeps running)",
+		Long: `Back up all FalconPulsar data to one .tar.gz archive while the stack runs.
+
+Core's data directory is copied live under a Core backup lease: Core keeps
+ingesting, holds every deletion that could tear the copy, and snapshots its
+catalog at the end, so the copy is consistent. The lease needs a backup key
+(FP_BACKUP_KEY in the stack's .env): an API key that can run a backup and
+nothing else. The installer creates it; otherwise the first fp backup run in a
+terminal offers to create it with an admin login, once.
+
+A Core without the lease (older than the release that adds it) cannot be
+copied consistently while it runs. fp backup then leaves Core out, says so,
+and exits non-zero, unless you agree to stop Core briefly: --stop-core (or
+yes at the prompt) stops Core, copies its data directory on this disk, starts
+Core again, and then compresses the copy.`,
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Ctrl-C, a closed terminal or a service manager's TERM cancel the
+			// backup cleanly: the lease is released, a stopped Core is started
+			// again, and the partial archive is deleted.
+			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+			defer stop()
+
 			out := "falconpulsar-backup-" + time.Now().Format("20060102-150405") + ".tar.gz"
 			if len(args) == 1 {
 				out = args[0]
 			}
 			env := databackup.LoadEnv(actions.HomeDir())
+			env.CoreURL = actions.RestURL()
+			interactive := stdinIsTerminal()
+			if !skipCore && interactive {
+				ensureBackupKey(ctx, &env)
+			}
+			opts := databackup.BackupOptions{SkipCore: skipCore, StopCore: stopCore, Log: os.Stderr}
+			if interactive && !stopCore {
+				opts.ConfirmStop = confirmCoreStop
+			}
+
 			fmt.Printf("Backing up to %s …\n", out)
-			man, err := databackup.Backup(context.Background(), env, out, databackup.BackupOptions{SkipCore: skipCore})
-			if err != nil {
+			man, err := databackup.Backup(ctx, env, out, opts)
+			var notCaptured *databackup.CoreNotCapturedError
+			var restart *databackup.CoreRestartError
+			if err != nil && !errors.As(err, &notCaptured) && !errors.As(err, &restart) {
 				return err
 			}
 			st, _ := os.Stat(out)
-			fmt.Printf("Done: %s (%.1f MB)\n", out, float64(st.Size())/1e6)
+			size := 0.0
+			if st != nil {
+				size = float64(st.Size()) / 1e6
+			}
+			fmt.Printf("Done: %s (%.1f MB)\n", out, size)
 			for _, s := range man.Services {
 				if sem := man.Semantics[s]; sem != "" {
 					fmt.Printf("  %-8s %s\n", s, sem)
@@ -419,11 +462,125 @@ func cmdBackup() *cobra.Command {
 					fmt.Printf("  %-8s included\n", s)
 				}
 			}
+			if notCaptured != nil {
+				fmt.Printf("  %-8s %s\n", "core", colorText(man.Semantics["core"], colorRed))
+				fmt.Fprintln(os.Stderr)
+				fmt.Fprintf(os.Stderr, "%s Core's data is NOT in this archive.\n", colorText("⚠", colorYellow))
+				for _, hint := range coreHints(man.Core) {
+					fmt.Fprintln(os.Stderr, "    • "+hint)
+				}
+				return fmt.Errorf("Core was not backed up")
+			}
+			if restart != nil {
+				return restart
+			}
 			return nil
 		},
 	}
 	c.Flags().BoolVar(&skipCore, "skip-core", false, "exclude TimeSeries Core's data directory (it is usually the largest part)")
+	c.Flags().BoolVar(&stopCore, "stop-core", false, "if Core cannot be copied live, stop it briefly for a cold copy instead of leaving it out")
 	return c
+}
+
+// coreHints says what would get Core into the next archive.
+func coreHints(c *databackup.CoreCapture) []string {
+	stop := "fp backup --stop-core stops Core briefly for a cold copy instead (ingest pauses; polled tags get a gap)"
+	if c == nil {
+		return []string{stop}
+	}
+	switch c.Cause {
+	case databackup.CauseNoKey:
+		return []string{"run fp backup once in a terminal: it offers to create the backup key (an admin login, once)", stop}
+	case databackup.CauseNoLease:
+		return []string{"update Core (fp update --apply) to a release with the backup lease, which copies it live", stop}
+	case databackup.CauseAnotherBackup:
+		return []string{"another backup holds Core's backup lease: run fp backup again when it has finished (Core ends a forgotten lease itself at its TTL)"}
+	case databackup.CauseUnreachable:
+		return []string{"check that Core is running and answering: fp status", stop}
+	case databackup.CauseCannotCopy:
+		return []string{"no copy of Core's data directory can hold it as it is; see the reason above"}
+	}
+	return []string{stop}
+}
+
+// stdinIsTerminal reports whether a person can answer a prompt.
+func stdinIsTerminal() bool { return term.IsTerminal(int(os.Stdin.Fd())) }
+
+// askYesNo prints question and reads one line; def is the answer to Enter.
+func askYesNo(question string, def bool) bool {
+	fmt.Fprint(os.Stderr, question)
+	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+	if err != nil && line == "" {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(line)) {
+	case "":
+		return def
+	case "y", "yes":
+		return true
+	}
+	return false
+}
+
+// confirmCoreStop asks whether Core may be stopped for a cold copy.
+func confirmCoreStop(why string) bool {
+	fmt.Fprintln(os.Stderr)
+	fmt.Fprintf(os.Stderr, "%s Core cannot be copied live: %s.\n", colorText("⚠", colorYellow), why)
+	fmt.Fprintln(os.Stderr, "  fp backup can stop Core briefly instead: Core is down while its data directory is")
+	fmt.Fprintln(os.Stderr, "  copied on this disk (ingest pauses; polled tags get a gap), then starts again")
+	fmt.Fprintln(os.Stderr, "  before the archive is compressed. Without it, Core is left out of this archive.")
+	return askYesNo("Stop Core for a cold copy? [y/N]: ", false)
+}
+
+// ensureBackupKey offers, once, to create the backup key when .env has none
+// (or Core refuses it) and Core can use one. Nothing here is fatal: without a
+// key, Backup leaves Core out and says why.
+func ensureBackupKey(ctx context.Context, env *databackup.Env) {
+	cctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	state, _ := databackup.CheckBackupKey(cctx, env.CoreURL, env.BackupKey)
+	if state != databackup.KeyAbsent && state != databackup.KeyRefused {
+		return // it works, or no key can help (older or unreachable Core)
+	}
+	if _, advertised, err := databackup.LeaseAdvertised(cctx, env.CoreURL); err != nil || !advertised {
+		return // an older Core: a key would be a full admin key there, never mint one
+	}
+	envPath := filepath.Join(actions.HomeDir(), ".env")
+	if f, err := os.OpenFile(envPath, os.O_WRONLY, 0); err != nil {
+		fmt.Fprintf(os.Stderr, "%s fp backup needs a backup key in %s and cannot write that file (%v).\n",
+			colorText("⚠", colorYellow), envPath, err)
+		fmt.Fprintln(os.Stderr, "  Run fp backup once as the stack's owner, or re-run the installer, to create it.")
+		return
+	} else {
+		f.Close()
+	}
+	fmt.Fprintln(os.Stderr)
+	if state == databackup.KeyRefused {
+		fmt.Fprintln(os.Stderr, "Core refused the backup key in .env (it was revoked, or minted on another Core).")
+	}
+	fmt.Fprintln(os.Stderr, "fp backup copies Core live with a backup key: an API key that can run a backup and")
+	fmt.Fprintln(os.Stderr, "nothing else, kept in .env so scheduled backups work unattended. It is created once,")
+	fmt.Fprintln(os.Stderr, "with an admin login; the password is not stored.")
+	if !askYesNo("Create the backup key now? [Y/n]: ", true) {
+		return
+	}
+	cli, _, _, err := auth.PromptAdmin(ctx, "Admin login, to create the backup key:")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s backup key not created: %v\n", colorText("⚠", colorYellow), err)
+		return
+	}
+	key, err := databackup.MintBackupKey(ctx, env.CoreURL, cli.Token)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s backup key not created: %v\n", colorText("⚠", colorYellow), err)
+		return
+	}
+	env.BackupKey = key // this run uses it either way
+	if err := actions.SetEnvValue(databackup.BackupKeyEnv, key); err != nil {
+		fmt.Fprintf(os.Stderr, "%s the backup key could not be stored in .env (%v); this backup uses it, the next one will ask again\n",
+			colorText("⚠", colorYellow), err)
+		return
+	}
+	fmt.Fprintf(os.Stderr, "%s backup key created and stored in .env (%s)\n", colorText("✓", colorGreen), databackup.BackupKeyEnv)
 }
 
 func cmdRestore() *cobra.Command {
@@ -434,7 +591,9 @@ func cmdRestore() *cobra.Command {
 		Short: "Restore a data backup (stops the stack; replaced data is set aside, never deleted)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx := context.Background()
 			env := databackup.LoadEnv(actions.HomeDir())
+			env.CoreURL = actions.RestURL()
 			man, err := databackup.Peek(args[0])
 			if err != nil {
 				return err
@@ -443,8 +602,33 @@ func cmdRestore() *cobra.Command {
 			if len(only) > 0 {
 				services = only
 			}
+			restoringCore := false
+			for _, s := range services {
+				if s == "core" {
+					restoringCore = true
+				}
+			}
+			olderCore := restoringCore && man.CoreFromOlderBackup()
+			leaseCore := restoringCore && man.Core != nil && man.Core.Mode == databackup.CoreLease
+
 			fmt.Printf("Backup from %s (fp %s, host %s)\n", man.CreatedAt, man.FPVersion, man.Host)
 			fmt.Printf("Will restore: %s\n", strings.Join(services, ", "))
+			if restoringCore && man.Core != nil {
+				fmt.Printf("Core in this archive: %s\n", man.Core.Semantics())
+			}
+			if man.Core != nil && man.Core.Mode == databackup.CoreNotCaptured {
+				fmt.Printf("%s This archive does not hold Core's data: %s\n", colorText("⚠", colorYellow), man.Core.Reason)
+			}
+			if olderCore {
+				fmt.Printf("%s This archive was made by an older fp backup, which copied Core live with no\n", colorText("⚠", colorYellow))
+				fmt.Println("  consistent cut: its \"crash-consistent\" label was not true, and the copy may be torn")
+				fmt.Println("  (a damaged catalog, an ignored journal, missing points or whole series). It is")
+				fmt.Println("  restored as it is; Core's open state is reported after it starts. Keep the")
+				fmt.Println("  pre-restore copy until you have checked it.")
+			}
+			if leaseCore {
+				warnOlderCore(ctx, env.CoreURL, man)
+			}
 			fmt.Println("The stack will be STOPPED during the restore. Everything replaced is set aside as *.pre-restore-*, never deleted.")
 			if !yes {
 				fmt.Print("Type 'restore' to continue: ")
@@ -454,22 +638,36 @@ func cmdRestore() *cobra.Command {
 					return fmt.Errorf("aborted")
 				}
 			}
-			if err := actions.Compose(context.Background(), os.Stdout, os.Stderr, "stop"); err != nil {
+			// Core gets time to close: Docker's default 10 s SIGKILLs a long
+			// final checkpoint (compose sets no stop_grace_period).
+			if err := actions.Compose(ctx, os.Stdout, os.Stderr, "stop", "-t", "180"); err != nil {
 				return fmt.Errorf("stopping stack: %w", err)
 			}
-			asides, err := databackup.Restore(context.Background(), env, args[0], databackup.RestoreOptions{Only: only})
+			asides, err := databackup.Restore(ctx, env, args[0], databackup.RestoreOptions{
+				Only: only,
+				Warn: func(s string) { fmt.Fprintf(os.Stderr, "%s %s\n", colorText("⚠", colorYellow), s) },
+			})
 			if err != nil {
 				return fmt.Errorf("restore: %w (already-replaced items are set aside as *.pre-restore-*)", err)
 			}
-			if len(asides) > 0 {
-				fmt.Println("Set aside (delete when satisfied):")
-				for _, a := range asides {
-					fmt.Println("  " + a)
-				}
-			}
-			if err := actions.Compose(context.Background(), os.Stdout, os.Stderr, "start"); err != nil {
+			if err := actions.Compose(ctx, os.Stdout, os.Stderr, "start"); err != nil {
+				printAsides(asides, env.CoreDir, olderCore)
 				return fmt.Errorf("stack restored but failed to start: %w", err)
 			}
+			if restoringCore {
+				fmt.Println("Waiting for Core to open the restored data …")
+				if !databackup.WaitCoreHealthy(ctx, env.CoreURL, 5*time.Minute) {
+					fmt.Printf("%s Core has not answered yet; check: docker logs falconpulsar-core\n", colorText("⚠", colorYellow))
+				} else {
+					if leaseCore {
+						warnOlderCore(ctx, env.CoreURL, man)
+					}
+					if olderCore {
+						reportCoreOpenState(ctx, env.CoreURL, yes)
+					}
+				}
+			}
+			printAsides(asides, env.CoreDir, olderCore)
 			fmt.Println("Restore complete.")
 			return nil
 		},
@@ -477,6 +675,105 @@ func cmdRestore() *cobra.Command {
 	c.Flags().StringSliceVar(&only, "only", nil, "restore only these services (gateway, engine, copilot, core, config)")
 	c.Flags().BoolVar(&yes, "yes", false, "skip the confirmation prompt")
 	return c
+}
+
+func printAsides(asides []string, coreDir string, olderCore bool) {
+	if len(asides) == 0 {
+		return
+	}
+	if olderCore {
+		fmt.Println("Set aside (keep until you have checked Core's open state, then delete):")
+	} else {
+		fmt.Println("Set aside (delete when satisfied):")
+	}
+	for _, a := range asides {
+		fmt.Println("  " + a)
+		if filepath.Dir(a) == filepath.Clean(coreDir) {
+			fmt.Println("    (inside Core's data directory, which is a mount point and cannot be renamed;")
+			fmt.Println("     until it is deleted or moved, fp backup may copy it too)")
+		}
+	}
+}
+
+// warnOlderCore: an archive made under a lease restores only into a Core at
+// least as new as the one that made it. An older Core lacks the blob
+// reconciliation the copy relies on, and its string values written during
+// the backup could read wrong. A Core with the lease has it.
+func warnOlderCore(ctx context.Context, coreURL string, man databackup.Manifest) {
+	cctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	pc, advertised, err := databackup.LeaseAdvertised(cctx, coreURL)
+	if err != nil || advertised {
+		return // not reachable (checked again after start), or new enough
+	}
+	fmt.Printf("%s This Core (%s) is older than the one that made the archive (%s): it lacks the\n",
+		colorText("⚠", colorYellow), orUnknown(pc.Version), orUnknown(man.Core.CoreVersion))
+	fmt.Println("  backup lease and the repair of string-value files the copy relies on. Update Core")
+	fmt.Println("  first (fp update --apply), or string values written during the backup may read wrong.")
+}
+
+func orUnknown(s string) string {
+	if s == "" {
+		return "version unknown"
+	}
+	return s
+}
+
+// reportCoreOpenState shows what Core's open found in a Core restored from
+// an older fp backup's archive. It needs an admin login.
+func reportCoreOpenState(ctx context.Context, coreURL string, unattended bool) {
+	how := "As an admin, GET /api/v1/_system/catalog (open.damaged, open.journal_ignored, wal_held) and\n" +
+		"  GET /api/v1/_system/database (series_count) show it."
+	if unattended || !stdinIsTerminal() {
+		fmt.Printf("%s Check Core's open state before deleting the pre-restore copy. %s\n", colorText("⚠", colorYellow), how)
+		return
+	}
+	cli, _, _, err := auth.PromptAdmin(ctx, "Check Core's open state — admin login (of the RESTORED Core):")
+	if err != nil {
+		fmt.Printf("%s Core's open state was not read (%v). %s\n", colorText("⚠", colorYellow), err, how)
+		return
+	}
+	st, err := databackup.ReadCoreOpenState(ctx, coreURL, cli.Token)
+	if err != nil {
+		fmt.Printf("%s Core's open state was not read (%v). %s\n", colorText("⚠", colorYellow), err, how)
+		return
+	}
+	bad := false
+	fmt.Println("Core's open state after the restore:")
+	if !st.CatalogReported {
+		fmt.Println("  catalog:  this Core does not report its catalog's open state")
+	} else {
+		switch {
+		case st.Damaged:
+			bad = true
+			fmt.Printf("  catalog:  %s (%s)\n", colorText("DAMAGED", colorRed), st.FirstDamage)
+		default:
+			fmt.Println("  catalog:  not damaged")
+		}
+		switch {
+		case st.JournalIgnored:
+			bad = true
+			fmt.Printf("  journal:  %s (%s)\n", colorText("IGNORED", colorRed), st.JournalNote)
+		case st.JournalReplayed:
+			fmt.Println("  journal:  replayed (it completed a commit the copy interrupted)")
+		default:
+			fmt.Println("  journal:  not needed")
+		}
+		if st.WALHeldPoints > 0 {
+			bad = true
+			fmt.Printf("  WAL held: %s\n", colorText(fmt.Sprintf("%d points of %d series could not be applied (kept in meta/wal-held)", st.WALHeldPoints, st.WALHeldSeries), colorRed))
+		} else {
+			fmt.Println("  WAL held: none")
+		}
+	}
+	fmt.Printf("  series:   %d\n", st.SeriesCount)
+	if bad {
+		fmt.Printf("%s The restored Core copy is torn. Your previous data is in the pre-restore copy below.\n", colorText("⚠", colorYellow))
+	} else {
+		fmt.Println("  Nothing Core checks is wrong. It cannot see a series or points the copy never held:")
+		fmt.Println("  compare the series count and recent history with what you expect before deleting the")
+		fmt.Println("  pre-restore copy.")
+	}
 }
 
 func cmdUpdate() *cobra.Command {

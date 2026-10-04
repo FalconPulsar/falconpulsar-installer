@@ -439,6 +439,127 @@ fp_bootstrap_gateway_token() {
     log_success "FP_API_KEY appended to ${env_file}"
 }
 
+# ── The backup key ──────────────────────────────────────────────────────────
+# fp_bootstrap_backup_key <env_file> [rest_port]
+#
+# fp backup copies Core live under a Core backup lease, which needs an API
+# key scoped to SYSTEM_BACKUP alone: FP_BACKUP_KEY in .env, so scheduled
+# backups run unattended. Core confines such a key to /api/v1/_system/backup
+# (403 everywhere else, refused by the WebSocket). It is minted here, where
+# the installer already holds an admin login. NEVER fatal: without the key,
+# the first `fp backup` in a terminal offers to create it, and an unattended
+# one leaves Core out of the archive and says why.
+#
+# Mint ONLY after the capability probe answers "lease":1, and accept only an
+# answer listing exactly ["SYSTEM_BACKUP"]: an older Core ignores a
+# permission name it does not know and mints a key with ALL of its owner's
+# permissions, which would put a full admin key in .env. Such a key is
+# revoked at once. A 200 alone is not lease support either: an older Core
+# routes the capability path to GET /api/v1/_system (prefix match) and
+# answers an admin with other JSON.
+#
+# A key already in .env is validated, not presence-checked (same reason as
+# fp_gateway_token_state): kept when Core accepts it or cannot be reached,
+# replaced when Core refuses it (data restored from elsewhere, revoked).
+fp_bootstrap_backup_key() {
+    local env_file="$1" port="${2:-${FP_REST_PORT:-7433}}"
+    local base="http://127.0.0.1:${port}" key resp code jwt token id
+    [ -f "$env_file" ] || return 0
+
+    # _fp_bk_get <bearer> <path>: prints the body, then the HTTP code on the
+    # last line. The bearer goes in on stdin (-H @-), never in curl's argv.
+    _fp_bk_get() {
+        printf 'Authorization: Bearer %s\n' "$1" | \
+            curl -s --max-time 15 -H @- -w '\n%{http_code}' "${base}$2" 2>/dev/null || printf '\n000'
+    }
+
+    key="$(sed -n 's/^FP_BACKUP_KEY=//p' "$env_file" 2>/dev/null | tail -n1)" || true
+    if [ -n "$key" ]; then
+        resp="$(_fp_bk_get "$key" /api/v1/_system/backup/capability)"
+        code="${resp##*$'\n'}"
+        case "$code" in
+            200)
+                if printf '%s' "${resp%$'\n'*}" | grep -q '"lease":1'; then
+                    log_info "backup key verified against core — keeping it"
+                    return 0
+                fi
+                log_warn "core no longer offers a backup lease — keeping the backup key; fp backup will say why it cannot copy core live"
+                return 0 ;;
+            401|403)
+                log_warn "the FP_BACKUP_KEY in .env is not valid on this core — minting a new one" ;;
+            *)
+                log_warn "could not verify the backup key (core did not answer) — keeping it"
+                return 0 ;;
+        esac
+    fi
+
+    if [ -z "${FP_ADMIN_USER:-}" ] || [ -z "${FP_ADMIN_PASS:-}" ]; then
+        log_info "no admin login at hand: the first 'fp backup' run in a terminal offers to create the backup key"
+        return 0
+    fi
+
+    resp=$(printf '{"username":"%s","password":"%s"}' "$FP_ADMIN_USER" "$FP_ADMIN_PASS" | \
+        curl -s --max-time 15 -X POST -H 'Content-Type: application/json' --data-binary @- \
+            "${base}/api/v1/auth/login" 2>/dev/null) || resp=''
+    jwt=$(_fp_json_str "$resp" "token")
+    if [ -z "$jwt" ]; then
+        log_warn "could not log in to create the backup key — the first 'fp backup' in a terminal offers to"
+        return 0
+    fi
+
+    resp="$(_fp_bk_get "$jwt" /api/v1/_system/backup/capability)"
+    code="${resp##*$'\n'}"
+    if [ "$code" != "200" ] || ! printf '%s' "${resp%$'\n'*}" | grep -q '"lease":1'; then
+        log_info "this core has no backup lease (an older release): no backup key minted; fp backup copies it only cold, with --stop-core"
+        return 0
+    fi
+
+    resp=$(printf '{"name":"fp-backup","expires_days":0,"permissions":["SYSTEM_BACKUP"]}' | \
+        curl -s --max-time 15 -X POST -H 'Content-Type: application/json' \
+            -H "Authorization: Bearer ${jwt}" --data-binary @- \
+            "${base}/api/v1/tokens" 2>/dev/null) || resp=''
+    token=$(_fp_json_str "$resp" "token")
+    id=$(_fp_json_str "$resp" "id")
+    if [ -z "$token" ]; then
+        log_warn "core did not mint the backup key — the first 'fp backup' in a terminal offers to"
+        return 0
+    fi
+    if ! printf '%s' "$resp" | grep -q '"permissions":\["SYSTEM_BACKUP"\]'; then
+        if [ -n "$id" ]; then
+            curl -s --max-time 15 -o /dev/null -X DELETE -H "Authorization: Bearer ${jwt}" \
+                "${base}/api/v1/tokens/${id}" 2>/dev/null || true
+        fi
+        log_warn "core minted a backup key with more than SYSTEM_BACKUP — revoked it; no backup key stored"
+        return 0
+    fi
+
+    _fp_env_set "$env_file" FP_BACKUP_KEY "$token"
+    log_success "backup key (SYSTEM_BACKUP only) stored in ${env_file} as FP_BACKUP_KEY"
+}
+
+# _fp_env_set <env_file> <KEY> <value>
+# Replace (or add) one KEY=value line, atomically, keeping the file's owner,
+# group and mode (Linux: 0640 falconpulsar:docker, macOS: 0600 user:staff).
+_fp_env_set() {
+    local env_file="$1" k="$2" v="$3" owner group mode
+    owner=$(stat -c '%U' "$env_file" 2>/dev/null || stat -f '%Su' "$env_file" 2>/dev/null || echo "")
+    group=$(stat -c '%G' "$env_file" 2>/dev/null || stat -f '%Sg' "$env_file" 2>/dev/null || echo "")
+    mode=$(stat -c '%a' "$env_file" 2>/dev/null || stat -f '%Lp' "$env_file" 2>/dev/null || echo "600")
+    case "$mode" in
+        [0-7][0-7][0-7]) ;;
+        *) mode="600" ;;
+    esac
+    (
+        umask 077
+        { grep -v "^${k}=" "$env_file" || true; printf '%s=%s\n' "$k" "$v"; } > "${env_file}.new"
+    )
+    if [ -n "$owner" ] && [ -n "$group" ]; then
+        chown "${owner}:${group}" "${env_file}.new" 2>/dev/null || true
+    fi
+    chmod "0${mode}" "${env_file}.new"
+    mv "${env_file}.new" "$env_file"
+}
+
 # ── AI Gateway: wipe self-seeded providers + models ─────────────────────────
 # fp_wipe_gateway_seed_defaults [container_name] [port]
 #
