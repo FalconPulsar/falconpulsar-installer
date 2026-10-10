@@ -634,8 +634,8 @@ standard; only `copilot` is gated behind a compose profile:
 | `ai-engine` | `${FP_REGISTRY}/ai-engine:${FP_VERSION}` | 8085 | `core` (healthy) | — (standard) |
 | `copilot` | `${FP_REGISTRY}/copilot:${FP_COPILOT_IMAGE_TAG}` | 8090 → 8080 | `core` (healthy) | `copilot` |
 
-- The `core` service has a `bash /dev/tcp/localhost/7433` healthcheck (5 retries × 15 s interval, 90 s start period)
-- The `ai-gateway` service has the same `bash /dev/tcp/localhost/7436` healthcheck shape (the image ships without curl)
+- The `core` service's healthcheck sends `GET /health` over bash's `/dev/tcp` and requires a 200 (5 retries × 15 s interval, 90 s start period). A port-open check would call a wedged Core healthy: the port stays open while its serving thread answers nothing
+- The `ai-gateway` service has the same HTTP healthcheck against its static root `/health` on 7436 (the images ship without curl, so the probe uses bash builtins only)
 - All services use `user: ${FP_UID}:${FP_GID}` for bind-mount ownership
 - All services are `restart: unless-stopped`
 - Volumes: `${FP_DATA_DIR}:/data` bind-mount for `core` (database)

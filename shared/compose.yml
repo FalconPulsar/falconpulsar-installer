@@ -123,10 +123,31 @@ services:
       # defaults (desktop UI :5173 + Tauri). Set to add simulator origins.
       FP_ALLOWED_ORIGINS: ${FP_ALLOWED_ORIGINS:-}
     healthcheck:
-      # Bash /dev/tcp port-open check. The core process binds the REST port
-      # only after init-auto completes, so this is effectively a readiness
-      # check. start_period is generous (90s) to allow first-run init.
-      test: ["CMD-SHELL", "bash -c '< /dev/tcp/localhost/7433' 2>/dev/null"]
+      # A real request: GET /health must answer 200. Core serves every request
+      # from one thread, so this asks whether that thread still turns. A
+      # port-open check only asks whether the kernel still accepts, and it
+      # called Core healthy while the thread served nothing: on 2026-09-04
+      # after an abort that left the process holding its socket, and on
+      # 2026-09-05 for 41 minutes of unaccepted connections. The image's own
+      # HEALTHCHECK made the same switch in Core alpha.109, but this block
+      # replaces it. /health is static, public and plain HTTP (Core has no TLS
+      # on 7433).
+      #
+      # Exec form, bash builtins only, with its own 4 s read timeout under the
+      # 5 s Docker timeout: no curl in the image, no child process, so a probe
+      # against a wedged Core exits by itself and leaves nothing behind. $$ is
+      # a literal $ for compose. start_period covers first-run init and WAL
+      # replay before Core binds; nothing restarts an unhealthy container, it
+      # gates `compose up`, the dependents below and the installer's waits.
+      test:
+        - CMD
+        - bash
+        - -c
+        - >-
+          exec 3<>/dev/tcp/127.0.0.1/7433 &&
+          printf 'GET /health HTTP/1.0\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 &&
+          read -r -t 4 status <&3 &&
+          [[ $$status == *' 200 '* ]]
       interval: 15s
       timeout: 5s
       start_period: 90s
@@ -241,12 +262,25 @@ services:
       # ANTHROPIC_API_KEY / XAI_API_KEY here — they would bypass the DB
       # and create a stale, hard-to-rotate secret path.
     healthcheck:
-      # Bash /dev/tcp port-open check, same pattern as core. The gateway
-      # image deliberately ships without curl (it pulled a CVE-flagged
-      # libnghttp2 into the image), so this mirrors the bash-built-in
-      # probe the image's own HEALTHCHECK uses. start_period is generous
-      # to cover first-boot knowledge-base seeding.
-      test: ["CMD-SHELL", "bash -c '< /dev/tcp/localhost/7436' 2>/dev/null"]
+      # A real request, as for core: GET /health must answer 200. The root
+      # /health is static and public (fp_ai_gateway main.py create_app) and
+      # does no DB, Core or LLM call, so an upstream outage cannot fail it;
+      # /api/v1/health calls the LLM providers and must not be used here. A
+      # port-open check passes while every worker is wedged or stuck before
+      # serving, because uvicorn's parent holds the listening socket. Same
+      # builtins-only command as core (the image has no curl, and PID 1 is
+      # python, which reaps nothing, so the probe must not leave children).
+      # start_period covers the wait for Core and first-boot knowledge-base
+      # seeding.
+      test:
+        - CMD
+        - bash
+        - -c
+        - >-
+          exec 3<>/dev/tcp/127.0.0.1/7436 &&
+          printf 'GET /health HTTP/1.0\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 &&
+          read -r -t 4 status <&3 &&
+          [[ $$status == *' 200 '* ]]
       interval: 15s
       timeout: 5s
       start_period: 90s
