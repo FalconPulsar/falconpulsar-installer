@@ -10,15 +10,18 @@ import Foundation
 /// Compose prints a progress line per container and puts the reason last, for
 /// example `dependency failed to start: container falconpulsar-core is
 /// unhealthy`. So the LAST line that reads as an error wins; failing that, the
-/// last line printed; failing that, the exit status.
+/// last line printed; failing that, the exit status. A reason too long to show
+/// keeps its end, where the daemon puts the cause.
 enum ComposeFailure {
     /// Lines containing one of these (case-insensitive) read as the reason.
     static let errorMarkers = ["error", "failed", "unhealthy", "denied", "cannot", "no such", "not found", "conflict"]
 
     static func summary(output: String, status: Int32, limit: Int = 240) -> String {
-        // Compose colours its output when it thinks it has a terminal.
-        let plain = output.replacingOccurrences(of: "\u{1B}\\[[0-9;?]*[A-Za-z]", with: "",
-                                                options: .regularExpression)
+        // Compose colours its output when it thinks it has a terminal; the
+        // daemon names endpoints by a 64-hex id that buries the cause.
+        let plain = output
+            .replacingOccurrences(of: "\u{1B}\\[[0-9;?]*[A-Za-z]", with: "", options: .regularExpression)
+            .replacingOccurrences(of: " ?\\([0-9a-f]{64}\\)", with: "", options: .regularExpression)
         let lines = plain.components(separatedBy: .newlines)
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
@@ -34,7 +37,9 @@ enum ComposeFailure {
         if lower.contains("falconpulsar-core") && lower.contains("unhealthy") {
             return "FalconPulsar Core is running but not answering, so the services that depend on it were not started. View Logs shows why."
         }
+        // Too long: keep the END, where the daemon puts the cause ("…: port is
+        // already allocated").
         guard reason.count > limit else { return reason }
-        return String(reason.prefix(limit - 1)) + "…"
+        return "…" + String(reason.suffix(limit - 1))
     }
 }

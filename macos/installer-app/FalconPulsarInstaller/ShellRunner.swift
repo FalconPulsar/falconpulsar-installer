@@ -11,7 +11,9 @@ enum ShellRunner {
     ///
     /// `timeout` is a deadline for a command that may hang (one that talks to
     /// a Docker daemon which can wedge). A command still running at it gets
-    /// SIGTERM, then SIGKILL two seconds later, and the result is exit code
+    /// SIGTERM and, two seconds later, SIGKILL, each sent to the whole process
+    /// group (Foundation starts the child as a group leader), so the command
+    /// under `bash -c` dies with the shell; the result is exit code
     /// `timedOutExitCode` with whatever it had printed. nil, the default,
     /// waits for as long as the command runs. The parameter used to default
     /// to 10 s and was never enforced, so every caller that passes none was
@@ -46,7 +48,8 @@ enum ShellRunner {
     /// exits deadlocks once the child writes more than the 64 KB pipe buffer
     /// (a long `compose pull`): it blocks on the write, so it never exits and
     /// `waitUntilExit` never returns.
-    private final class OutputCollector {
+    // @unchecked: its state is guarded by `lock` and `eof`.
+    private final class OutputCollector: @unchecked Sendable {
         private let lock = NSLock()
         private var data = Data()
         private let eof = DispatchSemaphore(value: 0)
@@ -67,10 +70,7 @@ enum ShellRunner {
             var timedOut = false
             if let timeout = timeout, !ShellRunner.waitForExit(process, within: timeout) {
                 timedOut = true
-                process.terminate()
-                if !ShellRunner.waitForExit(process, within: 2) {
-                    kill(process.processIdentifier, SIGKILL)
-                }
+                ShellRunner.stopGroup(of: process)
             }
             process.waitUntilExit()
             // EOF arrives once every holder of the pipe has closed it. A
@@ -83,6 +83,18 @@ enum ShellRunner {
             lock.unlock()
             return (output, timedOut ? ShellRunner.timedOutExitCode : process.terminationStatus)
         }
+    }
+
+    /// SIGTERM to the child's process group, then SIGKILL to whatever of it
+    /// is left two seconds later. The GROUP decides, not the child: under
+    /// `bash -c`, bash dies on the SIGTERM at once while a command that
+    /// ignores it lives on in the same group.
+    fileprivate static func stopGroup(of process: Process) {
+        let group = -process.processIdentifier
+        process.terminate()
+        let deadline = Date().addingTimeInterval(2)
+        while kill(group, 0) == 0 && Date() < deadline { usleep(20_000) }
+        if kill(group, 0) == 0 { kill(group, SIGKILL) }
     }
 
     /// True once `process` has exited, false if it is still running after

@@ -415,8 +415,10 @@ namespace FalconPulsar.Tray
             // 2. Through the distro itself.
             try
             {
+                // Bounded: this runs inside the one-at-a-time poll, so a hang
+                // here would stop every later poll.
                 var (rc, stdout) = await RunWslBashCaptureAsync(
-                    "cat '" + _wslHome + "/.env' 2>/dev/null\n");
+                    "cat '" + _wslHome + "/.env' 2>/dev/null\n", timeoutSeconds: 15);
                 if (rc == 0 && !string.IsNullOrWhiteSpace(stdout))
                 {
                     var parsed = ParseEnv(stdout.Replace("\r", "").Split('\n'));
@@ -1017,7 +1019,9 @@ namespace FalconPulsar.Tray
         // A status probe through WSL, with a deadline. A wedged Docker daemon
         // makes `docker info` and `docker ps` wait forever, and so did every
         // poll behind them. Past the deadline the probe and its children are
-        // killed and it reads as "no" (exit code -1, no output).
+        // killed and it THROWS: a probe that did not answer is neither "Docker
+        // is off" nor "stopped", so the poll fails and SafePollHealth's
+        // "status unavailable" path says so, as for any other poll failure.
         private static async Task<(int exitCode, string stdout)> RunWslProbeAsync(string arguments,
                                                                                   int timeoutSeconds = 15)
         {
@@ -1044,10 +1048,14 @@ namespace FalconPulsar.Tray
                 catch (OperationCanceledException)
                 {
                     try { proc.Kill(entireProcessTree: true); } catch { }
-                    return (-1, string.Empty);
+                    throw new TimeoutException($"wsl.exe {arguments} did not answer within {timeoutSeconds} s");
                 }
                 await stderr;
                 return (proc.ExitCode, await stdout);
+            }
+            catch (TimeoutException)
+            {
+                throw;
             }
             catch
             {
@@ -2596,7 +2604,11 @@ namespace FalconPulsar.Tray
             return output.StartsWith("v") ? output : "v" + output;
         }
 
-        private async Task<(int exitCode, string stdout)> RunWslBashCaptureAsync(string script)
+        // timeoutSeconds: kill the process tree and return (-1, "") past it.
+        // 0 waits for as long as the script runs (the backup and restore
+        // scripts are long by design).
+        private async Task<(int exitCode, string stdout)> RunWslBashCaptureAsync(string script,
+                                                                                 int timeoutSeconds = 0)
         {
             // Run as the distro's default user (which is who owns the stack
             // in per-user installs). No -u override: that would switch to
@@ -2622,9 +2634,27 @@ namespace FalconPulsar.Tray
             if (proc == null) return (-1, string.Empty);
             await proc.StandardInput.WriteAsync(script);
             proc.StandardInput.Close();
-            var stdout = await proc.StandardOutput.ReadToEndAsync();
-            await proc.WaitForExitAsync();
-            return (proc.ExitCode, stdout);
+            var stdoutTask = proc.StandardOutput.ReadToEndAsync();
+            var stderrTask = proc.StandardError.ReadToEndAsync();
+            if (timeoutSeconds > 0)
+            {
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
+                try
+                {
+                    await proc.WaitForExitAsync(cts.Token);
+                }
+                catch (OperationCanceledException)
+                {
+                    try { proc.Kill(entireProcessTree: true); } catch { }
+                    return (-1, string.Empty);
+                }
+            }
+            else
+            {
+                await proc.WaitForExitAsync();
+            }
+            await stderrTask;
+            return (proc.ExitCode, await stdoutTask);
         }
 
         // ────────────────────────── Configuration Backup ──────────────────────────

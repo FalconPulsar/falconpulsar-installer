@@ -41,11 +41,22 @@ final class ComposeFailureTests: XCTestCase {
                        "docker compose exited with status 125.")
     }
 
-    func testLongReasonIsTruncated() {
-        let long = "error: " + String(repeating: "x", count: 500)
+    func testLongReasonKeepsItsEnd() {
+        let long = "error: " + String(repeating: "x", count: 500) + " the cause"
         let s = ComposeFailure.summary(output: long, status: 1, limit: 40)
         XCTAssertEqual(s.count, 40)
-        XCTAssertTrue(s.hasSuffix("…"))
+        XCTAssertTrue(s.hasPrefix("…"), s)
+        XCTAssertTrue(s.hasSuffix("the cause"), s)
+    }
+
+    func testPortConflictKeepsTheCause() {
+        // The shape Docker Engine 29.8 / Compose 5.5 print, with the
+        // endpoint's 64-hex id built below.
+        let id = String(repeating: "f600fb88", count: 8)
+        let output = "Error response from daemon: failed to set up container networking: driver failed programming external connectivity on endpoint falconpulsar-core (\(id)): Bind for 0.0.0.0:7433 failed: port is already allocated\n"
+        let s = ComposeFailure.summary(output: output, status: 1)
+        XCTAssertTrue(s.hasSuffix("Bind for 0.0.0.0:7433 failed: port is already allocated"), s)
+        XCTAssertFalse(s.contains(id), s)
     }
 
     func testAnotherContainerUnhealthyIsNotCalledCore() {

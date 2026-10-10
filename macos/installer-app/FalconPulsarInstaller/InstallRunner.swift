@@ -332,6 +332,12 @@ enum InstallRunner {
             // a hung daemon, not a bound on a slow start.
             let (out2, code) = ShellRunner.run("cd '\(stackHome)' && \(dockerPath) compose \(profileFlags) up -d 2>&1", timeout: 600)
             log(out2)
+            if code == ShellRunner.timedOutExitCode {
+                log("[error] docker compose up did not finish within 10 minutes and was stopped")
+                updateStep(5, .failed)
+                finish(state: state, success: false, error: "docker compose up did not finish within 10 minutes. Docker may be stuck: restart it and run the installer again. See /tmp/falconpulsar-install.log.")
+                return
+            }
             if code != 0 {
                 updateStep(5, .failed)
                 finish(state: state, success: false, error: "docker compose up failed (exit \(code)). See /tmp/falconpulsar-install.log.")

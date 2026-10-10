@@ -8,6 +8,9 @@ import UserNotifications
 
 enum StackStatus {
     case unknown, running, partiallyRunning, stopped, dockerDown
+    /// A Docker probe did not answer within its deadline: Docker is up but
+    /// busy or wedged. Said as such, not as "not running" or "stopped".
+    case notAnswering
 }
 
 class AppDelegate: NSObject, NSApplicationDelegate {
@@ -55,6 +58,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         buildMenu()
         pollTimer = Timer.scheduledTimer(withTimeInterval: 15, repeats: true) { [weak self] _ in
             self?.pollHealth()
+        }
+        // Common modes too: a scheduled timer runs only in the default mode,
+        // so it stopped while any alert was open (runModal spins the run loop
+        // in the modal-panel mode) and the icon froze until it was dismissed.
+        if let pollTimer = pollTimer {
+            RunLoop.main.add(pollTimer, forMode: .common)
         }
         pollHealth()
         // Background update checking — only ever scheduled when
@@ -321,13 +330,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             configureAutoUpdateChecks()
         }
 
-        // When Docker itself is off, collapse the 5 status rows to a single
-        // actionable message. Five separate red "Stopped" lines hides the
-        // real problem (Docker Desktop is not running).
-        if !dockerDaemonUp {
+        // When Docker itself is off, or does not answer, collapse the 5
+        // status rows to a single actionable message. Five separate red
+        // "Stopped" lines hides the real problem (Docker Desktop is not
+        // running, or is stuck).
+        if !dockerDaemonUp || status == .notAnswering {
+            let notAnswering = status == .notAnswering
             let titles = [
-                "Docker is not running",
-                "Start Docker, then click Refresh Status",
+                notAnswering ? "Docker is not answering" : "Docker is not running",
+                notAnswering ? "It may be busy or stuck. Refresh Status, or restart Docker"
+                             : "Start Docker, then click Refresh Status",
                 "",
                 "",
                 "",
@@ -339,7 +351,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 if i == 0 {
                     attr.append(NSAttributedString(
                         string: "● ",
-                        attributes: [.foregroundColor: NSColor.systemRed,
+                        attributes: [.foregroundColor: notAnswering ? NSColor.systemOrange : NSColor.systemRed,
                                      .font: NSFont.systemFont(ofSize: 14)]))
                 }
                 attr.append(NSAttributedString(
@@ -407,6 +419,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         case .dockerDown:
             tooltip = "FalconPulsar: Docker is not running"
             dotColor = CGColor(red: 0.94, green: 0.27, blue: 0.27, alpha: 1)
+        case .notAnswering:
+            tooltip = "FalconPulsar: Docker is not answering"
+            dotColor = CGColor(red: 0.55, green: 0.55, blue: 0.55, alpha: 1)
         case .unknown:
             tooltip = "FalconPulsar: Checking…"
             dotColor = CGColor(red: 0.55, green: 0.55, blue: 0.55, alpha: 1)
@@ -533,8 +548,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // If Docker Desktop / Colima / OrbStack is off, every container
         // query below returns false and we used to report "Stopped" —
         // confusing because the user might think FalconPulsar is broken
-        // when the real cause is that Docker isn't running.
-        self.dockerDaemonUp = self.isDockerDaemonRunning()
+        // when the real cause is that Docker isn't running. A probe that
+        // does not answer in time is neither: Docker is up but busy or
+        // wedged, and the rows keep what they last knew.
+        guard let daemonUp = self.isDockerDaemonRunning() else {
+            publish(.notAnswering)
+            return
+        }
+        self.dockerDaemonUp = daemonUp
 
         // The optional AI Engine only participates when enabled in .env;
         // re-read the flag each pass so toggling it doesn't require an
@@ -543,16 +564,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let copilotExpected = self.copilotEnabled
 
         if self.dockerDaemonUp {
-            self.coreRunning = self.isContainerRunning("falconpulsar-core")
-            self.uiRunning = self.isContainerRunning("falconpulsar-ui")
-            self.gatewayRunning = self.isContainerRunning("falconpulsar-ai-gateway")
             // Probed REGARDLESS of the .env flag: the flag decides what
             // to SHOW, the container decides what is TRUE. Gating the
             // probe on the flag means an unreadable .env renders a
             // healthy container as a red X — the app accusing a running
             // service of being down. Mirrors TrayApp.cs on Windows.
-            self.engineRunning = self.isContainerRunning("falconpulsar-ai-engine")
-            self.copilotRunning = self.isContainerRunning("falconpulsar-copilot")
+            guard let core = self.isContainerRunning("falconpulsar-core"),
+                  let ui = self.isContainerRunning("falconpulsar-ui"),
+                  let gateway = self.isContainerRunning("falconpulsar-ai-gateway"),
+                  let engine = self.isContainerRunning("falconpulsar-ai-engine"),
+                  let copilot = self.isContainerRunning("falconpulsar-copilot") else {
+                publish(.notAnswering)
+                return
+            }
+            self.coreRunning = core
+            self.uiRunning = ui
+            self.gatewayRunning = gateway
+            self.engineRunning = engine
+            self.copilotRunning = copilot
             self.apiHealthy = self.isAPIHealthy()
         } else {
             self.coreRunning = false
@@ -563,9 +592,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             self.apiHealthy = false
         }
 
-        let prev = self.status
         if !self.dockerDaemonUp {
-            self.status = .dockerDown
+            publish(.dockerDown)
         } else {
             let allExpectedRunning = self.coreRunning && self.uiRunning && self.gatewayRunning
                 && (!engineExpected || self.engineRunning)
@@ -573,16 +601,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let anyRunning = self.coreRunning || self.uiRunning || self.gatewayRunning
                 || self.engineRunning || self.copilotRunning
             if allExpectedRunning && self.apiHealthy {
-                self.status = .running
+                publish(.running)
             } else if allExpectedRunning {
-                self.status = .partiallyRunning
+                publish(.partiallyRunning)
             } else if anyRunning {
-                self.status = .partiallyRunning
+                publish(.partiallyRunning)
             } else {
-                self.status = .stopped
+                publish(.stopped)
             }
         }
+    }
 
+    /// Records the poll's verdict and redraws on the main thread, notifying
+    /// on a change.
+    private func publish(_ newStatus: StackStatus) {
+        let prev = self.status
+        self.status = newStatus
         DispatchQueue.main.async {
             self.updateIcon(self.status)
             self.updateMenu()
@@ -600,19 +634,28 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // whose serving thread is wedged still completes the TCP handshake, so a
     // curl with no timeout waited on it forever; a wedged Docker daemon does
     // the same to `docker ps`.
-    private func isDockerDaemonRunning() -> Bool {
-        let output = shell("exec docker info --format '{{.ServerVersion}}' 2>/dev/null", timeout: 15)
+    /// nil when Docker did not answer within the deadline.
+    private func isDockerDaemonRunning() -> Bool? {
+        guard let output = probe("exec docker info --format '{{.ServerVersion}}' 2>/dev/null", timeout: 15) else {
+            return nil
+        }
         return !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
-    private func isContainerRunning(_ name: String) -> Bool {
-        let output = shell("exec docker ps --filter name=\(name) --filter status=running -q 2>/dev/null", timeout: 15)
+    /// nil when Docker did not answer within the deadline.
+    private func isContainerRunning(_ name: String) -> Bool? {
+        guard let output = probe("exec docker ps --filter name=\(name) --filter status=running -q 2>/dev/null",
+                                 timeout: 15) else {
+            return nil
+        }
         return !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
+    // Core not answering in time IS the answer here (unhealthy), and curl's
+    // own --max-time ends it first; the deadline is only a backstop.
     private func isAPIHealthy() -> Bool {
-        let output = shell("exec curl -sf --connect-timeout 3 --max-time 5 http://localhost:\(restPort)/api/v1/health 2>/dev/null",
-                           timeout: 10)
+        let output = probe("exec curl -sf --connect-timeout 3 --max-time 5 http://localhost:\(restPort)/api/v1/health 2>/dev/null",
+                           timeout: 10) ?? ""
         return !output.isEmpty
     }
 
@@ -2134,11 +2177,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// that must outlive a hiccup in this app (uninstall.sh in particular)
     /// needs a reader that keeps the pipe open for its entire lifetime.
     ///
-    /// With a `timeout`, a child still running at the deadline gets SIGTERM,
-    /// then SIGKILL two seconds later, and the result is "" (a probe that did
-    /// not answer in time answered nothing). The wait for the pipe to close is
-    /// bounded too, because a grandchild may hold it open after the kill.
-    private func drainAndWait(_ process: Process, _ pipe: Pipe, timeout: TimeInterval? = nil) -> String {
+    /// With a `timeout`, a child still running at the deadline gets SIGTERM
+    /// and, two seconds later, SIGKILL, each sent to its whole process group
+    /// (Foundation starts the child as a group leader), so the command under
+    /// a `bash -c` dies with it; the result is then nil. The wait for the pipe
+    /// to close is bounded too, because a grandchild may hold it open.
+    private func drainAndWait(_ process: Process, _ pipe: Pipe, timeout: TimeInterval? = nil) -> String? {
         var data = Data()
         let drained = DispatchSemaphore(value: 0)
         let handle = pipe.fileHandleForReading
@@ -2147,13 +2191,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             drained.signal()
         }
         if let timeout = timeout, !Self.waitForExit(process, within: timeout) {
+            // SIGTERM to the group, then SIGKILL to whatever of it is left: the
+            // group decides, since a shell dies at once on SIGTERM while a
+            // command that ignores it lives on in the same group.
+            let group = -process.processIdentifier
             process.terminate()
-            if !Self.waitForExit(process, within: 2) {
-                kill(process.processIdentifier, SIGKILL)
-            }
+            let deadline = Date().addingTimeInterval(2)
+            while kill(group, 0) == 0 && Date() < deadline { usleep(20_000) }
+            if kill(group, 0) == 0 { kill(group, SIGKILL) }
             process.waitUntilExit()
             _ = drained.wait(timeout: .now() + 2)
-            return ""
+            return nil
         }
         process.waitUntilExit()
         drained.wait()
@@ -2176,7 +2224,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// Kept for genuinely string-shaped commands that need pipes/redirection
     /// (e.g. `xargs docker rmi`).
     @discardableResult
-    private func shell(_ command: String, timeout: TimeInterval? = nil) -> String {
+    private func shell(_ command: String) -> String {
+        return probe(command, timeout: nil) ?? ""
+    }
+
+    /// `shell` with a deadline: nil when the command did not finish in time.
+    private func probe(_ command: String, timeout: TimeInterval?) -> String? {
         let process = Process()
         let pipe = Pipe()
         process.standardOutput = pipe
@@ -2230,7 +2283,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         } catch {
             return (-1, "runArgs failed to launch \(launchPath): \(error)")
         }
-        let output = drainAndWait(process, pipe)
+        let output = drainAndWait(process, pipe) ?? ""
         return (process.terminationStatus, output)
     }
 
