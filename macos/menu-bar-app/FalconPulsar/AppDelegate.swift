@@ -29,6 +29,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var updateAvailableItem: NSMenuItem?
     private var autoCheckMenuItem: NSMenuItem?
 
+    // What the person said about notifications, as last read from the
+    // system. Main thread only. It drives the "Turn On Notifications…" row,
+    // and is kept here because toggleAutoStart() rebuilds the whole menu.
+    private var noticePermission: NoticePermission = .notAsked
+    private var turnOnNotificationsItem: NSMenuItem?
+    // Set once in applicationDidFinishLaunching, before any poll can publish
+    // a change or any menu action can fail.
+    private var notices: Notices?
+
     private var coreRunning = false
     private var uiRunning = false
     private var gatewayRunning = false
@@ -70,6 +79,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // FP_UPDATE_CHECK_AUTO=true in .env (default OFF: no timers, zero
         // background network traffic).
         configureAutoUpdateChecks()
+        requestNotificationPermission()
     }
 
     // MARK: - Menu
@@ -269,6 +279,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let autoStartTitle = isAutoStartEnabled() ? "✓ Start at Login" : "Start at Login"
         autoStart.title = autoStartTitle
         menu.addItem(autoStart)
+
+        // Shown only after the person refused notifications. macOS will not
+        // ask a second time, so without this row the only way back is to
+        // know that System Settings → Notifications lists QuickDock under its
+        // bundle name, "FalconPulsar" (build-dmg.sh's CFBundleName). Placed
+        // after every row updateMenu() addresses by index, so those stay put.
+        let turnOn = NSMenuItem(title: "Turn On Notifications…", action: #selector(openNotificationSettings), keyEquivalent: "")
+        turnOn.target = self
+        turnOn.toolTip = "Notifications are off, so the stack starting or stopping shows only on this icon. Opens System Settings."
+        turnOn.isHidden = !NotificationPolicy.offersTurnOn(noticePermission)
+        menu.addItem(turnOn)
+        turnOnNotificationsItem = turnOn
 
         let docs = NSMenuItem(title: "Documentation", action: #selector(openDocumentation), keyEquivalent: "d")
         docs.target = self
@@ -623,6 +645,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
             if prev != .unknown && prev != self.status {
                 self.showNotification()
+            } else {
+                // Re-read each poll: turning notifications on in System
+                // Settings sends this app no event, and the "Turn On" row
+                // should not outlive the person doing exactly that.
+                self.notices?.refresh()
             }
         }
     }
@@ -840,18 +867,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// A notification when the person allows them; otherwise an alert, so a
     /// failed action is never silent.
     private func reportActionFailure(_ title: String, _ message: String) {
-        let center = UNUserNotificationCenter.current()
-        center.getNotificationSettings { [weak self] settings in
-            switch settings.authorizationStatus {
-            case .authorized, .provisional:
-                let content = UNMutableNotificationContent()
-                content.title = title
-                content.body = message
-                center.add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
-            default:
-                DispatchQueue.main.async { self?.showSimpleAlert(title: title, message: message) }
-            }
-        }
+        deliver(.actionFailure, title: title, body: message)
     }
 
     /// "Check for updates…" — shells out to `fp update --json`
@@ -2149,24 +2165,69 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Notifications
 
+    /// Asks for notification permission at launch and keeps the "Turn On
+    /// Notifications…" row in step with the answer. Nothing asked before, so
+    /// macOS dropped every running/stopped notice this app ever posted.
+    private func requestNotificationPermission() {
+        let installed = NotificationPolicy.canUseNotificationCenter(bundleURL: Bundle.main.bundleURL,
+                                                                    bundleIdentifier: Bundle.main.bundleIdentifier)
+        let center = installed ? UNUserNotificationCenter.current() : nil
+        // Without a delegate, macOS holds back a notification while its app is
+        // the active one, and an alert dismissed a moment ago leaves this
+        // menu-bar app active until the person clicks elsewhere.
+        center?.delegate = self
+        notices = Notices(
+            center: center,
+            onMain: { work in DispatchQueue.main.async(execute: work) },
+            alert: { [weak self] title, body in self?.showSimpleAlert(title: title, message: body) },
+            permissionChanged: { [weak self] permission in self?.applyNoticePermission(permission) })
+        notices?.start()
+    }
+
+    /// Main thread only.
+    private func applyNoticePermission(_ permission: NoticePermission) {
+        noticePermission = permission
+        turnOnNotificationsItem?.isHidden = !NotificationPolicy.offersTurnOn(permission)
+    }
+
+    private func deliver(_ notice: Notice, title: String, body: String) {
+        guard let notices = notices else {
+            // Only before launch has finished, which no notice reaches; kept
+            // so that a failure could never be silent even then.
+            if notice == .actionFailure {
+                DispatchQueue.main.async { self.showSimpleAlert(title: title, message: body) }
+            }
+            return
+        }
+        notices.deliver(notice, title: title, body: body)
+    }
+
     private func showNotification() {
-        let content = UNMutableNotificationContent()
-        content.title = "FalconPulsar"
+        let body: String
         switch status {
         case .running:
-            content.body = "All containers are running."
+            body = "All containers are running."
         case .stopped:
-            content.body = "All containers have stopped."
+            body = "All containers have stopped."
         case .partiallyRunning:
-            content.body = "Some containers are not running."
+            body = "Some containers are not running."
         default: return
         }
-        let request = UNNotificationRequest(
-            identifier: UUID().uuidString,
-            content: content,
-            trigger: nil
-        )
-        UNUserNotificationCenter.current().add(request)
+        deliver(.statusChange, title: "FalconPulsar", body: body)
+    }
+
+    /// The "Turn On Notifications…" row. Opens QuickDock's own entry
+    /// ("FalconPulsar") in System Settings → Notifications where the system
+    /// honours the link to it, and the Notifications pane otherwise.
+    @objc func openNotificationSettings() {
+        let pane = "x-apple.systempreferences:com.apple.Notifications-Settings.extension"
+        let bundleID = Bundle.main.bundleIdentifier ?? "com.falconpulsar.menubar"
+        if let url = URL(string: "\(pane)?id=\(bundleID)"), NSWorkspace.shared.open(url) {
+            return
+        }
+        if let url = URL(string: pane) {
+            NSWorkspace.shared.open(url)
+        }
     }
 
     // MARK: - Shell
@@ -2314,5 +2375,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return (bin, ["docker"] + args)
         }
         return (bin, args)
+    }
+}
+
+extension AppDelegate: UNUserNotificationCenterDelegate {
+    /// Shown while QuickDock is the active app too; see
+    /// requestNotificationPermission() for when that happens.
+    func userNotificationCenter(_ center: UNUserNotificationCenter,
+                                willPresent notification: UNNotification,
+                                withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        completionHandler([.banner, .list])
     }
 }

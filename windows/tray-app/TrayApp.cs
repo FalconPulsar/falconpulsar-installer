@@ -1005,53 +1005,38 @@ namespace FalconPulsar.Tray
         private async Task<bool> IsDockerDaemonRunning()
         {
             var (exitCode, output) = await RunWslProbeAsync(
-                $"-d {_distro} -u root -- docker info --format '{{{{.ServerVersion}}}}'");
+                $"-d {_distro} -u root", "docker info --format '{{.ServerVersion}}'");
             return exitCode == 0 && !string.IsNullOrWhiteSpace(output);
         }
 
         private async Task<bool> IsContainerRunning(string name)
         {
             var (_, output) = await RunWslProbeAsync(
-                $"-d {_distro} -u root -- docker ps --filter name={name} --filter status=running -q");
+                $"-d {_distro} -u root", $"docker ps --filter name={name} --filter status=running -q");
             return !string.IsNullOrWhiteSpace(output);
         }
 
         // A status probe through WSL, with a deadline. A wedged Docker daemon
         // makes `docker info` and `docker ps` wait forever, and so did every
-        // poll behind them. Past the deadline the probe and its children are
-        // killed and it THROWS: a probe that did not answer is neither "Docker
-        // is off" nor "stopped", so the poll fails and SafePollHealth's
+        // poll behind them. Past the deadline the probe ends on both sides
+        // (see WslCommand: the docker client inside the distro too, not only
+        // wsl.exe) and it THROWS: a probe that did not answer is neither
+        // "Docker is off" nor "stopped", so the poll fails and SafePollHealth's
         // "status unavailable" path says so, as for any other poll failure.
-        private static async Task<(int exitCode, string stdout)> RunWslProbeAsync(string arguments,
+        private static async Task<(int exitCode, string stdout)> RunWslProbeAsync(string wslOptions,
+                                                                                  string command,
                                                                                   int timeoutSeconds = 15)
         {
             try
             {
-                var psi = new ProcessStartInfo
+                var (exitCode, stdout, timedOut) = await WslCommand.RunAsync(
+                    "wsl.exe", $"{wslOptions} -- {WslCommand.Bounded(command, timeoutSeconds)}",
+                    stdin: null, timeoutSeconds);
+                if (timedOut)
                 {
-                    FileName = "wsl.exe",
-                    Arguments = arguments,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    UseShellExecute = false,
-                    CreateNoWindow = true
-                };
-                using var proc = Process.Start(psi);
-                if (proc == null) return (-1, string.Empty);
-                var stdout = proc.StandardOutput.ReadToEndAsync();
-                var stderr = proc.StandardError.ReadToEndAsync();
-                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
-                try
-                {
-                    await proc.WaitForExitAsync(cts.Token);
+                    throw new TimeoutException($"wsl.exe {wslOptions} -- {command} did not answer within {timeoutSeconds} s");
                 }
-                catch (OperationCanceledException)
-                {
-                    try { proc.Kill(entireProcessTree: true); } catch { }
-                    throw new TimeoutException($"wsl.exe {arguments} did not answer within {timeoutSeconds} s");
-                }
-                await stderr;
-                return (proc.ExitCode, await stdout);
+                return (exitCode, stdout);
             }
             catch (TimeoutException)
             {
@@ -2542,6 +2527,11 @@ namespace FalconPulsar.Tray
             }
         }
 
+        // A deadline for each of About's docker calls. About itself stops
+        // waiting after 4 s and shows "…"; this only has to make sure the
+        // call ends, so it is generous enough for a distro that is starting.
+        private const int AboutProbeSeconds = 10;
+
         private ContainerInfo GetContainerInfo(string containerName)
         {
             // Single inspect call returning all 4 fields tab-separated.
@@ -2553,7 +2543,13 @@ namespace FalconPulsar.Tray
                                "{{ index .Config.Labels \"org.opencontainers.image.created\" }}\\t" +
                                "{{ .Image }}";
             var script = $"docker inspect --format '{fmt}' {containerName} 2>/dev/null";
-            var (rc, output) = RunWslBashCaptureAsync(script).GetAwaiter().GetResult();
+            // Bounded, though About stops waiting after 4 s: this runs on a
+            // worker that carries on after that. With no deadline, a wedged
+            // daemon hung the worker on its first call for good, leaving one
+            // docker client (and a pool thread) behind per About opened. Now
+            // each of the worker's calls ends in turn, so it is done within
+            // about a minute.
+            var (rc, output) = RunWslBashCaptureAsync(script, timeoutSeconds: AboutProbeSeconds).GetAwaiter().GetResult();
             // Trim ONLY trailing newlines, NOT all whitespace. Containers
             // without any OCI labels emit "\t\t\t<imageId>" -- string.Trim()
             // would strip the leading tabs, collapsing 4 fields into 1 and
@@ -2598,63 +2594,28 @@ namespace FalconPulsar.Tray
         // actually need to share for compose-related support requests.
         private string GetComposeVersion()
         {
-            var (rc, output) = RunWslBashCaptureAsync("docker compose version --short 2>/dev/null").GetAwaiter().GetResult();
+            // Bounded for the same reason as GetContainerInfo.
+            var (rc, output) = RunWslBashCaptureAsync("docker compose version --short 2>/dev/null",
+                                                      timeoutSeconds: AboutProbeSeconds).GetAwaiter().GetResult();
             output = (output ?? string.Empty).Trim();
             if (rc != 0 || string.IsNullOrEmpty(output)) return "v2";
             return output.StartsWith("v") ? output : "v" + output;
         }
 
-        // timeoutSeconds: kill the process tree and return (-1, "") past it.
-        // 0 waits for as long as the script runs (the backup and restore
-        // scripts are long by design).
+        // timeoutSeconds: past it the script ends on both sides (bash and
+        // whatever it started inside the distro, then wsl.exe; see
+        // WslCommand) and this returns (-1, ""). 0 waits for as long as the
+        // script runs (the backup and restore scripts are long by design).
         private async Task<(int exitCode, string stdout)> RunWslBashCaptureAsync(string script,
                                                                                  int timeoutSeconds = 0)
         {
             // Run as the distro's default user (which is who owns the stack
             // in per-user installs). No -u override: that would switch to
             // `falconpulsar` which only exists in legacy installs.
-            var psi = new ProcessStartInfo
-            {
-                FileName = "wsl.exe",
-                Arguments = $"-d {_distro} -- bash",
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardInput = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                // Force UTF-8 on stdin. Without this, .NET defaults to the
-                // Windows OEM codepage (CP1252 on en-US). Non-ASCII bytes
-                // in the piped bash script (e.g. em-dashes in progress
-                // messages) get transliterated to single CP1252 bytes
-                // (0x97 for em-dash) and bash writes those verbatim,
-                // corrupting anything the script echoes into a file.
-                StandardInputEncoding = new System.Text.UTF8Encoding(false),
-            };
-            using var proc = Process.Start(psi);
-            if (proc == null) return (-1, string.Empty);
-            await proc.StandardInput.WriteAsync(script);
-            proc.StandardInput.Close();
-            var stdoutTask = proc.StandardOutput.ReadToEndAsync();
-            var stderrTask = proc.StandardError.ReadToEndAsync();
-            if (timeoutSeconds > 0)
-            {
-                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
-                try
-                {
-                    await proc.WaitForExitAsync(cts.Token);
-                }
-                catch (OperationCanceledException)
-                {
-                    try { proc.Kill(entireProcessTree: true); } catch { }
-                    return (-1, string.Empty);
-                }
-            }
-            else
-            {
-                await proc.WaitForExitAsync();
-            }
-            await stderrTask;
-            return (proc.ExitCode, await stdoutTask);
+            var bash = timeoutSeconds > 0 ? WslCommand.Bounded("bash", timeoutSeconds) : "bash";
+            var (exitCode, stdout, timedOut) = await WslCommand.RunAsync(
+                "wsl.exe", $"-d {_distro} -- {bash}", script, timeoutSeconds);
+            return timedOut ? (-1, string.Empty) : (exitCode, stdout);
         }
 
         // ────────────────────────── Configuration Backup ──────────────────────────

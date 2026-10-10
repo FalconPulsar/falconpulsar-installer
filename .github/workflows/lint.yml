@@ -195,6 +195,47 @@ jobs:
           cd macos/installer-app
           swift build -c release
 
+      - name: Menu-bar app tests
+        # The menu-bar logic that has tests (compose failure lines, backup
+        # pagination, the notification rules and their launch flow) was only
+        # ever compiled here; its tests ran when someone remembered to.
+        run: |
+          set -euo pipefail
+          cd macos/menu-bar-app
+          swift test
+
+  tray-checks:
+    name: Windows tray checks (.NET on Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Run the tray's standalone checks
+        # Each project compiles one Windows-Forms-free tray source file and
+        # checks it; they only ever ran by hand. wsl-deadline is why they run
+        # on LINUX: its GNU `timeout` checks (the Linux side of a WSL command
+        # ends a hung docker client before the Windows deadline) skip on macOS
+        # and Windows, so this is the one place they prove anything, and a
+        # skip here is a failure.
+        run: |
+          set -euo pipefail
+          dotnet run --project windows/tests/compose-failure
+          dotnet run --project windows/tests/configbackup-pagination
+          # tee, not $(...): under set -e a failed check would end the step
+          # inside the capture, before its output (which check failed) was
+          # ever printed.
+          out="$RUNNER_TEMP/wsl-deadline.out"
+          dotnet run --project windows/tests/wsl-deadline | tee "$out"
+          if ! grep -q ', 0 skipped$' "$out"; then
+            echo "::error::windows/tests/wsl-deadline skipped checks on Linux, where every one must run."
+            exit 1
+          fi
+
   notices-match-binary:
     name: THIRD_PARTY_NOTICES matches the linked binary
     runs-on: ubuntu-latest

@@ -68,6 +68,19 @@ cd console && go vet ./... && go build ./...
 
 CI runs the same commands on every push.
 
+### Unit checks
+
+```bash
+cd macos/menu-bar-app && swift test           # the macOS menu-bar app's logic
+dotnet run --project windows/tests/<name>     # one Windows tray source file each
+```
+
+The tray checks need no Windows: each compiles one Windows-Forms-free file
+from `windows/tray-app/`. The GNU `timeout` checks in `windows/tests/wsl-deadline`
+skip on macOS and Windows, so CI runs them on Linux (`tray-checks` in
+`lint.yml`), where a skip fails the job. On a machine with only a newer .NET
+runtime than the projects target, set `DOTNET_ROLL_FORWARD=Major`.
+
 ## Testing changes
 
 ### Linux installer
