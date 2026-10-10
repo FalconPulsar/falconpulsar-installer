@@ -291,7 +291,9 @@ enum InstallRunner {
             let profileFlags = "--profile ai" + (fastPathEngineEnabled ? " --profile engine" : "") + (fastPathCopilotEnabled ? " --profile copilot" : "")
             updateStep(4, .running)
             log("[info] Running: docker compose \(profileFlags) pull")
-            let (out1, pullCode) = ShellRunner.run("cd '\(stackHome)' && \(dockerPath) compose \(profileFlags) pull 2>&1", timeout: 600)
+            // No deadline: a slow link is not a hang, and the pull falls back
+            // to cached images on failure anyway.
+            let (out1, pullCode) = ShellRunner.run("cd '\(stackHome)' && \(dockerPath) compose \(profileFlags) pull 2>&1")
             log(out1)
             if pullCode != 0 {
                 log("[warn] docker compose pull exited \(pullCode) — continuing with cached images")
@@ -324,7 +326,11 @@ enum InstallRunner {
 
             updateStep(5, .running)
             log("[info] Running: docker compose \(profileFlags) up -d")
-            let (out2, code) = ShellRunner.run("cd '\(stackHome)' && \(dockerPath) compose \(profileFlags) up -d 2>&1", timeout: 180)
+            // `up` returns once Core's health check has settled, which takes
+            // up to ~3 min on a Core that never answers (compose.yml:
+            // start_period 90 s plus 5 x 15 s). Ten minutes is a backstop for
+            // a hung daemon, not a bound on a slow start.
+            let (out2, code) = ShellRunner.run("cd '\(stackHome)' && \(dockerPath) compose \(profileFlags) up -d 2>&1", timeout: 600)
             log(out2)
             if code != 0 {
                 updateStep(5, .failed)
@@ -602,7 +608,7 @@ enum InstallRunner {
         var coreHealthy = false
         var deadline = Date().addingTimeInterval(180)
         while Date() < deadline {
-            let (out, _) = ShellRunner.run("\(dockerPath) inspect -f '{{.State.Health.Status}}' falconpulsar-core 2>/dev/null")
+            let (out, _) = ShellRunner.run("\(dockerPath) inspect -f '{{.State.Health.Status}}' falconpulsar-core 2>/dev/null", timeout: 15)
             let status = out.trimmingCharacters(in: .whitespacesAndNewlines)
             if status == "healthy" { coreHealthy = true; break }
             if status == "unhealthy" { break }
@@ -645,7 +651,7 @@ enum InstallRunner {
         // on knowledge-base seeding.
         deadline = Date().addingTimeInterval(180)
         while Date() < deadline {
-            let (_, code) = ShellRunner.run("/usr/bin/curl -fsS -m 2 -o /dev/null 'http://\(gatewayHost):\(gatewayPort)/health' 2>/dev/null")
+            let (_, code) = ShellRunner.run("/usr/bin/curl -fsS -m 2 -o /dev/null 'http://\(gatewayHost):\(gatewayPort)/health' 2>/dev/null", timeout: 10)
             if code == 0 { gatewayHealthy = true; break }
             Thread.sleep(forTimeInterval: 3)
         }
@@ -655,7 +661,7 @@ enum InstallRunner {
         log("[info] AI-Gateway is healthy")
 
         // The ui container has no healthcheck — running is the bar.
-        let (uiOut, _) = ShellRunner.run("\(dockerPath) ps --filter name=falconpulsar-ui --filter status=running -q 2>/dev/null")
+        let (uiOut, _) = ShellRunner.run("\(dockerPath) ps --filter name=falconpulsar-ui --filter status=running -q 2>/dev/null", timeout: 15)
         guard !uiOut.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return "falconpulsar-ui is not running. Check: docker logs falconpulsar-ui"
         }

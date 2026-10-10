@@ -718,6 +718,12 @@ namespace FalconPulsar.Tray
         // Consecutive polls that threw. Reported in the tooltip so a tray that has
         // gone blind says so, instead of quietly showing whatever it last knew.
         private int _consecutivePollFailures;
+        // One poll at a time. The 15 s timer fires whether or not the last
+        // poll finished, and a poll stuck on a probe (WSL or Docker not
+        // answering) used to leave one more waiting poll behind every tick.
+        // A poll asked for while one runs is folded into one re-run after it.
+        private int _pollInFlight;
+        private int _pollAgain;
 
         /// <summary>
         /// PollHealth with a guarantee that nothing escapes.
@@ -729,6 +735,27 @@ namespace FalconPulsar.Tray
         /// terminate the tray, because the Tick handler is async void.
         /// </remarks>
         private async Task SafePollHealth()
+        {
+            if (Interlocked.CompareExchange(ref _pollInFlight, 1, 0) != 0)
+            {
+                Interlocked.Exchange(ref _pollAgain, 1);
+                return;
+            }
+            try
+            {
+                do
+                {
+                    Interlocked.Exchange(ref _pollAgain, 0);
+                    await PollHealthOnce();
+                } while (Interlocked.Exchange(ref _pollAgain, 0) == 1);
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _pollInFlight, 0);
+            }
+        }
+
+        private async Task PollHealthOnce()
         {
             try
             {
@@ -975,48 +1002,56 @@ namespace FalconPulsar.Tray
         // stopped" from "Docker is not running at all".
         private async Task<bool> IsDockerDaemonRunning()
         {
-            try
-            {
-                var psi = new ProcessStartInfo
-                {
-                    FileName = "wsl.exe",
-                    Arguments = $"-d {_distro} -u root -- docker info --format '{{{{.ServerVersion}}}}'",
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    UseShellExecute = false,
-                    CreateNoWindow = true
-                };
-                using var proc = Process.Start(psi);
-                var output = await proc.StandardOutput.ReadToEndAsync();
-                await proc.WaitForExitAsync();
-                return proc.ExitCode == 0 && !string.IsNullOrWhiteSpace(output);
-            }
-            catch
-            {
-                return false;
-            }
+            var (exitCode, output) = await RunWslProbeAsync(
+                $"-d {_distro} -u root -- docker info --format '{{{{.ServerVersion}}}}'");
+            return exitCode == 0 && !string.IsNullOrWhiteSpace(output);
         }
 
         private async Task<bool> IsContainerRunning(string name)
+        {
+            var (_, output) = await RunWslProbeAsync(
+                $"-d {_distro} -u root -- docker ps --filter name={name} --filter status=running -q");
+            return !string.IsNullOrWhiteSpace(output);
+        }
+
+        // A status probe through WSL, with a deadline. A wedged Docker daemon
+        // makes `docker info` and `docker ps` wait forever, and so did every
+        // poll behind them. Past the deadline the probe and its children are
+        // killed and it reads as "no" (exit code -1, no output).
+        private static async Task<(int exitCode, string stdout)> RunWslProbeAsync(string arguments,
+                                                                                  int timeoutSeconds = 15)
         {
             try
             {
                 var psi = new ProcessStartInfo
                 {
                     FileName = "wsl.exe",
-                    Arguments = $"-d {_distro} -u root -- docker ps --filter name={name} --filter status=running -q",
+                    Arguments = arguments,
                     RedirectStandardOutput = true,
+                    RedirectStandardError = true,
                     UseShellExecute = false,
                     CreateNoWindow = true
                 };
                 using var proc = Process.Start(psi);
-                var output = await proc.StandardOutput.ReadToEndAsync();
-                await proc.WaitForExitAsync();
-                return !string.IsNullOrWhiteSpace(output);
+                if (proc == null) return (-1, string.Empty);
+                var stdout = proc.StandardOutput.ReadToEndAsync();
+                var stderr = proc.StandardError.ReadToEndAsync();
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
+                try
+                {
+                    await proc.WaitForExitAsync(cts.Token);
+                }
+                catch (OperationCanceledException)
+                {
+                    try { proc.Kill(entireProcessTree: true); } catch { }
+                    return (-1, string.Empty);
+                }
+                await stderr;
+                return (proc.ExitCode, await stdout);
             }
             catch
             {
-                return false;
+                return (-1, string.Empty);
             }
         }
 
@@ -1730,26 +1765,49 @@ namespace FalconPulsar.Tray
             {
                 // Profile flags (legacy ai + optional engine): see
                 // ComposeProfileArgs.
+                // Output is captured so a failure can be reported: this used to
+                // ignore compose's exit code, so a Start that compose refused
+                // (Core running but not answering its health check:
+                // "dependency failed to start") showed nothing at all, then a
+                // yellow icon with no reason.
                 var psi = new ProcessStartInfo
                 {
                     FileName = "wsl.exe",
                     Arguments = $"-d {_distro} -- docker compose -f {_composePath} {ComposeProfileArgs} {command}",
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
                     UseShellExecute = false,
                     CreateNoWindow = true
                 };
                 using var proc = Process.Start(psi);
+                // Both streams are read while compose runs; reading one only
+                // after exit can deadlock on a full pipe.
+                var stdout = proc.StandardOutput.ReadToEndAsync();
+                var stderr = proc.StandardError.ReadToEndAsync();
                 await proc.WaitForExitAsync();
+                var output = await stdout + "\n" + await stderr;
+                if (proc.ExitCode != 0)
+                {
+                    ShowNotification(ComposeFailureTitle(command),
+                                     ComposeFailure.Summary(output, proc.ExitCode), ToolTipIcon.Error);
+                }
 
                 // Wait a moment for containers to settle, then refresh
                 await Task.Delay(3000);
-                await PollHealth();
+                await SafePollHealth();
             }
             catch (Exception ex)
             {
                 ShowNotification("Error", $"Failed to run: {ex.Message}", ToolTipIcon.Error);
-                await PollHealth();
+                await SafePollHealth();
             }
         }
+
+        private static string ComposeFailureTitle(string command) =>
+            command.StartsWith("up") ? "Start Stack failed"
+            : command.StartsWith("down") ? "Stop Stack failed"
+            : command.StartsWith("restart") ? "Restart Stack failed"
+            : "FalconPulsar action failed";
 
         /// <summary>
         /// Every destination is a route in the unified shell.

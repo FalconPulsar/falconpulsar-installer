@@ -8,8 +8,17 @@ enum ShellRunner {
     /// every component is hard-coded — never with user input.
     /// For anything that mixes user input with executables, use `runArgs`
     /// (no shell parsing, every argument passed via argv).
+    ///
+    /// `timeout` is a deadline for a command that may hang (one that talks to
+    /// a Docker daemon which can wedge). A command still running at it gets
+    /// SIGTERM, then SIGKILL two seconds later, and the result is exit code
+    /// `timedOutExitCode` with whatever it had printed. nil, the default,
+    /// waits for as long as the command runs. The parameter used to default
+    /// to 10 s and was never enforced, so every caller that passes none was
+    /// written against "wait as long as it takes" (a `du -sh` of a large data
+    /// directory, an `open -a`).
     @discardableResult
-    static func run(_ command: String, timeout: TimeInterval = 10) -> (output: String, exitCode: Int32) {
+    static func run(_ command: String, timeout: TimeInterval? = nil) -> (output: String, exitCode: Int32) {
         let process = Process()
         let pipe = Pipe()
         process.standardOutput = pipe
@@ -21,16 +30,70 @@ enum ShellRunner {
         process.arguments = ["-c", fullCmd]
         process.launchPath = "/bin/bash"
 
+        let collector = OutputCollector(pipe)
         do {
             try process.run()
-            process.waitUntilExit()
         } catch {
             return ("", -1)
         }
+        return collector.finish(process, timeout: timeout)
+    }
 
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        let output = String(data: data, encoding: .utf8) ?? ""
-        return (output, process.terminationStatus)
+    /// Exit code `run`/`runArgs` report for a command killed at its deadline.
+    static let timedOutExitCode: Int32 = -2
+
+    /// Reads a child's combined output WHILE it runs. Reading only after it
+    /// exits deadlocks once the child writes more than the 64 KB pipe buffer
+    /// (a long `compose pull`): it blocks on the write, so it never exits and
+    /// `waitUntilExit` never returns.
+    private final class OutputCollector {
+        private let lock = NSLock()
+        private var data = Data()
+        private let eof = DispatchSemaphore(value: 0)
+
+        init(_ pipe: Pipe) {
+            pipe.fileHandleForReading.readabilityHandler = { [self] handle in
+                let chunk = handle.availableData
+                if chunk.isEmpty {
+                    handle.readabilityHandler = nil
+                    eof.signal()
+                    return
+                }
+                lock.lock(); data.append(chunk); lock.unlock()
+            }
+        }
+
+        func finish(_ process: Process, timeout: TimeInterval?) -> (output: String, exitCode: Int32) {
+            var timedOut = false
+            if let timeout = timeout, !ShellRunner.waitForExit(process, within: timeout) {
+                timedOut = true
+                process.terminate()
+                if !ShellRunner.waitForExit(process, within: 2) {
+                    kill(process.processIdentifier, SIGKILL)
+                }
+            }
+            process.waitUntilExit()
+            // EOF arrives once every holder of the pipe has closed it. A
+            // background job the command started (`colima start &`) or a
+            // grandchild a killed shell left behind can keep it open, so the
+            // wait for the rest of the output is bounded.
+            _ = eof.wait(timeout: .now() + (timedOut ? 2 : 30))
+            lock.lock()
+            let output = String(data: data, encoding: .utf8) ?? ""
+            lock.unlock()
+            return (output, timedOut ? ShellRunner.timedOutExitCode : process.terminationStatus)
+        }
+    }
+
+    /// True once `process` has exited, false if it is still running after
+    /// `seconds`.
+    fileprivate static func waitForExit(_ process: Process, within seconds: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(seconds)
+        while process.isRunning {
+            if Date() >= deadline { return false }
+            usleep(20_000)
+        }
+        return true
     }
 
     /// SEC-010: argv-based exec. Every argument is passed verbatim to the
@@ -47,7 +110,8 @@ enum ShellRunner {
     static func runArgs(_ launchPath: String,
                         _ args: [String],
                         stdin: String? = nil,
-                        env: [String: String]? = nil) -> (output: String, exitCode: Int32) {
+                        env: [String: String]? = nil,
+                        timeout: TimeInterval? = nil) -> (output: String, exitCode: Int32) {
         let process = Process()
         let outPipe = Pipe()
         process.standardOutput = outPipe
@@ -69,6 +133,7 @@ enum ShellRunner {
             stdinPipe = p
         }
 
+        let collector = OutputCollector(outPipe)
         do {
             try process.run()
         } catch {
@@ -80,10 +145,7 @@ enum ShellRunner {
             try? p.fileHandleForWriting.close()
         }
 
-        process.waitUntilExit()
-        let data = outPipe.fileHandleForReading.readDataToEndOfFile()
-        let output = String(data: data, encoding: .utf8) ?? ""
-        return (output, process.terminationStatus)
+        return collector.finish(process, timeout: timeout)
     }
 
     static func findDocker() -> String? {
@@ -108,7 +170,9 @@ enum ShellRunner {
     static func isDockerRunning() -> Bool {
         guard let docker = findDocker() else { return false }
         // No user input — argv-style with a single docker subcommand.
-        let (_, code) = runArgs(docker, ["info"])
+        // Bounded: a wedged daemon makes `docker info` hang, which would
+        // leave the installer's detection spinning.
+        let (_, code) = runArgs(docker, ["info"], timeout: 15)
         return code == 0
     }
 

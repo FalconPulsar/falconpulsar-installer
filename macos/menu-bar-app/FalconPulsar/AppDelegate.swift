@@ -34,6 +34,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var dockerDaemonUp = false
     private var apiHealthy = false
     private var status: StackStatus = .unknown
+    // One poll at a time. The 15 s timer starts a poll whether or not the
+    // last one has finished, and a poll stuck on a probe (Docker or Core not
+    // answering) used to leave one more blocked thread behind every tick. A
+    // poll asked for while one runs is folded into a single re-run after it.
+    private let pollLock = NSLock()
+    private var pollInFlight = false
+    private var pollAgain = false
 
     private let composePath = "\(NSHomeDirectory())/falconpulsar/compose.yml"
     private let homeDir = "\(NSHomeDirectory())/falconpulsar"
@@ -499,88 +506,113 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Health Polling
 
     private func pollHealth() {
+        pollLock.lock()
+        if pollInFlight {
+            pollAgain = true
+            pollLock.unlock()
+            return
+        }
+        pollInFlight = true
+        pollLock.unlock()
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self = self else { return }
+            self.pollOnce()
+            self.pollLock.lock()
+            let again = self.pollAgain
+            self.pollAgain = false
+            self.pollInFlight = false
+            self.pollLock.unlock()
+            if again { self.pollHealth() }
+        }
+    }
 
-            // Check the Docker daemon itself BEFORE asking about containers.
-            // If Docker Desktop / Colima / OrbStack is off, every container
-            // query below returns false and we used to report "Stopped" —
-            // confusing because the user might think FalconPulsar is broken
-            // when the real cause is that Docker isn't running.
-            self.dockerDaemonUp = self.isDockerDaemonRunning()
+    /// One pass over Docker, the containers and Core's API. Runs on a
+    /// background queue; only pollHealth() calls it.
+    private func pollOnce() {
+        // Check the Docker daemon itself BEFORE asking about containers.
+        // If Docker Desktop / Colima / OrbStack is off, every container
+        // query below returns false and we used to report "Stopped" —
+        // confusing because the user might think FalconPulsar is broken
+        // when the real cause is that Docker isn't running.
+        self.dockerDaemonUp = self.isDockerDaemonRunning()
 
-            // The optional AI Engine only participates when enabled in .env;
-            // re-read the flag each pass so toggling it doesn't require an
-            // app restart.
-            let engineExpected = self.engineEnabled
-            let copilotExpected = self.copilotEnabled
+        // The optional AI Engine only participates when enabled in .env;
+        // re-read the flag each pass so toggling it doesn't require an
+        // app restart.
+        let engineExpected = self.engineEnabled
+        let copilotExpected = self.copilotEnabled
 
-            if self.dockerDaemonUp {
-                self.coreRunning = self.isContainerRunning("falconpulsar-core")
-                self.uiRunning = self.isContainerRunning("falconpulsar-ui")
-                self.gatewayRunning = self.isContainerRunning("falconpulsar-ai-gateway")
-                // Probed REGARDLESS of the .env flag: the flag decides what
-                // to SHOW, the container decides what is TRUE. Gating the
-                // probe on the flag means an unreadable .env renders a
-                // healthy container as a red X — the app accusing a running
-                // service of being down. Mirrors TrayApp.cs on Windows.
-                self.engineRunning = self.isContainerRunning("falconpulsar-ai-engine")
-                self.copilotRunning = self.isContainerRunning("falconpulsar-copilot")
-                self.apiHealthy = self.isAPIHealthy()
+        if self.dockerDaemonUp {
+            self.coreRunning = self.isContainerRunning("falconpulsar-core")
+            self.uiRunning = self.isContainerRunning("falconpulsar-ui")
+            self.gatewayRunning = self.isContainerRunning("falconpulsar-ai-gateway")
+            // Probed REGARDLESS of the .env flag: the flag decides what
+            // to SHOW, the container decides what is TRUE. Gating the
+            // probe on the flag means an unreadable .env renders a
+            // healthy container as a red X — the app accusing a running
+            // service of being down. Mirrors TrayApp.cs on Windows.
+            self.engineRunning = self.isContainerRunning("falconpulsar-ai-engine")
+            self.copilotRunning = self.isContainerRunning("falconpulsar-copilot")
+            self.apiHealthy = self.isAPIHealthy()
+        } else {
+            self.coreRunning = false
+            self.uiRunning = false
+            self.gatewayRunning = false
+            self.engineRunning = false
+            self.copilotRunning = false
+            self.apiHealthy = false
+        }
+
+        let prev = self.status
+        if !self.dockerDaemonUp {
+            self.status = .dockerDown
+        } else {
+            let allExpectedRunning = self.coreRunning && self.uiRunning && self.gatewayRunning
+                && (!engineExpected || self.engineRunning)
+                && (!copilotExpected || self.copilotRunning)
+            let anyRunning = self.coreRunning || self.uiRunning || self.gatewayRunning
+                || self.engineRunning || self.copilotRunning
+            if allExpectedRunning && self.apiHealthy {
+                self.status = .running
+            } else if allExpectedRunning {
+                self.status = .partiallyRunning
+            } else if anyRunning {
+                self.status = .partiallyRunning
             } else {
-                self.coreRunning = false
-                self.uiRunning = false
-                self.gatewayRunning = false
-                self.engineRunning = false
-                self.copilotRunning = false
-                self.apiHealthy = false
+                self.status = .stopped
             }
+        }
 
-            let prev = self.status
-            if !self.dockerDaemonUp {
-                self.status = .dockerDown
-            } else {
-                let allExpectedRunning = self.coreRunning && self.uiRunning && self.gatewayRunning
-                    && (!engineExpected || self.engineRunning)
-                    && (!copilotExpected || self.copilotRunning)
-                let anyRunning = self.coreRunning || self.uiRunning || self.gatewayRunning
-                    || self.engineRunning || self.copilotRunning
-                if allExpectedRunning && self.apiHealthy {
-                    self.status = .running
-                } else if allExpectedRunning {
-                    self.status = .partiallyRunning
-                } else if anyRunning {
-                    self.status = .partiallyRunning
-                } else {
-                    self.status = .stopped
-                }
-            }
+        DispatchQueue.main.async {
+            self.updateIcon(self.status)
+            self.updateMenu()
 
-            DispatchQueue.main.async {
-                self.updateIcon(self.status)
-                self.updateMenu()
-
-                if prev != .unknown && prev != self.status {
-                    self.showNotification()
-                }
+            if prev != .unknown && prev != self.status {
+                self.showNotification()
             }
         }
     }
 
     /// Probe the Docker daemon directly. True when `docker info` succeeds,
     /// false if Docker Desktop / Colima / OrbStack is off.
+    // Every probe is bounded, and runs under `exec` so the deadline's kill
+    // reaches the probe itself rather than only the bash around it. A Core
+    // whose serving thread is wedged still completes the TCP handshake, so a
+    // curl with no timeout waited on it forever; a wedged Docker daemon does
+    // the same to `docker ps`.
     private func isDockerDaemonRunning() -> Bool {
-        let output = shell("docker info --format '{{.ServerVersion}}' 2>/dev/null")
+        let output = shell("exec docker info --format '{{.ServerVersion}}' 2>/dev/null", timeout: 15)
         return !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private func isContainerRunning(_ name: String) -> Bool {
-        let output = shell("docker ps --filter name=\(name) --filter status=running -q 2>/dev/null")
+        let output = shell("exec docker ps --filter name=\(name) --filter status=running -q 2>/dev/null", timeout: 15)
         return !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private func isAPIHealthy() -> Bool {
-        let output = shell("curl -sf http://localhost:\(restPort)/api/v1/health 2>/dev/null")
+        let output = shell("exec curl -sf --connect-timeout 3 --max-time 5 http://localhost:\(restPort)/api/v1/health 2>/dev/null",
+                           timeout: 10)
         return !output.isEmpty
     }
 
@@ -730,38 +762,52 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func startStack() {
-        updateIcon(.partiallyRunning)
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            guard let self = self else { return }
-            // Profile flags: see composeProfileArgs().
-            let (bin, argv) = self.dockerInvocation(["compose"] + self.composeProfileArgs() + ["up", "-d"])
-            _ = self.runArgs(bin, argv, cwd: self.homeDir)
-            sleep(3)
-            self.pollHealth()
-        }
+        runStackAction("Start Stack failed", ["up", "-d"], settle: 3)
     }
 
     @objc func stopStack() {
+        runStackAction("Stop Stack failed", ["down"], settle: 2)
+    }
+
+    @objc func restartStack() {
+        runStackAction("Restart Stack failed", ["restart"], settle: 3)
+    }
+
+    /// Runs one compose action off the main thread and SAYS when it fails.
+    /// These used to discard compose's exit status and output, so a Start
+    /// that compose refused (Core running but not answering its health check:
+    /// "dependency failed to start") looked like nothing at all, followed some
+    /// seconds later by a yellow icon with no reason.
+    private func runStackAction(_ failureTitle: String, _ composeArgs: [String], settle: UInt32) {
         updateIcon(.partiallyRunning)
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
             // Profile flags: see composeProfileArgs().
-            let (bin, argv) = self.dockerInvocation(["compose"] + self.composeProfileArgs() + ["down"])
-            _ = self.runArgs(bin, argv, cwd: self.homeDir)
-            sleep(2)
+            let (bin, argv) = self.dockerInvocation(["compose"] + self.composeProfileArgs() + composeArgs)
+            let result = self.runArgsStatus(bin, argv, cwd: self.homeDir)
+            if result.status != 0 {
+                self.reportActionFailure(failureTitle,
+                                         ComposeFailure.summary(output: result.output, status: result.status))
+            }
+            sleep(settle)
             self.pollHealth()
         }
     }
 
-    @objc func restartStack() {
-        updateIcon(.partiallyRunning)
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            guard let self = self else { return }
-            // Profile flags: see composeProfileArgs().
-            let (bin, argv) = self.dockerInvocation(["compose"] + self.composeProfileArgs() + ["restart"])
-            _ = self.runArgs(bin, argv, cwd: self.homeDir)
-            sleep(3)
-            self.pollHealth()
+    /// A notification when the person allows them; otherwise an alert, so a
+    /// failed action is never silent.
+    private func reportActionFailure(_ title: String, _ message: String) {
+        let center = UNUserNotificationCenter.current()
+        center.getNotificationSettings { [weak self] settings in
+            switch settings.authorizationStatus {
+            case .authorized, .provisional:
+                let content = UNMutableNotificationContent()
+                content.title = title
+                content.body = message
+                center.add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
+            default:
+                DispatchQueue.main.async { self?.showSimpleAlert(title: title, message: message) }
+            }
         }
     }
 
@@ -2087,7 +2133,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// deadlocks once the child outgrows the 64 KB pipe buffer, and any child
     /// that must outlive a hiccup in this app (uninstall.sh in particular)
     /// needs a reader that keeps the pipe open for its entire lifetime.
-    private func drainAndWait(_ process: Process, _ pipe: Pipe) -> String {
+    ///
+    /// With a `timeout`, a child still running at the deadline gets SIGTERM,
+    /// then SIGKILL two seconds later, and the result is "" (a probe that did
+    /// not answer in time answered nothing). The wait for the pipe to close is
+    /// bounded too, because a grandchild may hold it open after the kill.
+    private func drainAndWait(_ process: Process, _ pipe: Pipe, timeout: TimeInterval? = nil) -> String {
         var data = Data()
         let drained = DispatchSemaphore(value: 0)
         let handle = pipe.fileHandleForReading
@@ -2095,9 +2146,28 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             data = handle.readDataToEndOfFile()
             drained.signal()
         }
+        if let timeout = timeout, !Self.waitForExit(process, within: timeout) {
+            process.terminate()
+            if !Self.waitForExit(process, within: 2) {
+                kill(process.processIdentifier, SIGKILL)
+            }
+            process.waitUntilExit()
+            _ = drained.wait(timeout: .now() + 2)
+            return ""
+        }
         process.waitUntilExit()
         drained.wait()
         return String(data: data, encoding: .utf8) ?? ""
+    }
+
+    /// True once `process` has exited, false if it still runs after `seconds`.
+    private static func waitForExit(_ process: Process, within seconds: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(seconds)
+        while process.isRunning {
+            if Date() >= deadline { return false }
+            usleep(20_000)
+        }
+        return true
     }
 
     /// Legacy helper that runs a command string via `/bin/bash -c`. Subject to
@@ -2106,7 +2176,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// Kept for genuinely string-shaped commands that need pipes/redirection
     /// (e.g. `xargs docker rmi`).
     @discardableResult
-    private func shell(_ command: String) -> String {
+    private func shell(_ command: String, timeout: TimeInterval? = nil) -> String {
         let process = Process()
         let pipe = Pipe()
         process.standardOutput = pipe
@@ -2115,7 +2185,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         process.arguments = ["-c", "\(pathExport); \(command)"]
         process.launchPath = "/bin/bash"
         process.launch()
-        return drainAndWait(process, pipe)
+        return drainAndWait(process, pipe, timeout: timeout)
     }
 
     /// Argv-form runner: launches `launchPath` with `args` directly, with no

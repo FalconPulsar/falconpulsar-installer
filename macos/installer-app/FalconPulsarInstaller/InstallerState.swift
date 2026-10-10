@@ -244,13 +244,13 @@ class InstallerState: ObservableObject {
             }
 
             if let docker = ShellRunner.findDocker() {
-                let (psAll, _) = ShellRunner.run("\(docker) ps -a --filter name=falconpulsar- --format '{{.Names}}' 2>/dev/null")
+                let (psAll, _) = ShellRunner.run("\(docker) ps -a --filter name=falconpulsar- --format '{{.Names}}' 2>/dev/null", timeout: 15)
                 found.containers = psAll.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
 
-                let (psRun, _) = ShellRunner.run("\(docker) ps --filter name=falconpulsar- --format '{{.Names}}' 2>/dev/null")
+                let (psRun, _) = ShellRunner.run("\(docker) ps --filter name=falconpulsar- --format '{{.Names}}' 2>/dev/null", timeout: 15)
                 found.runningContainers = psRun.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
 
-                let (imgs, _) = ShellRunner.run("\(docker) images --filter reference='*falconpulsar*' --format '{{.Repository}}:{{.Tag}}  {{.Size}}' 2>/dev/null")
+                let (imgs, _) = ShellRunner.run("\(docker) images --filter reference='*falconpulsar*' --format '{{.Repository}}:{{.Tag}}  {{.Size}}' 2>/dev/null", timeout: 15)
                 found.images = imgs.split(separator: "\n").map(String.init).filter { !$0.isEmpty }
             }
 
