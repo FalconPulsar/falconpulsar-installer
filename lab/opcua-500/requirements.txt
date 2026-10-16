@@ -1,2 +1,2 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-asyncua==1.1.6
+asyncua==2.1.0
