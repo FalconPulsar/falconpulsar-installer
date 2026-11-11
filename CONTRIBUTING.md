@@ -72,9 +72,15 @@ CI runs the same commands on every push.
 ### Unit checks
 
 ```bash
+cd console && go test ./...                   # the fp CLI's logic
 cd macos/menu-bar-app && swift test           # the macOS menu-bar app's logic
 dotnet run --project windows/tests/<name>     # one Windows tray source file each
 ```
+
+CI runs the Go tests on every push (`fp-go-tests` in `lint.yml`), and the
+backup package once more as root, for the one restore test that needs it.
+The round trips against a real server stay out of both: they skip without
+`FP_E2E_BASE` or need the `e2e` build tag.
 
 The tray checks need no Windows: each compiles one Windows-Forms-free file
 from `windows/tray-app/`. The GNU `timeout` checks in `windows/tests/wsl-deadline`

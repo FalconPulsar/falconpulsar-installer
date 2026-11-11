@@ -273,6 +273,62 @@ jobs:
           fi
           echo "notices match the linked set ($(wc -l < /tmp/linked-sorted.txt) modules)"
 
+  fp-go-tests:
+    name: fp Go tests (vet + test)
+    runs-on: ubuntu-latest
+    env:
+      # As fp is built (build-fp.yml): no cgo.
+      CGO_ENABLED: '0'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          # The version line the fp binaries are built with (build-fp.yml).
+          go-version: '1.26'
+          cache-dependency-path: console/go.sum
+
+      - name: go vet, for every system fp is built for
+        # go vet reads the files of one system at a time, and fp has
+        # Windows-only and non-Linux files (internal/databackup). Vetting
+        # for Linux alone would never look at them.
+        working-directory: console
+        run: |
+          set -euo pipefail
+          for os in linux darwin windows; do
+            echo "go vet, GOOS=$os"
+            GOOS=$os go vet ./...
+          done
+
+      - name: go test
+        # The build workflows only prove that fp compiles: until this job,
+        # its tests ran when someone remembered to run them. -count=1 runs
+        # them every time instead of trusting a cached result.
+        #
+        # The round trips against a real server stay out: they skip without
+        # FP_E2E_BASE (internal/configbackup) or need the e2e build tag
+        # (internal/databackup).
+        working-directory: console
+        run: go test -count=1 ./...
+
+      - name: go test again, the backup package as root
+        # One restore test runs only as root (restored files must go to the
+        # user the services run as, not to root) and skips otherwise. The
+        # test binary is built as the runner's user and only run under sudo,
+        # so nothing in the Go caches ends up owned by root.
+        working-directory: console/internal/databackup
+        run: |
+          set -euo pipefail
+          go test -c -o "$RUNNER_TEMP/databackup.test" .
+          sudo "$RUNNER_TEMP/databackup.test"
+
+      - name: go vet, the Windows fp.exe wrapper
+        # A module of its own (windows/fp-wrapper) with no tests: vet is
+        # what there is to run.
+        working-directory: windows/fp-wrapper
+        run: GOOS=windows GOARCH=amd64 go vet ./...
+
   icon-sync:
     name: icon sites match icons.def
     runs-on: ubuntu-latest
