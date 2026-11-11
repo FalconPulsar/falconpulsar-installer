@@ -42,7 +42,8 @@ reference, and a list of real-world gotchas that will save you hours.
 Depending on which pieces you touch, you'll need some of these installed:
 
 - **Bash 4.0+ and `shellcheck`** — for every `*.sh` file in the repo
-- **Go 1.22+** — for `console/` (the `fp` CLI) and `windows/fp-wrapper/`
+- **Go 1.26+** — for `console/` (the `fp` CLI) and `windows/fp-wrapper/`.
+  `console/go.mod` names the exact minimum.
 - **Swift toolchain (Xcode 15+)** — for `macos/installer-app/` and
   `macos/menu-bar-app/`. macOS only.
 - **.NET 8 SDK** — for `windows/tray-app/`. Works on any OS for builds;
