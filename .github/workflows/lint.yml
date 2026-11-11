@@ -206,7 +206,17 @@ jobs:
 
   tray-checks:
     name: Windows tray checks (.NET on Linux)
-    runs-on: ubuntu-latest
+    # On two Ubuntus, named and not ubuntu-latest, because their `timeout`
+    # differs and the tray's Linux-side deadline (WslCommand) stands on it.
+    # 24.04 has GNU's, as the distro the installer sets up does. 26.04 has
+    # the uutils one, which a distro the installer accepts can have too: its
+    # SIGKILL reaches the command but not what the command started
+    # (uutils/coreutils#15768), and wsl-deadline says so as a known gap.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-26.04]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -218,7 +228,7 @@ jobs:
       - name: Run the tray's standalone checks
         # Each project compiles one Windows-Forms-free tray source file and
         # checks it; they only ever ran by hand. wsl-deadline is why they run
-        # on LINUX: its GNU `timeout` checks (the Linux side of a WSL command
+        # on LINUX: its `timeout` checks (the Linux side of a WSL command
         # ends a hung docker client before the Windows deadline) skip on macOS
         # and Windows, so this is the one place they prove anything, and a
         # skip here is a failure.
