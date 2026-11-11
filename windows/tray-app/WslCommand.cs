@@ -18,8 +18,9 @@ namespace FalconPulsar.Tray
     /// went on waiting: every 15 s poll could leave one more hung client
     /// behind. So a command with a deadline is wrapped in coreutils `timeout`,
     /// which ends it and its process group inside the distro a little before
-    /// the Windows deadline. The Windows kill stays, as the backstop for
-    /// wsl.exe or the distro itself not answering.
+    /// the Windows deadline (with one gap on the uutils `timeout`, see
+    /// <see cref="LinuxTimedOut"/>). The Windows kill stays, as the backstop
+    /// for wsl.exe or the distro itself not answering.
     ///
     /// No Windows Forms here, so windows/tests/wsl-deadline compiles and runs
     /// this file on any OS.
@@ -41,15 +42,23 @@ namespace FalconPulsar.Tray
         /// `timeout -k 2 &lt;n&gt; &lt;command&gt;`, for the Linux side of a
         /// command whose Windows deadline is <paramref name="windowsSeconds"/>.
         /// Every distro the installer accepts (Ubuntu, Debian, RHEL family,
-        /// Fedora, openSUSE) ships GNU coreutils, which has it.
+        /// Fedora, openSUSE) ships a coreutils `timeout` that takes this:
+        /// GNU's, or on Ubuntu 26.04 the uutils one.
         /// </summary>
         public static string Bounded(string command, int windowsSeconds) =>
             $"timeout -k {KillAfterSeconds} {LinuxSeconds(windowsSeconds)} {command}";
 
         /// <summary>
         /// How `timeout` says it ended the command: 124 when SIGTERM did it,
-        /// 137 (128 + SIGKILL) when the command outlived that and the kill
-        /// took the whole group. wsl.exe passes the code through.
+        /// 137 (128 + SIGKILL) when the command outlived that and was killed.
+        /// wsl.exe passes the code through.
+        ///
+        /// The SIGTERM goes to the command's whole process group. So does
+        /// GNU's SIGKILL. The uutils `timeout` of Ubuntu 26.04 (0.10.0) sends
+        /// its SIGKILL to the command alone, a bug reported as
+        /// uutils/coreutils#15768. A status probe is one docker client, so it
+        /// ends either way. What a bash script started stays behind there
+        /// only if it outlived the SIGTERM as well.
         /// </summary>
         public static bool LinuxTimedOut(int exitCode) => exitCode == 124 || exitCode == 137;
 

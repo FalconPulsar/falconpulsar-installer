@@ -83,10 +83,12 @@ The round trips against a real server stay out of both: they skip without
 `FP_E2E_BASE` or need the `e2e` build tag.
 
 The tray checks need no Windows: each compiles one Windows-Forms-free file
-from `windows/tray-app/`. The GNU `timeout` checks in `windows/tests/wsl-deadline`
+from `windows/tray-app/`. The `timeout` checks in `windows/tests/wsl-deadline`
 skip on macOS and Windows, so CI runs them on Linux (`tray-checks` in
-`lint.yml`), where a skip fails the job. On a machine with only a newer .NET
-runtime than the projects target, set `DOTNET_ROLL_FORWARD=Major`.
+`lint.yml`), where a skip fails the job. It runs them on Ubuntu 24.04 and on
+26.04, because their `timeout` is not the same program. On a machine with
+only a newer .NET runtime than the projects target, set
+`DOTNET_ROLL_FORWARD=Major`.
 
 ## Testing changes
 

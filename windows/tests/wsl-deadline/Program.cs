@@ -11,9 +11,10 @@ using FalconPulsar.Tray;
 
 // Standalone checks for the tray's WSL deadline (WslCommand), with no external
 // test dependencies. /bin/sh stands in for wsl.exe: what is under test is the
-// runner and the `timeout` wrap, not WSL. The checks that need GNU `timeout`
-// run where it exists (Linux, or inside a WSL distro) and say "skip" elsewhere;
-// macOS does not ship it.
+// runner and the `timeout` wrap, not WSL. The checks that need coreutils
+// `timeout` run where it exists (Linux, or inside a WSL distro) and say "skip"
+// elsewhere; macOS does not ship it. A distro has one of two, GNU's or the
+// uutils one (Ubuntu 26.04), and CI runs these checks on both.
 // Run: dotnet run --project windows/tests/wsl-deadline
 internal static class Program
 {
@@ -32,14 +33,16 @@ internal static class Program
         else
         {
             await Runner();
-            if (await HasGnuTimeout())
+            string timeoutKind = await TimeoutKind();
+            if (timeoutKind != null)
             {
-                await LinuxSide();
+                await LinuxSide(timeoutKind);
             }
             else
             {
-                Skip("the Linux side ends a hung command before Windows does", "no GNU timeout on PATH");
-                Skip("a command that ignores SIGTERM is killed with its group", "no GNU timeout on PATH");
+                Skip("the Linux side ends a hung command before Windows does", "no coreutils timeout on PATH");
+                Skip("a command that ignores SIGTERM is killed two seconds later", "no coreutils timeout on PATH");
+                Skip(TakesTheGroup, "no coreutils timeout on PATH");
             }
         }
 
@@ -143,7 +146,9 @@ internal static class Program
         }
     }
 
-    private static async Task LinuxSide()
+    private const string TakesTheGroup = "the kill takes what the command started";
+
+    private static async Task LinuxSide(string timeoutKind)
     {
         const int windows = 5;
         var watch = Stopwatch.StartNew();
@@ -153,29 +158,66 @@ internal static class Program
         Check("the Linux side ends a hung command before Windows does",
               hung == (124, string.Empty, true) && watch.Elapsed < TimeSpan.FromSeconds(windows));
 
-        // A client that ignores SIGTERM: the SIGKILL two seconds later takes
-        // it. A script file keeps the quoting readable.
+        // A client that ignores SIGTERM, with a child of its own that does
+        // too: the SIGKILL two seconds later takes it. A script file keeps
+        // the quoting readable. The child writes to /dev/null so that, where
+        // it is left running, it does not hold this run's output pipes open
+        // (wsl.exe stands between them in the tray; /bin/sh here does not).
         const int windows2 = 6;
-        string script = Path.Combine(Path.GetTempPath(), "fp-wsl-deadline-" + Guid.NewGuid().ToString("N") + ".sh");
+        string stem = Path.Combine(Path.GetTempPath(), "fp-wsl-deadline-" + Guid.NewGuid().ToString("N"));
+        string script = stem + ".sh";
+        string pidFile = stem + ".pid";
         try
         {
-            File.WriteAllText(script, WslCommand.Bounded("sh -c 'trap \"\" TERM; sleep 30'", windows2) + "\n");
+            File.WriteAllText(script,
+                WslCommand.Bounded($"sh -c 'trap \"\" TERM; sleep 30 >/dev/null 2>&1 & echo $! > {pidFile}; wait'", windows2) + "\n");
             watch.Restart();
             var stubborn = await WslCommand.RunAsync("/bin/sh", script, null, windows2);
             watch.Stop();
-            Check("a command that ignores SIGTERM is killed with its group",
+            Check("a command that ignores SIGTERM is killed two seconds later",
                   stubborn == (137, string.Empty, true) && watch.Elapsed < TimeSpan.FromSeconds(windows2));
+
+            // The child is in the command's process group. GNU `timeout`
+            // kills the group. The uutils one sends its SIGKILL to the
+            // command alone (uutils/coreutils#15768) and the child is left:
+            // said as a known gap, not a failure, and an ordinary pass again
+            // once a fixed version is installed.
+            int child = 0;
+            bool started = File.Exists(pidFile) && int.TryParse(File.ReadAllText(pidFile).Trim(), out child);
+            if (!started)
+            {
+                Check(TakesTheGroup, false);
+                return;
+            }
+            bool gone = await GoneWithin(child, TimeSpan.FromSeconds(3));
+            if (gone || timeoutKind == "GNU")
+            {
+                Check(TakesTheGroup, gone);
+            }
+            else
+            {
+                KnownGap(TakesTheGroup, "uutils timeout kills the command alone: uutils/coreutils#15768");
+            }
+            if (!gone)
+            {
+                try { Process.GetProcessById(child).Kill(); } catch { }
+            }
         }
         finally
         {
             File.Delete(script);
+            File.Delete(pidFile);
         }
     }
 
-    private static async Task<bool> HasGnuTimeout()
+    // "GNU", "uutils", or null where there is no coreutils timeout to check.
+    private static async Task<string> TimeoutKind()
     {
         var probe = await WslCommand.RunAsync("/bin/sh", "-c \"timeout --version\"", null, 0);
-        return probe.exitCode == 0 && probe.stdout.Contains("GNU coreutils");
+        if (probe.exitCode != 0) return null;
+        if (probe.stdout.Contains("GNU coreutils")) return "GNU";
+        if (probe.stdout.Contains("uutils")) return "uutils";
+        return null;
     }
 
     // Gone, or a zombie waiting to be reaped: either way no longer running.
@@ -202,5 +244,12 @@ internal static class Program
     {
         skipped++;
         Console.WriteLine($"skip {name} ({why})");
+    }
+
+    // A check that ran and met a gap that is known, and reported where it can
+    // be fixed. Neither a failure nor a skip: the line says what and why.
+    private static void KnownGap(string name, string why)
+    {
+        Console.WriteLine($"gap  {name} ({why})");
     }
 }
