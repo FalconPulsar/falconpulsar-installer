@@ -732,6 +732,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             .trimmingCharacters(in: .whitespaces).lowercased() == "true"
     }
 
+    /// Optional outside assistant service (compose profile "mcp"). It has no
+    /// FP_*_ENABLED flag: "mcp" in COMPOSE_PROFILES is the switch.
+    private var mcpEnabled: Bool {
+        let raw = (envValue("COMPOSE_PROFILES") ?? "")
+            .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+        for part in raw.components(separatedBy: ",") {
+            if part.trimmingCharacters(in: .whitespaces).lowercased() == "mcp" { return true }
+        }
+        return false
+    }
+
     /// Automatic update CHECKING flag. Absent or anything other than
     /// "true" means OFF — the safe default: no timers, no background
     /// network traffic. Same trim + case-insensitive treatment as
@@ -828,6 +839,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         var args = ["--profile", "ai"]
         if engineEnabled { args += ["--profile", "engine"] }
         if copilotEnabled { args += ["--profile", "copilot"] }
+        if mcpEnabled { args += ["--profile", "mcp"] }
         return args
     }
 
@@ -2091,7 +2103,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // everything regardless of the current enable state. Do NOT swap this
         // for composeProfileArgs() (which gates --profile engine on the live
         // enable flag); this mirrors the shared uninstall strategy.
-        let teardownProfiles = ["--profile", "ai", "--profile", "engine", "--profile", "copilot"]
+        let teardownProfiles = ["--profile", "ai", "--profile", "engine", "--profile", "copilot", "--profile", "mcp"]
 
         // 1. compose down (plus --volumes on purge).
         var downArgs = ["compose"] + teardownProfiles + ["down", "--remove-orphans"]

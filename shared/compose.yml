@@ -41,6 +41,11 @@
 #                       unset, ai-gateway rejects /api/v1/bridge/* with 503
 #                       (SEC-001 fail-closed). Rotate by overwriting in
 #                       .env and `docker compose up -d` — no rebuild needed.
+#   FP_MCP_TOKEN        Shared internal-only secret between the outside
+#                       assistant service (profile "mcp") and ai-gateway.
+#                       Generated at install time like FP_BRIDGE_TOKEN. It
+#                       opens only the gateway's /internal/mcp/v1/* routes;
+#                       if unset, the gateway answers those with 503.
 #   FP_ALLOWED_ORIGINS  Comma-separated CORS allowlist for the AI Gateway.
 #                       Empty falls back to the dev defaults baked into
 #                       main.py (localhost UI + tauri shell). Set when the
@@ -54,6 +59,9 @@
 #
 # Compose profiles (opt-in; a default `docker compose up` does not start them):
 #   copilot  — Command Center (installer sets COMPOSE_PROFILES when enabled)
+#   mcp      — outside assistant service (MCP). Off by default; switch it on
+#              by adding "mcp" to COMPOSE_PROFILES in .env, then
+#              `fp update --apply` (or `docker compose up -d`).
 #   lab      — 500-node OPC UA simulator on 127.0.0.1:4840. Not for plant
 #              hosts. From the installer git checkout:
 #                docker compose -f shared/compose.yml --profile lab up -d opcua-500
@@ -186,6 +194,10 @@ services:
         condition: service_healthy
     networks:
       - falconpulsar
+      # Reaches the outside assistant service at mcp:7437 (nginx's
+      # /api/v1/ai/mcp block). Internal network: harmless when the mcp
+      # profile is off.
+      - mcp_front
 
   # ── AI Gateway: FastAPI service brokering LLM tool calls ────────────────
   # Mandatory component — installed and started on every deployment, same
@@ -240,6 +252,10 @@ services:
       # from core. If unset, the gateway returns 503 on every bridge call
       # (fail-closed — see auth.py).
       FP_BRIDGE_TOKEN: ${FP_BRIDGE_TOKEN:-}
+      # Opens only /internal/mcp/v1/* to the outside assistant service
+      # (profile "mcp"). Unset: those routes answer 503. Deliberately NOT in
+      # FP_REQUIRE_SECRETS — an older .env without it must still start.
+      FP_MCP_TOKEN: ${FP_MCP_TOKEN:-}
       # HMAC secret for write-confirmation IDs (multi-worker must share one
       # value). Generated once by the installer; never rotate casually —
       # in-flight Confirm buttons stop verifying until re-issued.
@@ -287,6 +303,8 @@ services:
       retries: 5
     networks:
       - falconpulsar
+      # Answers the outside assistant service; internal network.
+      - mcp_back
 
   # ── AI Engine (STANDARD) — author / simulate / deploy agents ───────────
   # Installed with every stack: no compose profile, no opt-out.
@@ -433,6 +451,41 @@ services:
     networks:
       - falconpulsar
 
+  # ── Outside assistant service (OPTIONAL) — MCP for outside assistants ──
+  # Opt-in: profile "mcp". Add "mcp" to COMPOSE_PROFILES in .env, then
+  # `fp update --apply`. Reached ONLY through the shell's nginx at
+  # /api/v1/ai/mcp (no published port). It holds no data credentials and no
+  # AI keys: every call is checked and answered by ai-gateway over
+  # FP_MCP_TOKEN. Its two networks are internal, so it can reach nginx's
+  # container and the gateway and nothing else — not Core, not the internet.
+  mcp:
+    image: ${FP_REGISTRY:-falconpulsar}/mcp:${FP_MCP_IMAGE_TAG:-${FP_VERSION:-latest}}
+    container_name: falconpulsar-mcp
+    restart: unless-stopped
+    profiles: ["mcp"]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 32
+    mem_limit: 128m
+    # Lets an answer in progress finish before the container stops.
+    stop_grace_period: 15s
+    environment:
+      FP_MCP_GATEWAY_URL: http://ai-gateway:7436
+      FP_MCP_TOKEN: ${FP_MCP_TOKEN:-}
+    healthcheck:
+      test: ["CMD", "/fp-mcp", "--probe"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    depends_on:
+      ai-gateway:
+        condition: service_started
+    networks:
+      - mcp_front
+      - mcp_back
+
   # ── Lab OPC UA simulator (OPTIONAL) — 500-node commissioning fixture ─
   # Profile "lab". Default stack does NOT start this. Do not add "lab" to
   # COMPOSE_PROFILES on a plant host. Does not touch Core / UI / Gateway.
@@ -459,3 +512,9 @@ networks:
   falconpulsar:
     name: falconpulsar
     driver: bridge
+  # Outside assistant service (profile "mcp"): ui <-> mcp and mcp <-> ai-gateway.
+  # Both internal (no route out); present but unused when the profile is off.
+  mcp_front:
+    internal: true
+  mcp_back:
+    internal: true

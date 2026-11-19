@@ -164,6 +164,7 @@ func TestSanitizePreservesHostPaths(t *testing.T) {
 		"FP_REST_PORT=7433\n" +
 		"FP_AI_GATEWAY_ENABLED=false\n" +
 		"FP_BRIDGE_TOKEN=shared-secret\n" +
+		"FP_MCP_TOKEN=backup-mcp-secret\n" +
 		"FP_API_KEY=restored-token\n"
 	if err := os.WriteFile(p, []byte(macBackup), 0600); err != nil {
 		t.Fatal(err)
@@ -198,6 +199,9 @@ func TestSanitizePreservesHostPaths(t *testing.T) {
 	// Portable keys MUST carry from the backup.
 	if m["FP_BRIDGE_TOKEN"] != "shared-secret" {
 		t.Errorf("FP_BRIDGE_TOKEN = %q, want carried from backup", m["FP_BRIDGE_TOKEN"])
+	}
+	if m["FP_MCP_TOKEN"] != "backup-mcp-secret" {
+		t.Errorf("FP_MCP_TOKEN = %q, want carried from backup", m["FP_MCP_TOKEN"])
 	}
 	if m["FP_API_KEY"] != "restored-token" {
 		t.Errorf("FP_API_KEY = %q, want the backup's (pairs with restored DB)", m["FP_API_KEY"])
@@ -266,4 +270,29 @@ func mustRead(t *testing.T, p string) string {
 		t.Fatal(err)
 	}
 	return string(b)
+}
+
+// TestSanitizeKeepsTargetMCPTokenWhenBackupLacksIt: a backup taken before the
+// outside assistant service existed has no FP_MCP_TOKEN. The target's value
+// must survive the restore, or the service and the gateway lose their shared
+// secret. A backup that has one keeps its own (covered above).
+func TestSanitizeKeepsTargetMCPTokenWhenBackupLacksIt(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, ".env")
+	if err := os.WriteFile(p, []byte("FP_UID=1000\nFP_MCP_TOKEN=target-mcp-secret\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	preserved := readEnvValues(p, append(append([]string{}, machineSpecificEnvKeys...), keepIfMissingEnvKeys...))
+
+	// Older backup: no FP_MCP_TOKEN line, and an empty one is treated alike.
+	for _, backup := range []string{"FP_UID=1000\nFP_REST_PORT=7433\n", "FP_UID=1000\nFP_MCP_TOKEN=\n"} {
+		if err := os.WriteFile(p, []byte(backup), 0600); err != nil {
+			t.Fatal(err)
+		}
+		sanitizeRestoredEnv(p, preserved)
+		got := mustRead(t, p)
+		if !strings.Contains(got, "FP_MCP_TOKEN=target-mcp-secret") || strings.Count(got, "FP_MCP_TOKEN=") != 1 {
+			t.Errorf("backup %q: restored .env lost the target's FP_MCP_TOKEN:\n%s", backup, got)
+		}
+	}
 }

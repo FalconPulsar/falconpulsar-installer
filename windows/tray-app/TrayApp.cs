@@ -459,6 +459,22 @@ namespace FalconPulsar.Tray
             string.Equals(EnvValue("FP_COPILOT_ENABLED")?.Trim(), "true",
                 StringComparison.OrdinalIgnoreCase);
 
+        // Outside assistant service (compose profile "mcp"). No FP_*_ENABLED
+        // flag: "mcp" in COMPOSE_PROFILES is the switch.
+        private bool McpEnabled
+        {
+            get
+            {
+                var raw = (EnvValue("COMPOSE_PROFILES") ?? "").Trim('"', '\'');
+                foreach (var part in raw.Split(','))
+                {
+                    if (string.Equals(part.Trim(), "mcp", StringComparison.OrdinalIgnoreCase))
+                        return true;
+                }
+                return false;
+            }
+        }
+
         // Automatic update *checking* opt-in: FP_UPDATE_CHECK_AUTO=true in
         // the stack .env means "check in the background"; absent or any
         // other value = OFF (the default). Checking never applies anything.
@@ -1742,6 +1758,7 @@ namespace FalconPulsar.Tray
                 var args = "--profile ai";
                 if (EngineEnabled) args += " --profile engine";
                 if (CopilotEnabled) args += " --profile copilot";
+                if (McpEnabled) args += " --profile mcp";
                 return args;
             }
         }

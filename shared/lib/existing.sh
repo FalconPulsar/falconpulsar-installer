@@ -96,7 +96,7 @@ fp_detect_existing_install() {
 # "container name is already in use" — while a project-scoped `compose down`
 # cannot see it. Its omission is exactly what let that orphan slip past phantom
 # detection and break the upgrade.
-FP_RESERVED_CONTAINER_NAMES="falconpulsar-core falconpulsar-ui falconpulsar-ai-gateway falconpulsar-ai-engine falconpulsar-copilot"
+FP_RESERVED_CONTAINER_NAMES="falconpulsar-core falconpulsar-ui falconpulsar-ai-gateway falconpulsar-ai-engine falconpulsar-copilot falconpulsar-mcp"
 
 FP_PHANTOM_CONTAINERS=()
 fp_detect_phantom_containers() {
@@ -322,7 +322,7 @@ fp_apply_existing_action() {
                 # pre-mandatory-gateway stacks, "engine" for the optional
                 # ai-engine (without it the engine is left Up, stranding the
                 # network and blocking the recreate below).
-                ( cd "$home" && docker compose --profile ai --profile engine --profile copilot down 2>/dev/null ) || true
+                ( cd "$home" && docker compose --profile ai --profile engine --profile copilot --profile mcp down 2>/dev/null ) || true
             fi
             ;;
         fresh)
@@ -330,7 +330,7 @@ fp_apply_existing_action() {
             if [ -f "${home}/compose.yml" ]; then
                 # --profile ai --profile engine: see the reinstall note above —
                 # both profiles so the ai-engine is torn down too.
-                ( cd "$home" && docker compose --profile ai --profile engine --profile copilot down --remove-orphans --volumes 2>/dev/null ) || true
+                ( cd "$home" && docker compose --profile ai --profile engine --profile copilot --profile mcp down --remove-orphans --volumes 2>/dev/null ) || true
             fi
             # Best-effort image + orphan volume cleanup.
             # Image removal is gated by FP_REMOVE_CACHED_IMAGES so the user
@@ -579,7 +579,7 @@ fp_try_upgrade_fastpath() {
 
     # ── .env migration ──────────────────────────────────────────────────
     # The existing .env is edited in place, never rewritten, so secrets
-    # (FP_API_KEY / FP_GATEWAY_SECRET / FP_BRIDGE_TOKEN) always carry
+    # (FP_API_KEY / FP_GATEWAY_SECRET / FP_BRIDGE_TOKEN / FP_MCP_TOKEN) always carry
     # forward. Only missing pieces are provisioned.
     if [ -f "${home}/.env" ]; then
         # Legacy .env compat: scrub FP_AI_GATEWAY_ENABLED=false left by
@@ -621,6 +621,19 @@ fp_try_upgrade_fastpath() {
             fi
             printf 'FP_BRIDGE_TOKEN=%s\n' "$bridge_token" >> "${home}/.env"
             log_info "generated FP_BRIDGE_TOKEN (32 random bytes, hex)"
+        fi
+        # C7.2: the outside assistant service's secret with the gateway.
+        # Minted only when absent, like the bridge token; harmless while the
+        # "mcp" profile is off, and ready when it is switched on.
+        if ! grep -q '^FP_MCP_TOKEN=.' "${home}/.env"; then
+            local mcp_token
+            if command -v openssl >/dev/null 2>&1; then
+                mcp_token="$(openssl rand -hex 32)"
+            else
+                mcp_token="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+            fi
+            printf 'FP_MCP_TOKEN=%s\n' "$mcp_token" >> "${home}/.env"
+            log_info "generated FP_MCP_TOKEN (32 random bytes, hex)"
         fi
         if ! grep -q '^FP_CONFIRM_SECRET=.' "${home}/.env"; then
             local confirm_secret
@@ -766,6 +779,11 @@ fp_try_upgrade_fastpath() {
     local _fp_profiles="--profile ai"
     if grep -q '^FP_COPILOT_ENABLED=true' "${home}/.env" 2>/dev/null; then
         _fp_profiles="${_fp_profiles} --profile copilot"
+    fi
+    # The outside assistant service has no convenience flag: it is on when
+    # "mcp" is in the .env's COMPOSE_PROFILES. Same reason as copilot above.
+    if fp_env_has_profile "${home}/.env" mcp; then
+        _fp_profiles="${_fp_profiles} --profile mcp"
     fi
     if cd "$home" 2>/dev/null; then
         # shellcheck disable=SC2086  # word-splitting of the flag list is intended

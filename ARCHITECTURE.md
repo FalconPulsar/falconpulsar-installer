@@ -123,7 +123,7 @@ From `linux/install.sh` main block:
    re-verify registry access, re-copy the bundled `compose.yml` +
    `nginx.conf` (product-managed files), provision `gateway.yaml` and
    the gateway secrets when missing (existing `FP_API_KEY` /
-   `FP_GATEWAY_SECRET` / `FP_BRIDGE_TOKEN` always carried forward,
+   `FP_GATEWAY_SECRET` / `FP_BRIDGE_TOKEN` / `FP_MCP_TOKEN` always carried forward,
    never regenerated), scrub any legacy `FP_AI_GATEWAY_ENABLED=false`
    to `true`, `docker compose pull && docker compose up -d`, hard-gate
    the AI Gateway `/health` endpoint, and exit.

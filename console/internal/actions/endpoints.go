@@ -99,6 +99,19 @@ func CopilotEnabled() bool {
 	return strings.EqualFold(strings.TrimSpace(parseEnvFile()["FP_COPILOT_ENABLED"]), "true")
 }
 
+// MCPEnabled reports whether the optional outside assistant service is
+// switched on: "mcp" appears in the stack .env's COMPOSE_PROFILES list
+// (comma-separated, case-insensitive). It has no FP_*_ENABLED convenience
+// flag — the profile list is the switch, set by hand as the docs describe.
+func MCPEnabled() bool {
+	for _, p := range strings.Split(parseEnvFile()["COMPOSE_PROFILES"], ",") {
+		if strings.EqualFold(strings.Trim(strings.TrimSpace(p), `"'`), "mcp") {
+			return true
+		}
+	}
+	return false
+}
+
 // NewAPIClient returns a REST client pointed at the local Core API,
 // honoring a port remap from .env. Prefer this over bare api.New(),
 // which can only assume the default port.

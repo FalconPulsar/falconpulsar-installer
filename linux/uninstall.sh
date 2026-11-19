@@ -322,10 +322,10 @@ log_step "stopping the stack"
 if [ -f "${FP_HOME}/compose.yml" ]; then
     if [ "$FP_PURGE" -eq 1 ]; then
         # --volumes removes named Docker volumes declared in compose.yml
-        run_as_fp_user "cd '${FP_HOME}' && docker compose --profile ai --profile engine --profile copilot down --remove-orphans --volumes" || \
+        run_as_fp_user "cd '${FP_HOME}' && docker compose --profile ai --profile engine --profile copilot --profile mcp down --remove-orphans --volumes" || \
             log_warn "docker compose down failed -- continuing anyway"
     else
-        run_as_fp_user "cd '${FP_HOME}' && docker compose --profile ai --profile engine --profile copilot down --remove-orphans" || \
+        run_as_fp_user "cd '${FP_HOME}' && docker compose --profile ai --profile engine --profile copilot --profile mcp down --remove-orphans" || \
             log_warn "docker compose down failed -- continuing anyway"
     fi
 else
@@ -353,7 +353,7 @@ if [ -f "${FP_HOME}/compose.yml" ]; then
     # image — "ai" for a legacy compose.yml that hid the ai-gateway image
     # (~1.6 GB), "engine" for the optional ai-engine image. Without them
     # those images survive the uninstall.
-    IMAGES="$(run_as_fp_user "cd '${FP_HOME}' && docker compose --profile ai --profile engine --profile copilot config --images" 2>/dev/null | sort -u)"
+    IMAGES="$(run_as_fp_user "cd '${FP_HOME}' && docker compose --profile ai --profile engine --profile copilot --profile mcp config --images" 2>/dev/null | sort -u)"
     if [ -n "$IMAGES" ]; then
         # Process substitution (not a pipe): a `while` on the right of a
         # pipe runs in a subshell, so FP_IMAGE_RM_FAILED increments would

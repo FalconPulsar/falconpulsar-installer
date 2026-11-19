@@ -44,6 +44,7 @@ component live in those repositories and on
 | Module | Flag / profile | Default port | Notes |
 |--------|----------------|--------------|--------|
 | **Command Center** | `FP_COPILOT_ENABLED=true` → profile `copilot` | 8090 | Clean data; ops workspace |
+| **Outside assistant service** | `mcp` in `COMPOSE_PROFILES`, then `fp update --apply` (not asked at install) | none (served at `/api/v1/ai/mcp` through the Web UI) | Lets outside assistants ask over MCP; holds no data credentials and no AI keys |
 
 Install also asks **sign-in security**: local users (default), SSO later, or SSO
 now (Entra / Okta / generic OIDC). A **local break-glass admin** is always
@@ -65,7 +66,8 @@ use that component’s README (manual Docker and from-source steps):
 Compose file used by all platforms: [`shared/compose.yml`](shared/compose.yml).
 Important secrets (generated or preserved by install): `FP_API_KEY`,
 `FP_BACKUP_KEY` (`fp backup`'s key, which can run a Core backup and nothing
-else), `FP_BRIDGE_TOKEN`, `FP_GATEWAY_SECRET`, `FP_CONFIRM_SECRET`, and
+else), `FP_BRIDGE_TOKEN`, `FP_MCP_TOKEN` (outside assistant service to
+gateway; not a required secret), `FP_GATEWAY_SECRET`, `FP_CONFIRM_SECRET`, and
 `FP_REQUIRE_SECRETS=1` so the gateway refuses to start without encryption/bridge
 secrets in production.
 

@@ -5,7 +5,9 @@ One row names the images that belong together. Columns are fixed: **core**,
 The first four cells are Docker Hub tags; the installer cell is a GitHub
 release (the DMG / EXE / install.sh package and the `fp` CLI are host
 components, not an image). Do not add a sixth component (Command Center is
-an optional compose profile on the installer, not a column).
+an optional compose profile on the installer, not a column; so is the
+outside assistant service, profile `mcp`, image `mcp` with
+`FP_MCP_IMAGE_TAG` defaulting to `FP_VERSION`).
 
 `FP_VERSION` in `.env` is the tag every image is supposed to share. When a
 branch is mid-flight the five cells may differ; write the mixed row instead

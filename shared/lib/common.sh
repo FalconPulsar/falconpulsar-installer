@@ -537,3 +537,20 @@ fp_repair_bind_sources() {
         fp_write_auth_policy "${home}/auth-policy.json"
     fi
 }
+
+# fp_env_has_profile <env-file> <profile>
+# True when the .env's COMPOSE_PROFILES list (comma-separated, last line
+# wins as compose reads it) names <profile>. Used for the outside assistant
+# service ("mcp"), which has no FP_*_ENABLED convenience flag: the profile
+# list is the switch.
+fp_env_has_profile() {
+    local env_file="$1" want="$2" raw p
+    [ -f "$env_file" ] || return 1
+    raw="$(sed -n 's/^COMPOSE_PROFILES=//p' "$env_file" 2>/dev/null | tail -n1 | tr -d '\r"'"'")"
+    local IFS=','
+    for p in $raw; do
+        p="${p// /}"
+        [ "$p" = "$want" ] && return 0
+    done
+    return 1
+}

@@ -309,6 +309,11 @@ fp_refresh_compose_profiles() {
     if [ "${FP_COPILOT_ENABLED:-false}" = "true" ]; then
         profiles="copilot"
     fi
+    # The outside assistant service ("mcp") is switched on by hand in .env;
+    # a reinstall rewrites .env, so keep the profile when the old .env had it.
+    if [ -n "${FP_HOME:-}" ] && fp_env_has_profile "${FP_HOME}/.env" mcp; then
+        profiles="${profiles:+${profiles},}mcp"
+    fi
     COMPOSE_PROFILES="$profiles"
     export COMPOSE_PROFILES
 }

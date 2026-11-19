@@ -141,6 +141,18 @@ jobs:
           FP_UID=1000 \
           FP_GID=1000 \
           docker compose config >/dev/null
+          # The optional outside assistant service (profile "mcp") must
+          # parse too, and the default model must not contain it.
+          FP_ADMIN_PASS=ci-validation \
+          FP_DATA_DIR=/tmp/fp-ci \
+          FP_UID=1000 \
+          FP_GID=1000 \
+          docker compose --profile mcp config >/dev/null
+          FP_DATA_DIR=/tmp/fp-ci FP_UID=1000 FP_GID=1000 \
+            docker compose config --services | grep -qx mcp && \
+            { echo "mcp must stay behind its profile"; exit 1; }
+          FP_DATA_DIR=/tmp/fp-ci FP_UID=1000 FP_GID=1000 \
+            docker compose --profile mcp config --services | grep -qx mcp
 
   version-sync:
     name: version sites match VERSION

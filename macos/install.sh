@@ -614,6 +614,22 @@ if [ -z "${FP_BRIDGE_TOKEN:-}" ]; then
     log_info "generated FP_BRIDGE_TOKEN (32 random bytes, hex)"
 fi
 
+# C7.2: shared secret between the outside assistant service (compose profile
+# "mcp") and the AI gateway — see the equivalent block in linux/install.sh.
+if [ -z "${FP_MCP_TOKEN:-}" ] && [ -f "${FP_HOME}/.env" ]; then
+    FP_MCP_TOKEN="$(sed -n 's/^FP_MCP_TOKEN=//p' "${FP_HOME}/.env" | head -n1)"
+fi
+if [ -z "${FP_MCP_TOKEN:-}" ]; then
+    if command -v openssl >/dev/null 2>&1; then
+        FP_MCP_TOKEN="$(openssl rand -hex 32)"
+    elif [ -r /dev/urandom ]; then
+        FP_MCP_TOKEN="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+    else
+        die "cannot generate FP_MCP_TOKEN: neither openssl nor /dev/urandom available"
+    fi
+    log_info "generated FP_MCP_TOKEN (32 random bytes, hex)"
+fi
+
 if [ -z "${FP_CONFIRM_SECRET:-}" ]; then
     if command -v openssl >/dev/null 2>&1; then
         FP_CONFIRM_SECRET="$(openssl rand -hex 32)"
@@ -701,6 +717,9 @@ FP_GATEWAY_CONFIG=${FP_HOME}/gateway.yaml
 # SEC-001: shared secret read by both core and ai-gateway containers.
 # Rotate by overwriting this value and 'docker compose up -d'.
 FP_BRIDGE_TOKEN=${FP_BRIDGE_TOKEN}
+# Shared secret between the outside assistant service (profile "mcp") and
+# ai-gateway. Used only when "mcp" is in COMPOSE_PROFILES.
+FP_MCP_TOKEN=${FP_MCP_TOKEN}
 # HMAC secret for AI Gateway write-confirmation IDs (multi-worker).
 FP_CONFIRM_SECRET=${FP_CONFIRM_SECRET}
 FP_CC_MACHINE_KEY=${FP_CC_MACHINE_KEY}

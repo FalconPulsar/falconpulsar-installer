@@ -377,6 +377,11 @@ func composeProfileArgs() []string {
 	if CopilotEnabled() {
 		args = append(args, "--profile", "copilot")
 	}
+	// Same reason for the outside assistant service: without its flag, a
+	// stop/start/update would skip falconpulsar-mcp while it is switched on.
+	if MCPEnabled() {
+		args = append(args, "--profile", "mcp")
+	}
 	return args
 }
 

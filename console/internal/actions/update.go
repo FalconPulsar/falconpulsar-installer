@@ -159,6 +159,11 @@ func componentsForCheck() []componentSpec {
 		specs = append(specs,
 			componentSpec{displayName: "Command Center", containerName: "falconpulsar-copilot", imageBaseName: "copilot"})
 	}
+	// The outside assistant service: only when its "mcp" profile is on.
+	if MCPEnabled() {
+		specs = append(specs,
+			componentSpec{displayName: "Outside assistant service", containerName: "falconpulsar-mcp", imageBaseName: "mcp"})
+	}
 	return specs
 }
 
@@ -262,6 +267,11 @@ func CheckUpdates(ctx context.Context, fpVersion string) UpdateCheckResult {
 func componentImageRef(registry, tag, component string) string {
 	if component == "copilot" {
 		if override := envFromDotEnv("FP_COPILOT_IMAGE_TAG"); override != "" {
+			tag = override
+		}
+	}
+	if component == "mcp" {
+		if override := envFromDotEnv("FP_MCP_IMAGE_TAG"); override != "" {
 			tag = override
 		}
 	}

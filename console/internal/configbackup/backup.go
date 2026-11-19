@@ -460,7 +460,7 @@ func Import(ctx context.Context, input string, cli *api.Client, user, pass strin
 	// Docker auto-creates an empty dir -> core sees no database and crash-loops
 	// on first-run init. Capture the TARGET's values BEFORE the backup's .env
 	// overwrites them; sanitizeRestoredEnv re-applies them below.
-	preservedEnv := readEnvValues(filepath.Join(home, ".env"), machineSpecificEnvKeys)
+	preservedEnv := readEnvValues(filepath.Join(home, ".env"), append(append([]string{}, machineSpecificEnvKeys...), keepIfMissingEnvKeys...))
 	// Resolve the target BEFORE extracting the source .env. Keep implicit
 	// target defaults too: omitted FP_*_DATA_DIR keys must not adopt source
 	// paths and overwrite that installation's databases or WAL sidecars.
@@ -1575,6 +1575,15 @@ var machineSpecificEnvKeys = []string{
 	"FP_GID",
 }
 
+// keepIfMissingEnvKeys are portable secrets the backup's .env normally carries
+// (its value wins), but that an older backup may predate. When the restored
+// .env lacks one, the target's value is kept instead of leaving it unset.
+// FP_MCP_TOKEN pairs the outside assistant service with ai-gateway; both read
+// it from this one .env, so any value works as long as it is not empty.
+var keepIfMissingEnvKeys = []string{
+	"FP_MCP_TOKEN",
+}
+
 // readEnvValues returns the values of the given keys found in a KEY=VALUE
 // .env file. Comment and blank lines are skipped; keys absent from the file
 // are simply omitted from the returned map. Never errors (missing file -> {}).
@@ -1651,6 +1660,37 @@ func sanitizeRestoredEnv(path string, preserved map[string]string) {
 		}
 		if !found {
 			lines = append(lines, newLine)
+			changed = true
+		}
+	}
+
+	// Portable secrets the backup predates: append the target's value only
+	// when the restored .env has no non-empty line for the key.
+	for _, key := range keepIfMissingEnvKeys {
+		val := preserved[key]
+		if val == "" {
+			continue
+		}
+		present, emptyAt := false, -1
+		for i, line := range lines {
+			t := strings.TrimSpace(line)
+			if !strings.HasPrefix(t, key+"=") {
+				continue
+			}
+			if t == key+"=" {
+				emptyAt = i
+				continue
+			}
+			present = true
+			break
+		}
+		switch {
+		case present:
+		case emptyAt >= 0:
+			lines[emptyAt] = key + "=" + val
+			changed = true
+		default:
+			lines = append(lines, key+"="+val)
 			changed = true
 		}
 	}
