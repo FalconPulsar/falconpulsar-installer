@@ -730,7 +730,7 @@ enum ConfigBackup {
             // verbatim repoints core's bind mount at a path that doesn't exist
             // here -> Docker mounts an empty dir -> core crash-loops on first
             // run. Capture BEFORE the backup's .env overwrites the current one.
-            var preservedEnv = Self.readEnvValues(keys: Self.machineSpecificEnvKeys)
+            var preservedEnv = Self.readEnvValues(keys: Self.machineSpecificEnvKeys + Self.keepIfMissingEnvKeys)
             // Capture target destinations before the source .env is extracted,
             // including defaults that the target has not written explicitly.
             let dirs = Self.stackDirs()
@@ -909,6 +909,16 @@ enum ConfigBackup {
         "FP_GATEWAY_CONFIG", "FP_UID", "FP_GID",
     ]
 
+    /// Portable secrets the backup's .env normally carries (its value wins),
+    /// but that an older backup may predate. When the restored .env has no
+    /// non-empty line for one, the target's value is kept instead of leaving
+    /// it unset. FP_MCP_TOKEN pairs the outside assistant service with
+    /// ai-gateway; both read it from this one .env. Same rule as the console's
+    /// keepIfMissingEnvKeys.
+    static let keepIfMissingEnvKeys = [
+        "FP_MCP_TOKEN",
+    ]
+
     /// Reads the given keys out of the stack's current .env (KEY=VALUE lines).
     /// Comment/blank lines are skipped; keys absent from the file are omitted.
     static func readEnvValues(keys: [String]) -> [String: String] {
@@ -964,6 +974,29 @@ enum ConfigBackup {
                 }
             }
             if !found { lines.append(newLine); mutated = true }
+        }
+
+        // Portable secrets the backup predates: the target's value only when
+        // the restored .env has no non-empty line for the key; an empty line
+        // is filled in place.
+        for key in keepIfMissingEnvKeys {
+            guard let val = preserved[key], !val.isEmpty else { continue }
+            var present = false
+            var emptyAt: Int? = nil
+            for i in lines.indices {
+                let t = lines[i].trimmingCharacters(in: .whitespaces)
+                guard t.hasPrefix("\(key)=") else { continue }
+                if t == "\(key)=" { emptyAt = i; continue }
+                present = true
+                break
+            }
+            if present { continue }
+            if let at = emptyAt {
+                lines[at] = "\(key)=\(val)"
+            } else {
+                lines.append("\(key)=\(val)")
+            }
+            mutated = true
         }
 
         if mutated {

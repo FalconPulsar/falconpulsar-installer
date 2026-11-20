@@ -756,6 +756,17 @@ namespace FalconPulsar.Tray
             "FP_GATEWAY_CONFIG", "FP_UID", "FP_GID",
         };
 
+        // Portable secrets the backup's .env normally carries (its value wins),
+        // but that an older backup may predate. When the restored .env has no
+        // non-empty line for one, the target's value is kept instead of leaving
+        // it unset. FP_MCP_TOKEN pairs the outside assistant service with
+        // ai-gateway; both read it from this one .env. Same rule as the
+        // console's keepIfMissingEnvKeys.
+        private static readonly string[] KeepIfMissingEnvKeys =
+        {
+            "FP_MCP_TOKEN",
+        };
+
         // Reads the given keys out of a KEY=VALUE .env file. Comment/blank
         // lines are skipped; keys absent from the file are omitted. Never
         // throws (missing file -> empty map).
@@ -817,7 +828,9 @@ namespace FalconPulsar.Tray
                     // Capture the current values BEFORE the backup's .env
                     // overwrites them, then re-apply them below.
                     var envPath = Path.Combine(FalconPulsarHomeDir, ".env");
-                    var preservedEnv = ReadEnvValues(envPath, MachineSpecificEnvKeys);
+                    var preservedKeys = new List<string>(MachineSpecificEnvKeys);
+                    preservedKeys.AddRange(KeepIfMissingEnvKeys);
+                    var preservedEnv = ReadEnvValues(envPath, preservedKeys.ToArray());
 
                     foreach (var name in new[] { "compose.yml", ".env", "gateway.yaml", "engine-seccomp.json" })
                     {
@@ -861,6 +874,27 @@ namespace FalconPulsar.Tray
                                 }
                             }
                             if (!found) { lines.Add(newLine); changed = true; }
+                        }
+                        // Portable secrets the backup predates: the target's
+                        // value only when the restored .env has no non-empty
+                        // line for the key; an empty line is filled in place.
+                        foreach (var key in KeepIfMissingEnvKeys)
+                        {
+                            if (!preservedEnv.TryGetValue(key, out var val) || val.Length == 0) continue;
+                            bool present = false;
+                            int emptyAt = -1;
+                            for (int i = 0; i < lines.Count; i++)
+                            {
+                                var t = lines[i].Trim();
+                                if (!t.StartsWith(key + "=")) continue;
+                                if (t == key + "=") { emptyAt = i; continue; }
+                                present = true;
+                                break;
+                            }
+                            if (present) continue;
+                            if (emptyAt >= 0) lines[emptyAt] = key + "=" + val;
+                            else lines.Add(key + "=" + val);
+                            changed = true;
                         }
                         // Write with LF line endings: this .env lives inside
                         // WSL and is sourced by bash, which would treat the

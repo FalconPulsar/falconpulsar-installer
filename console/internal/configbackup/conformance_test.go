@@ -129,6 +129,22 @@ func TestAllImplementationsPreserveTheSameEnvKeys(t *testing.T) {
 	}
 }
 
+// Portable secrets an older backup may lack must be kept from the target by
+// all three, or a restore on one platform leaves the outside assistant
+// service and ai-gateway without their shared token.
+func TestAllImplementationsKeepTheSameMissingSecrets(t *testing.T) {
+	for name, src := range implementations(t) {
+		if !strings.Contains(src, "eepIfMissingEnvKeys") {
+			t.Errorf("%s has no keep-if-missing list for restored .env secrets", name)
+		}
+		for _, key := range keepIfMissingEnvKeys {
+			if !strings.Contains(src, `"`+key+`"`) {
+				t.Errorf("%s does not keep %s from the target host when the backup lacks it", name, key)
+			}
+		}
+	}
+}
+
 // The archive is a single format. If one implementation writes a version the
 // others reject, backups stop being portable between platforms.
 func TestAllImplementationsAgreeOnFormatAndCrypto(t *testing.T) {
