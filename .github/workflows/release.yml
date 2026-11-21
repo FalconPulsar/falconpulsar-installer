@@ -398,10 +398,18 @@ jobs:
       - name: Report DMG outcome
         # Green run + loud warning when the DMG could not be produced. The
         # release still publishes (without the DMG) — that is by design.
+        # Judge the step's outcome, never the file: build-dmg.sh writes the
+        # signed DMG BEFORE it submits it to Apple, so a refused notarization
+        # (alpha.113: Apple's 403 for an agreement not yet accepted) left a
+        # signed, un-notarized DMG in dist/ that this step called notarized
+        # and the release published. macOS refuses to open such a file.
+        env:
+          DMG_OUTCOME: ${{ steps.dmg.outcome }}
         run: |
-          if ls dist/FalconPulsar-Setup*.dmg >/dev/null 2>&1; then
+          if [ "$DMG_OUTCOME" = "success" ]; then
             echo "DMG built, signed and notarized."
           else
+            rm -f dist/FalconPulsar-Setup*.dmg
             echo "::warning title=macOS DMG not produced::build-dmg.sh failed — the release publishes WITHOUT the DMG. Read the 'Build signed + notarized DMG' step log for the REAL cause; do not assume notarization. A Swift compile error and an Apple 403 both land here and look identical from outside, and alpha.79 shipped DMG-less on a compile error while this very message blamed notarization. The 'macOS apps compile' lint job now catches the compile case before a tag. macOS users can still install via install-macos.sh."
           fi
 
@@ -414,6 +422,8 @@ jobs:
           rm -f "$RUNNER_TEMP/notary/AuthKey.p8" 2>/dev/null || true
 
       - name: Upload DMG
+        # Only a DMG whose build, signing AND notarization all succeeded.
+        if: steps.dmg.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: bundles-macos
