@@ -57,11 +57,13 @@
 #   FP_UI_PORT          Web UI port (default 80)
 #   FP_LOG_LEVEL        debug, info, warn, error (default info)
 #
-# Compose profiles (opt-in; a default `docker compose up` does not start them):
+# Compose profiles (a `docker compose up` without them does not start these;
+# the installer lists the enabled ones in COMPOSE_PROFILES in .env):
 #   copilot  — Command Center (installer sets COMPOSE_PROFILES when enabled)
-#   mcp      — outside assistant service (MCP). Off by default; switch it on
-#              by adding "mcp" to COMPOSE_PROFILES in .env, then
-#              `fp update --apply` (or `docker compose up -d`).
+#   mcp      — outside assistant service (MCP). On by default; to turn it
+#              off, set FP_MCP_ENABLED=false in .env, then
+#              `fp update --apply` (the upgrade removes "mcp" from
+#              COMPOSE_PROFILES and leaves it off).
 #   lab      — 500-node OPC UA simulator on 127.0.0.1:4840. Not for plant
 #              hosts. From the installer git checkout:
 #                docker compose -f shared/compose.yml --profile lab up -d opcua-500
@@ -452,8 +454,10 @@ services:
       - falconpulsar
 
   # ── Outside assistant service (OPTIONAL) — MCP for outside assistants ──
-  # Opt-in: profile "mcp". Add "mcp" to COMPOSE_PROFILES in .env, then
-  # `fp update --apply`. Reached ONLY through the shell's nginx at
+  # Profile "mcp", on by default (the installer puts "mcp" in
+  # COMPOSE_PROFILES). FP_MCP_ENABLED=false in .env, then `fp update --apply`,
+  # turns it off. No outside assistant can connect until an administrator
+  # makes it a key in the Web UI. Reached ONLY through the shell's nginx at
   # /api/v1/ai/mcp (no published port). It holds no data credentials and no
   # AI keys: every call is checked and answered by ai-gateway over
   # FP_MCP_TOKEN. Its two networks are internal, so it can reach nginx's

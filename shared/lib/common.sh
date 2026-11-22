@@ -541,8 +541,8 @@ fp_repair_bind_sources() {
 # fp_env_has_profile <env-file> <profile>
 # True when the .env's COMPOSE_PROFILES list (comma-separated, last line
 # wins as compose reads it) names <profile>. Used for the outside assistant
-# service ("mcp"), which has no FP_*_ENABLED convenience flag: the profile
-# list is the switch.
+# service ("mcp"): the installer keeps that profile in step with
+# FP_MCP_ENABLED (fp_migrate_mcp_setting), and compose reads the profile.
 fp_env_has_profile() {
     local env_file="$1" want="$2" raw p
     [ -f "$env_file" ] || return 1
@@ -553,4 +553,76 @@ fp_env_has_profile() {
         [ "$p" = "$want" ] && return 0
     done
     return 1
+}
+
+# fp_mcp_value_is_off <value>
+# True when a FP_MCP_ENABLED value turns the outside assistant service off.
+# Only "false" does (any case, spaces and quotes ignored); absent, empty or
+# anything else means on, because the service is on by default.
+fp_mcp_value_is_off() {
+    local v
+    v="$(printf '%s' "${1:-}" | tr -d ' \t\r"'"'" | tr '[:upper:]' '[:lower:]')"
+    [ "$v" = "false" ]
+}
+
+# fp_migrate_mcp_setting <env-file>
+# Upgrade migration for the outside assistant service ("mcp"), which is on
+# by default. An .env without FP_MCP_ENABLED gets FP_MCP_ENABLED=true. Then
+# COMPOSE_PROFILES is made to agree with it: "mcp" is added when the
+# service is on (the key is added if missing; other entries such as copilot
+# stay) and removed when FP_MCP_ENABLED=false. The .env is edited in place
+# and only when something changes, with one log line per change. Values
+# are read the way compose reads them: last line wins, CRLF and quotes
+# tolerated.
+fp_migrate_mcp_setting() {
+    local env_file="$1"
+    [ -f "$env_file" ] || return 0
+    if ! grep -q '^FP_MCP_ENABLED=' "$env_file"; then
+        # A hand-edited .env may end without a newline; appending to it
+        # would glue the new key onto the last line.
+        if [ -s "$env_file" ] && [ -n "$(tail -c1 "$env_file")" ]; then
+            printf '\n' >> "$env_file"
+        fi
+        printf 'FP_MCP_ENABLED=true\n' >> "$env_file"
+        log_info "added FP_MCP_ENABLED=true to .env (the outside assistant service is on by default)"
+    fi
+    local enabled=1
+    if fp_mcp_value_is_off "$(sed -n 's/^FP_MCP_ENABLED=//p' "$env_file" | tail -n1)"; then
+        enabled=0
+    fi
+    if [ "$enabled" = 1 ] && fp_env_has_profile "$env_file" mcp; then return 0; fi
+    if [ "$enabled" = 0 ] && ! fp_env_has_profile "$env_file" mcp; then return 0; fi
+
+    # Rebuild the list: every entry but mcp, trimmed, no duplicates or
+    # empty entries, then mcp at the end when the service is on.
+    local raw p list=""
+    raw="$(sed -n 's/^COMPOSE_PROFILES=//p' "$env_file" | tail -n1 | tr -d '\r"'"'")"
+    local IFS=','
+    for p in $raw; do
+        p="${p// /}"
+        [ -n "$p" ] && [ "$p" != "mcp" ] || continue
+        case ",${list}," in *",${p},"*) continue ;; esac
+        list="${list:+${list},}${p}"
+    done
+    unset IFS
+    [ "$enabled" = 1 ] && list="${list:+${list},}mcp"
+
+    if grep -q '^COMPOSE_PROFILES=' "$env_file"; then
+        # Every COMPOSE_PROFILES line gets the new value, so whichever one
+        # compose reads (the last) is right. Written back into the same
+        # file, which keeps its mode and owner.
+        local content
+        content="$(awk -v line="COMPOSE_PROFILES=${list}" '/^COMPOSE_PROFILES=/ { print line; next } { print }' "$env_file")"
+        printf '%s\n' "$content" > "$env_file"
+    else
+        if [ -s "$env_file" ] && [ -n "$(tail -c1 "$env_file")" ]; then
+            printf '\n' >> "$env_file"
+        fi
+        printf 'COMPOSE_PROFILES=%s\n' "$list" >> "$env_file"
+    fi
+    if [ "$enabled" = 1 ]; then
+        log_info "added mcp to COMPOSE_PROFILES in .env (COMPOSE_PROFILES=${list})"
+    else
+        log_info "removed mcp from COMPOSE_PROFILES in .env (FP_MCP_ENABLED=false, COMPOSE_PROFILES=${list})"
+    fi
 }

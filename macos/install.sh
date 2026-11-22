@@ -385,7 +385,7 @@ if [ -f "${FP_HOME}/.env" ]; then
     # a standard service now and the value is force-set true below. (Matches
     # linux/install.sh — keep the two lists identical.)
     for setting in FP_DATA_DIR FP_GATEWAY_DATA_DIR FP_ENGINE_DATA_DIR FP_COPILOT_DATA_DIR \
-                   FP_COPILOT_ENABLED FP_COPILOT_PORT \
+                   FP_COPILOT_ENABLED FP_COPILOT_PORT FP_MCP_ENABLED \
                    FP_AUTH_MODE FP_SSO_PROVIDER \
                    FP_REST_PORT FP_WS_PORT FP_PUBSUB_PORT FP_GATEWAY_PORT FP_UI_PORT \
                    FP_ENGINE_PORT FP_PUBLIC_HOST \
@@ -428,14 +428,21 @@ FP_COPILOT_DATA_DIR="${FP_COPILOT_DATA_DIR:-${FP_HOME}/copilot-data}"
 # switcher and opens to an unavailable surface.
 FP_COPILOT_ENABLED="${FP_COPILOT_ENABLED:-true}"
 FP_COPILOT_PORT="${FP_COPILOT_PORT:-8090}"
+# The outside assistant service (compose profile "mcp") is on for every site.
+# No outside assistant can connect until an administrator makes it a key in
+# the Web UI. FP_MCP_ENABLED=false turns it off, and a reinstall or upgrade
+# then leaves it off (the value was carried forward from the old .env above).
+FP_MCP_ENABLED="${FP_MCP_ENABLED:-true}"
 FP_AUTH_MODE="${FP_AUTH_MODE:-local}"
 FP_SSO_PROVIDER="${FP_SSO_PROVIDER:-none}"
 FP_SSO_ISSUER="${FP_SSO_ISSUER:-}"
 FP_SSO_CLIENT_ID="${FP_SSO_CLIENT_ID:-}"
-# Command Center is the only profile-gated optional module; AI Engine is now a
-# standard service (no compose profile).
+# Command Center and the outside assistant service are the profile-gated
+# modules; AI Engine is now a standard service (no compose profile). This is
+# a first value only: prompt_copilot rebuilds it (fp_refresh_compose_profiles).
 COMPOSE_PROFILES=""
 if [ "${FP_COPILOT_ENABLED}" = "true" ]; then COMPOSE_PROFILES="copilot"; fi
+if ! fp_mcp_value_is_off "${FP_MCP_ENABLED}"; then COMPOSE_PROFILES="${COMPOSE_PROFILES:+${COMPOSE_PROFILES},}mcp"; fi
 FP_REST_PORT="${FP_REST_PORT:-7433}"
 FP_WS_PORT="${FP_WS_PORT:-7434}"
 FP_PUBSUB_PORT="${FP_PUBSUB_PORT:-7435}"
@@ -717,8 +724,12 @@ FP_GATEWAY_CONFIG=${FP_HOME}/gateway.yaml
 # SEC-001: shared secret read by both core and ai-gateway containers.
 # Rotate by overwriting this value and 'docker compose up -d'.
 FP_BRIDGE_TOKEN=${FP_BRIDGE_TOKEN}
-# Shared secret between the outside assistant service (profile "mcp") and
-# ai-gateway. Used only when "mcp" is in COMPOSE_PROFILES.
+# Outside assistant service (profile "mcp"): on by default. No outside
+# assistant can connect until an administrator makes it a key in the Web UI.
+# To turn it off: set FP_MCP_ENABLED=false and upgrade (fp update --apply);
+# the upgrade removes mcp from COMPOSE_PROFILES and leaves it off.
+FP_MCP_ENABLED=${FP_MCP_ENABLED}
+# Shared secret between the outside assistant service and ai-gateway.
 FP_MCP_TOKEN=${FP_MCP_TOKEN}
 # HMAC secret for AI Gateway write-confirmation IDs (multi-worker).
 FP_CONFIRM_SECRET=${FP_CONFIRM_SECRET}
@@ -881,6 +892,7 @@ HEALTH_OK=true
 HEALTH_SVCS="falconpulsar-core falconpulsar-ui falconpulsar-ai-gateway"
 [ "${FP_AI_ENGINE_ENABLED:-false}" = "true" ] && HEALTH_SVCS="${HEALTH_SVCS} falconpulsar-ai-engine"
 [ "${FP_COPILOT_ENABLED:-false}" = "true" ] && HEALTH_SVCS="${HEALTH_SVCS} falconpulsar-copilot"
+[ "${FP_MCP_ENABLED:-false}" = "true" ] && HEALTH_SVCS="${HEALTH_SVCS} falconpulsar-mcp"
 for svc in $HEALTH_SVCS; do
     if docker ps --filter "name=$svc" --filter "status=running" -q 2>/dev/null | grep -q .; then
         log_success "$svc: running"

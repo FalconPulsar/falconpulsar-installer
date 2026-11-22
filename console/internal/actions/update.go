@@ -159,7 +159,7 @@ func componentsForCheck() []componentSpec {
 		specs = append(specs,
 			componentSpec{displayName: "Command Center", containerName: "falconpulsar-copilot", imageBaseName: "copilot"})
 	}
-	// The outside assistant service: only when its "mcp" profile is on.
+	// The outside assistant service: only when it is on (see MCPEnabled).
 	if MCPEnabled() {
 		specs = append(specs,
 			componentSpec{displayName: "Outside assistant service", containerName: "falconpulsar-mcp", imageBaseName: "mcp"})
@@ -619,6 +619,20 @@ func ApplyUpdates(ctx context.Context, stdout, stderr io.Writer) error {
 	// Only set when absent so an operator-pinned value is preserved.
 	if envFromDotEnv("FP_GATEWAY_CONFIG") == "" {
 		_ = SetEnvValue("FP_GATEWAY_CONFIG", filepath.Join(HomeDir(), "gateway.yaml"))
+	}
+
+	// The outside assistant service is on by default; same migration as the
+	// bundled installer's upgrade. When it is turned off, an `up -d` without
+	// its profile would leave a running container alone, so remove it.
+	mcpChanges, err := EnsureMCPDefault()
+	if err != nil {
+		return fmt.Errorf("update .env for the outside assistant service: %w", err)
+	}
+	for _, c := range mcpChanges {
+		fmt.Fprintln(stdout, c)
+	}
+	if !MCPEnabled() {
+		_ = Compose(ctx, io.Discard, io.Discard, "--profile", "mcp", "rm", "-sf", "mcp")
 	}
 
 	fmt.Fprintln(stdout, "Pulling latest images…")

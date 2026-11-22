@@ -39,12 +39,12 @@ component live in those repositories and on
 | **AI Gateway** | `falconpulsar/ai-gateway` | 7436 (often bound to localhost; UI proxies) |
 | **AI Engine** | `falconpulsar/ai-engine` | 8085 (bound to localhost by default) — data in `$FP_HOME/ai-engine-data` |
 
-**Optional module** (opt-in during install on every platform):
+**Optional modules** (on by default on every platform; each can be turned off):
 
 | Module | Flag / profile | Default port | Notes |
 |--------|----------------|--------------|--------|
 | **Command Center** | `FP_COPILOT_ENABLED=true` → profile `copilot` | 8090 | Clean data; ops workspace |
-| **Outside assistant service** | `mcp` in `COMPOSE_PROFILES`, then `fp update --apply` (not asked at install) | none (served at `/api/v1/ai/mcp` through the Web UI) | Lets outside assistants ask over MCP; holds no data credentials and no AI keys |
+| **Outside assistant service** | On by default (profile `mcp`, not asked at install). To turn it off, set `FP_MCP_ENABLED=false` in `.env` and run `fp update --apply`; later upgrades leave it off | none (served at `/api/v1/ai/mcp` through the Web UI) | Lets outside assistants ask over MCP. None can connect until an administrator makes it a key in the Web UI. Holds no data credentials and no AI keys |
 
 Install also asks **sign-in security**: local users (default), SSO later, or SSO
 now (Entra / Okta / generic OIDC). A **local break-glass admin** is always

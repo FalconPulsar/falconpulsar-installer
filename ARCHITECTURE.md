@@ -125,7 +125,10 @@ From `linux/install.sh` main block:
    the gateway secrets when missing (existing `FP_API_KEY` /
    `FP_GATEWAY_SECRET` / `FP_BRIDGE_TOKEN` / `FP_MCP_TOKEN` always carried forward,
    never regenerated), scrub any legacy `FP_AI_GATEWAY_ENABLED=false`
-   to `true`, `docker compose pull && docker compose up -d`, hard-gate
+   to `true`, switch the outside assistant service on (`FP_MCP_ENABLED=true`
+   added when absent, `mcp` added to `COMPOSE_PROFILES`; with
+   `FP_MCP_ENABLED=false`, `mcp` is removed instead and the container goes),
+   `docker compose pull && docker compose up -d`, hard-gate
    the AI Gateway `/health` endpoint, and exit.
 10. `fp_registry_ensure_access` — registry probe + interactive login if
     needed (see `registry_auth.sh`).
@@ -682,7 +685,8 @@ bold.
 | `FP_COPILOT_ENABLED` | `true` | `prompts.sh`, `compose.yml` | Command Center (`copilot` profile) — the shell's Workplace mode. On by default: the switcher offers Home / Workplace / Agents as one product, and leaving Copilot out gave a default install a mode that opened to nothing. Set `false` to install without it |
 | `FP_COPILOT_PORT` | `8090` | `prompts.sh`, `compose.yml` | Command Center host port |
 | `FP_COPILOT_IMAGE_TAG` | `${FP_VERSION:-latest}` | `.env`, `compose.yml` | Command Center image tag. The published image is always CLEAN (empty workspace) — data mode is baked at build time (`VITE_CC_DATA_MODE`) and no demo image is published, so point this at your own build if you need the demo story. |
-| `COMPOSE_PROFILES` | `copilot` | `prompts.sh`, `.env` | Gated services. Only `copilot` uses a profile; Core/UI/AI Gateway/AI Engine are standard. This — not `FP_COPILOT_ENABLED` alone — is what starts Command Center. |
+| `FP_MCP_ENABLED` | `true` | `prompts.sh`, `common.sh`, `.env` | Outside assistant service (`mcp` profile). On for every site: new installs run it, and an upgrade switches it on for a site whose `.env` does not have this key yet. No outside assistant can connect until an administrator makes it a key in the Web UI. Set `false` and upgrade (`fp update --apply`) to turn it off; the upgrade removes `mcp` from `COMPOSE_PROFILES` and later upgrades leave it off |
+| `COMPOSE_PROFILES` | `copilot,mcp` | `prompts.sh`, `common.sh`, `.env` | Gated services: `copilot` (Command Center) and `mcp` (outside assistant service); Core/UI/AI Gateway/AI Engine are standard. This — not `FP_COPILOT_ENABLED` or `FP_MCP_ENABLED` alone — is what compose reads to start them; the installer writes it from those two flags. |
 | `FP_AUTH_MODE` | `local` | `prompts.sh`, `.env`, `auth-policy.json` | `local` \| `sso_later` \| `sso_now` |
 | `FP_SSO_PROVIDER` | `none` | `prompts.sh`, `.env` | `none` \| `entra` \| `okta` \| `oidc` |
 | `FP_SSO_ISSUER` / `FP_SSO_CLIENT_ID` | empty | `prompts.sh`, `.env` | Optional SSO connection hints (finish in Config Hub) |

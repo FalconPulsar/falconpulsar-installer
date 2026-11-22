@@ -99,13 +99,32 @@ func CopilotEnabled() bool {
 	return strings.EqualFold(strings.TrimSpace(parseEnvFile()["FP_COPILOT_ENABLED"]), "true")
 }
 
-// MCPEnabled reports whether the optional outside assistant service is
-// switched on: "mcp" appears in the stack .env's COMPOSE_PROFILES list
-// (comma-separated, case-insensitive). It has no FP_*_ENABLED convenience
-// flag — the profile list is the switch, set by hand as the docs describe.
+// MCPEnabled reports whether the outside assistant service is part of this
+// install's stack: "mcp" appears in the stack .env's COMPOSE_PROFILES list
+// (comma-separated, case-insensitive, quotes tolerated) and FP_MCP_ENABLED
+// is not "false". The service is on by default and the installer keeps the
+// two in step (an upgrade adds or removes the profile to follow
+// FP_MCP_ENABLED); when they disagree, FP_MCP_ENABLED=false wins.
 func MCPEnabled() bool {
-	for _, p := range strings.Split(parseEnvFile()["COMPOSE_PROFILES"], ",") {
-		if strings.EqualFold(strings.Trim(strings.TrimSpace(p), `"'`), "mcp") {
+	env := parseEnvFile()
+	if mcpSwitchedOff(env["FP_MCP_ENABLED"]) {
+		return false
+	}
+	return profileListHas(env["COMPOSE_PROFILES"], "mcp")
+}
+
+// mcpSwitchedOff reports whether a FP_MCP_ENABLED value turns the outside
+// assistant service off. Only "false" does (any case, spaces and quotes
+// ignored); absent or anything else means on. Matches fp_mcp_value_is_off
+// in shared/lib/common.sh.
+func mcpSwitchedOff(v string) bool {
+	return strings.EqualFold(strings.Trim(strings.TrimSpace(v), `"' `), "false")
+}
+
+// profileListHas reports whether a COMPOSE_PROFILES value names profile.
+func profileListHas(list, profile string) bool {
+	for _, p := range strings.Split(list, ",") {
+		if strings.EqualFold(strings.Trim(strings.TrimSpace(p), `"' `), profile) {
 			return true
 		}
 	}

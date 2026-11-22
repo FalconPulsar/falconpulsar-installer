@@ -459,12 +459,17 @@ namespace FalconPulsar.Tray
             string.Equals(EnvValue("FP_COPILOT_ENABLED")?.Trim(), "true",
                 StringComparison.OrdinalIgnoreCase);
 
-        // Outside assistant service (compose profile "mcp"). No FP_*_ENABLED
-        // flag: "mcp" in COMPOSE_PROFILES is the switch.
+        // Outside assistant service (compose profile "mcp"), on by default.
+        // "mcp" in COMPOSE_PROFILES is the switch compose reads; the installer
+        // keeps it in step with FP_MCP_ENABLED, and FP_MCP_ENABLED=false wins
+        // when the two disagree (same rule as fp's MCPEnabled).
         private bool McpEnabled
         {
             get
             {
+                var flag = (EnvValue("FP_MCP_ENABLED") ?? "").Trim(' ', '"', '\'');
+                if (string.Equals(flag, "false", StringComparison.OrdinalIgnoreCase))
+                    return false;
                 var raw = (EnvValue("COMPOSE_PROFILES") ?? "").Trim('"', '\'');
                 foreach (var part in raw.Split(','))
                 {

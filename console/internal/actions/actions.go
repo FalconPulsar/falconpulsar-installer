@@ -160,6 +160,99 @@ func EnsureGatewaySecret() error {
 	return SetEnvValue("FP_GATEWAY_SECRET", hex.EncodeToString(buf))
 }
 
+// EnsureMCPDefault is the upgrade migration for the outside assistant
+// service, which is on by default. It mirrors fp_migrate_mcp_setting in
+// shared/lib/common.sh (the bundled installer's upgrade runs that one; this
+// covers fp's own update path): an .env without FP_MCP_ENABLED gets
+// FP_MCP_ENABLED=true; FP_MCP_TOKEN is minted when missing; then "mcp" in
+// COMPOSE_PROFILES is made to follow FP_MCP_ENABLED (added when on, with
+// other entries kept; removed when false). Returns one line per change.
+// No .env means nothing to migrate.
+func EnsureMCPDefault() ([]string, error) {
+	envPath := filepath.Join(HomeDir(), ".env")
+	data, err := os.ReadFile(envPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	text := string(data)
+	var changes []string
+	appendLine := func(line string) {
+		if text != "" && !strings.HasSuffix(text, "\n") {
+			text += "\n"
+		}
+		text += line + "\n"
+	}
+	// Last occurrence wins, as compose reads the file.
+	lastValue := func(key string) (string, bool) {
+		val, found := "", false
+		for _, line := range strings.Split(text, "\n") {
+			line = strings.TrimRight(line, "\r")
+			if strings.HasPrefix(line, key+"=") {
+				val, found = strings.TrimPrefix(line, key+"="), true
+			}
+		}
+		return val, found
+	}
+
+	if _, ok := lastValue("FP_MCP_ENABLED"); !ok {
+		appendLine("FP_MCP_ENABLED=true")
+		changes = append(changes, "added FP_MCP_ENABLED=true to .env (the outside assistant service is on by default)")
+	}
+	if tok, _ := lastValue("FP_MCP_TOKEN"); strings.TrimSpace(tok) == "" {
+		buf := make([]byte, 32)
+		if _, err := rand.Read(buf); err != nil {
+			return nil, fmt.Errorf("generate FP_MCP_TOKEN: %w", err)
+		}
+		appendLine("FP_MCP_TOKEN=" + hex.EncodeToString(buf))
+		changes = append(changes, "generated FP_MCP_TOKEN (32 random bytes, hex)")
+	}
+	enabledVal, _ := lastValue("FP_MCP_ENABLED")
+	on := !mcpSwitchedOff(enabledVal)
+	profiles, hasKey := lastValue("COMPOSE_PROFILES")
+	if profileListHas(profiles, "mcp") != on {
+		var list []string
+		seen := map[string]bool{}
+		for _, p := range strings.Split(profiles, ",") {
+			p = strings.Trim(strings.TrimSpace(p), `"' `)
+			if p == "" || strings.EqualFold(p, "mcp") || seen[p] {
+				continue
+			}
+			seen[p] = true
+			list = append(list, p)
+		}
+		if on {
+			list = append(list, "mcp")
+		}
+		newLine := "COMPOSE_PROFILES=" + strings.Join(list, ",")
+		if hasKey {
+			lines := strings.Split(text, "\n")
+			for i, line := range lines {
+				if strings.HasPrefix(line, "COMPOSE_PROFILES=") {
+					lines[i] = newLine
+				}
+			}
+			text = strings.Join(lines, "\n")
+		} else {
+			appendLine(newLine)
+		}
+		if on {
+			changes = append(changes, "added mcp to COMPOSE_PROFILES in .env ("+newLine+")")
+		} else {
+			changes = append(changes, "removed mcp from COMPOSE_PROFILES in .env (FP_MCP_ENABLED=false, "+newLine+")")
+		}
+	}
+	if len(changes) == 0 {
+		return nil, nil
+	}
+	if err := os.WriteFile(envPath, []byte(text), envFileMode(envPath)); err != nil {
+		return nil, err
+	}
+	return changes, nil
+}
+
 // envFileMode returns the existing .env file mode, or 0600 if the file
 // doesn't exist / can't be stat'd. We preserve whatever the installer set
 // (Linux: 0640 falconpulsar:docker, macOS: 0600 user:staff) rather than

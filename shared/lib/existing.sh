@@ -623,8 +623,8 @@ fp_try_upgrade_fastpath() {
             log_info "generated FP_BRIDGE_TOKEN (32 random bytes, hex)"
         fi
         # C7.2: the outside assistant service's secret with the gateway.
-        # Minted only when absent, like the bridge token; harmless while the
-        # "mcp" profile is off, and ready when it is switched on.
+        # Minted only when absent, like the bridge token, and before the
+        # service is switched on below; kept even when FP_MCP_ENABLED=false.
         if ! grep -q '^FP_MCP_TOKEN=.' "${home}/.env"; then
             local mcp_token
             if command -v openssl >/dev/null 2>&1; then
@@ -635,6 +635,12 @@ fp_try_upgrade_fastpath() {
             printf 'FP_MCP_TOKEN=%s\n' "$mcp_token" >> "${home}/.env"
             log_info "generated FP_MCP_TOKEN (32 random bytes, hex)"
         fi
+        # The outside assistant service is on by default: an .env without
+        # FP_MCP_ENABLED gets it set true, and "mcp" in COMPOSE_PROFILES is
+        # made to follow it (added when on, removed when
+        # FP_MCP_ENABLED=false). The profile list built below then starts or
+        # leaves out the container to match.
+        fp_migrate_mcp_setting "${home}/.env"
         if ! grep -q '^FP_CONFIRM_SECRET=.' "${home}/.env"; then
             local confirm_secret
             if command -v openssl >/dev/null 2>&1; then
@@ -780,10 +786,22 @@ fp_try_upgrade_fastpath() {
     if grep -q '^FP_COPILOT_ENABLED=true' "${home}/.env" 2>/dev/null; then
         _fp_profiles="${_fp_profiles} --profile copilot"
     fi
-    # The outside assistant service has no convenience flag: it is on when
-    # "mcp" is in the .env's COMPOSE_PROFILES. Same reason as copilot above.
+    # The outside assistant service is on when "mcp" is in the .env's
+    # COMPOSE_PROFILES, which the migration above keeps in step with
+    # FP_MCP_ENABLED. Same reason as copilot above.
     if fp_env_has_profile "${home}/.env" mcp; then
         _fp_profiles="${_fp_profiles} --profile mcp"
+    elif cd "$home" 2>/dev/null; then
+        # Turned off (FP_MCP_ENABLED=false): an `up -d` without the profile
+        # leaves a running container alone, so stop and remove it here.
+        if [ -n "$(docker ps -aq --filter 'name=^falconpulsar-mcp$' 2>/dev/null)" ]; then
+            if docker compose --profile mcp rm -sf mcp >/dev/null 2>&1; then
+                log_info "stopped and removed falconpulsar-mcp (FP_MCP_ENABLED=false)"
+            else
+                log_warn "could not remove falconpulsar-mcp — remove it with: docker rm -f falconpulsar-mcp"
+            fi
+        fi
+        cd - >/dev/null 2>&1 || true
     fi
     if cd "$home" 2>/dev/null; then
         # shellcheck disable=SC2086  # word-splitting of the flag list is intended

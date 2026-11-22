@@ -301,21 +301,27 @@ prompt_transport_mode() {
 }
 
 # Rebuild COMPOSE_PROFILES from optional-module flags (comma-separated).
-# Call after any change to FP_AI_ENGINE_ENABLED / FP_COPILOT_ENABLED.
+# Call after any change to FP_AI_ENGINE_ENABLED / FP_COPILOT_ENABLED /
+# FP_MCP_ENABLED.
 fp_refresh_compose_profiles() {
-    # AI Engine is a standard service (no compose profile). Command Center is
-    # the only profile-gated optional module.
+    # AI Engine is a standard service (no compose profile). Command Center
+    # and the outside assistant service are behind profiles.
     local profiles=""
     if [ "${FP_COPILOT_ENABLED:-false}" = "true" ]; then
         profiles="copilot"
     fi
-    # The outside assistant service ("mcp") is switched on by hand in .env;
-    # a reinstall rewrites .env, so keep the profile when the old .env had it.
-    if [ -n "${FP_HOME:-}" ] && fp_env_has_profile "${FP_HOME}/.env" mcp; then
+    # The outside assistant service ("mcp") is on by default. Only
+    # FP_MCP_ENABLED=false turns it off; the installers seed that value from
+    # the old .env on a reinstall, so a site that turned it off stays off.
+    # Normalized here so .env always records exactly true or false.
+    if fp_mcp_value_is_off "${FP_MCP_ENABLED:-true}"; then
+        FP_MCP_ENABLED=false
+    else
+        FP_MCP_ENABLED=true
         profiles="${profiles:+${profiles},}mcp"
     fi
     COMPOSE_PROFILES="$profiles"
-    export COMPOSE_PROFILES
+    export COMPOSE_PROFILES FP_MCP_ENABLED
 }
 
 # DEPRECATED / INTENTIONALLY UNCALLED. The AI Engine is a STANDARD service

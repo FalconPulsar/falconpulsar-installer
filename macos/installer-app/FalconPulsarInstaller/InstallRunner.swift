@@ -280,6 +280,9 @@ enum InstallRunner {
             // AI capabilities are mandatory: normalize any legacy opt-out
             // left in .env (older fp/tray binaries still read this key).
             scrubAIGatewayFlag(envPath: "\(stackHome)/.env", log: log)
+            // The outside assistant service is on by default; same migration
+            // as the bash upgrade (fp_migrate_mcp_setting in common.sh).
+            let mcpOn = migrateMCPSetting(envPath: "\(stackHome)/.env", log: log)
             updateStep(3, .passed)
 
             // "--profile ai" is legacy compose compat (pre-mandatory-gateway
@@ -287,8 +290,14 @@ enum InstallRunner {
             // current compose files. "--profile engine" is added when the
             // surviving .env opted into the AI Engine — CLI --profile flags
             // REPLACE COMPOSE_PROFILES from .env, so without it an enabled
-            // engine would silently be skipped by pull/up.
-            let profileFlags = "--profile ai" + (fastPathEngineEnabled ? " --profile engine" : "") + (fastPathCopilotEnabled ? " --profile copilot" : "")
+            // engine would silently be skipped by pull/up. "--profile mcp"
+            // likewise when the outside assistant service is on.
+            let profileFlags = "--profile ai" + (fastPathEngineEnabled ? " --profile engine" : "") + (fastPathCopilotEnabled ? " --profile copilot" : "") + (mcpOn ? " --profile mcp" : "")
+            if !mcpOn {
+                // Turned off (FP_MCP_ENABLED=false): an `up -d` without the
+                // profile leaves a running container alone, so remove it.
+                _ = ShellRunner.run("cd '\(stackHome)' && \(dockerPath) compose --profile mcp rm -sf mcp 2>&1", timeout: 60)
+            }
             updateStep(4, .running)
             log("[info] Running: docker compose \(profileFlags) pull")
             // No deadline: a slow link is not a hang, and the pull falls back
@@ -312,7 +321,7 @@ enum InstallRunner {
             // is left untouched.
             for reserved in ["falconpulsar-core", "falconpulsar-ui",
                              "falconpulsar-ai-gateway", "falconpulsar-ai-engine",
-                             "falconpulsar-copilot"] {
+                             "falconpulsar-copilot", "falconpulsar-mcp"] {
                 let (proj, inspectCode) = ShellRunner.run(
                     "\(dockerPath) inspect -f '{{index .Config.Labels \"com.docker.compose.project\"}}' '\(reserved)' 2>/dev/null",
                     timeout: 30)
@@ -602,6 +611,71 @@ enum InstallRunner {
         } catch {
             log("[warn] Could not update .env: \(error)")
         }
+    }
+
+    /// Upgrade migration for the outside assistant service, which is on by
+    /// default. Same rules as fp_migrate_mcp_setting in shared/lib/common.sh:
+    /// an .env without FP_MCP_ENABLED gets FP_MCP_ENABLED=true, FP_MCP_TOKEN
+    /// is minted when missing, and "mcp" in COMPOSE_PROFILES follows
+    /// FP_MCP_ENABLED (added when on, other entries kept; removed when
+    /// false). Returns whether the service is on afterwards.
+    private static func migrateMCPSetting(envPath: String, log: (String) -> Void) -> Bool {
+        guard let envText = try? String(contentsOfFile: envPath, encoding: .utf8) else { return false }
+        // Swift treats CRLF as one Character, so a split on "\n" would not
+        // split a hand-edited CRLF file at all: normalize to LF first.
+        var lines = envText.replacingOccurrences(of: "\r\n", with: "\n")
+            .split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        if lines.last == "" { lines.removeLast() }
+        // Last occurrence wins, as compose reads the file.
+        func lastValue(_ key: String) -> String? {
+            lines.last(where: { $0.hasPrefix(key + "=") })
+                .map { String($0.dropFirst(key.count + 1)).trimmingCharacters(in: .whitespacesAndNewlines) }
+        }
+        func clean(_ v: String) -> String {
+            v.trimmingCharacters(in: CharacterSet(charactersIn: " \t\r\"'"))
+        }
+        func listHasMCP(_ v: String?) -> Bool {
+            clean(v ?? "").split(separator: ",").contains { clean(String($0)).lowercased() == "mcp" }
+        }
+        // What the stack runs today, kept if the .env cannot be written.
+        let wasOn = listHasMCP(lastValue("COMPOSE_PROFILES"))
+            && clean(lastValue("FP_MCP_ENABLED") ?? "").lowercased() != "false"
+        var notes: [String] = []
+        if lastValue("FP_MCP_ENABLED") == nil {
+            lines.append("FP_MCP_ENABLED=true")
+            notes.append("added FP_MCP_ENABLED=true to .env (the outside assistant service is on by default)")
+        }
+        if (lastValue("FP_MCP_TOKEN") ?? "").isEmpty {
+            let token = (0..<32).map { _ in String(format: "%02x", UInt8.random(in: 0...255)) }.joined()
+            lines.append("FP_MCP_TOKEN=\(token)")
+            notes.append("generated FP_MCP_TOKEN (32 random bytes, hex)")
+        }
+        let on = clean(lastValue("FP_MCP_ENABLED") ?? "").lowercased() != "false"
+        let current = clean(lastValue("COMPOSE_PROFILES") ?? "").split(separator: ",").map { clean(String($0)) }
+        if listHasMCP(lastValue("COMPOSE_PROFILES")) != on {
+            var list: [String] = []
+            for p in current where !p.isEmpty && p.lowercased() != "mcp" && !list.contains(p) { list.append(p) }
+            if on { list.append("mcp") }
+            let newLine = "COMPOSE_PROFILES=" + list.joined(separator: ",")
+            if lines.contains(where: { $0.hasPrefix("COMPOSE_PROFILES=") }) {
+                lines = lines.map { $0.hasPrefix("COMPOSE_PROFILES=") ? newLine : $0 }
+            } else {
+                lines.append(newLine)
+            }
+            notes.append(on ? "added mcp to COMPOSE_PROFILES in .env (\(newLine))"
+                            : "removed mcp from COMPOSE_PROFILES in .env (FP_MCP_ENABLED=false, \(newLine))")
+        }
+        guard !notes.isEmpty else { return on }
+        do {
+            try (lines.joined(separator: "\n") + "\n").write(toFile: envPath, atomically: true, encoding: .utf8)
+            // The atomic write recreates the inode; restore the 0600 mode.
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: envPath)
+            for n in notes { log("[info] \(n)") }
+        } catch {
+            log("[warn] Could not update .env for the outside assistant service: \(error)")
+            return wasOn
+        }
+        return on
     }
 
     /// Polls service health after an upgrade's `compose up`, mirroring the

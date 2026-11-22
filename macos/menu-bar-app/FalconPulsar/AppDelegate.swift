@@ -732,9 +732,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             .trimmingCharacters(in: .whitespaces).lowercased() == "true"
     }
 
-    /// Optional outside assistant service (compose profile "mcp"). It has no
-    /// FP_*_ENABLED flag: "mcp" in COMPOSE_PROFILES is the switch.
+    /// Outside assistant service (compose profile "mcp"), on by default.
+    /// "mcp" in COMPOSE_PROFILES is the switch compose reads; the installer
+    /// keeps it in step with FP_MCP_ENABLED, and FP_MCP_ENABLED=false wins
+    /// when the two disagree (same rule as fp's MCPEnabled).
     private var mcpEnabled: Bool {
+        let flag = (envValue("FP_MCP_ENABLED") ?? "")
+            .trimmingCharacters(in: CharacterSet(charactersIn: " \"'")).lowercased()
+        if flag == "false" { return false }
         let raw = (envValue("COMPOSE_PROFILES") ?? "")
             .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
         for part in raw.components(separatedBy: ",") {
